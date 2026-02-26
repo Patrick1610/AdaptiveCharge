@@ -62,6 +62,7 @@ DEFAULT_MIN_OFF_TIME = 120  # Seconds (2 min)
 
 # Safety rails
 SURPLUS_CLAMP_W = 20000  # ±20 kW
+FALLBACK_VOLTAGE_V = 230.0  # Default voltage when sensor unavailable
 
 # --- Platforms ---
 PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]

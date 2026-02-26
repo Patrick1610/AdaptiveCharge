@@ -58,6 +58,7 @@ from .const import (
     MODE_STOPPED,
     MODE_SURPLUS,
     SURPLUS_CLAMP_W,
+    FALLBACK_VOLTAGE_V,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -305,7 +306,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         else:
             ev_w = 0.0
 
-        voltage = voltage_raw if voltage_raw is not None else 230.0
+        voltage = voltage_raw if voltage_raw is not None else FALLBACK_VOLTAGE_V
 
         if solar_raw is not None:
             solar_w = _to_watts(solar_raw, self._solar_sensor, self.hass)
@@ -334,7 +335,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
         # Safety rail: if voltage is 0/unknown, hold safe
         if voltage <= 0:
-            voltage = 230.0
+            voltage = FALLBACK_VOLTAGE_V
 
         raw_current_a = surplus_w / (voltage * 3.0)
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)

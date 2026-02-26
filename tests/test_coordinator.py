@@ -9,19 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Import defaults for testing
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "custom_components", "stormbreaker_charge"))
-from const import (
-    DEFAULT_COOLDOWN_PERIOD,
-    DEFAULT_HYSTERESIS_BAND,
-    DEFAULT_MAX_STEP_SIZE,
-    DEFAULT_MIN_OFF_TIME,
-    DEFAULT_MIN_ON_TIME,
-    DEFAULT_MIN_START_CURRENT,
-    DEFAULT_STALE_THRESHOLD,
-    SURPLUS_CLAMP_W,
-)
+# Constants mirrored from const.py for isolated testing (no HA imports)
+_DEFAULT_HYSTERESIS_BAND = 1.0
+_DEFAULT_MIN_START_CURRENT = 2
+_DEFAULT_COOLDOWN_PERIOD = 60
+_DEFAULT_MAX_STEP_SIZE = 1
+_DEFAULT_STALE_THRESHOLD = 10
+_DEFAULT_MIN_ON_TIME = 300
+_DEFAULT_MIN_OFF_TIME = 120
+_SURPLUS_CLAMP_W = 20000
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +346,7 @@ def compute_modulation_target(
     return target, direction
 
 
-def clamp_surplus(surplus_w: float, clamp: float = SURPLUS_CLAMP_W) -> float:
+def clamp_surplus(surplus_w: float, clamp: float = _SURPLUS_CLAMP_W) -> float:
     """Clamp surplus to ±clamp."""
     return max(-clamp, min(clamp, surplus_w))
 
@@ -623,10 +619,10 @@ class TestSafetyRails:
     """Test surplus clamping and safety limits."""
 
     def test_clamp_large_positive(self):
-        assert clamp_surplus(50000.0) == SURPLUS_CLAMP_W
+        assert clamp_surplus(50000.0) == _SURPLUS_CLAMP_W
 
     def test_clamp_large_negative(self):
-        assert clamp_surplus(-50000.0) == -SURPLUS_CLAMP_W
+        assert clamp_surplus(-50000.0) == -_SURPLUS_CLAMP_W
 
     def test_clamp_within_range(self):
         assert clamp_surplus(5000.0) == 5000.0
@@ -635,16 +631,16 @@ class TestSafetyRails:
         assert clamp_surplus(0.0) == 0.0
 
     def test_clamp_at_boundary(self):
-        assert clamp_surplus(SURPLUS_CLAMP_W) == SURPLUS_CLAMP_W
-        assert clamp_surplus(-SURPLUS_CLAMP_W) == -SURPLUS_CLAMP_W
+        assert clamp_surplus(_SURPLUS_CLAMP_W) == _SURPLUS_CLAMP_W
+        assert clamp_surplus(-_SURPLUS_CLAMP_W) == -_SURPLUS_CLAMP_W
 
     def test_default_constants_sensible(self):
         """Verify default constants have sensible values."""
-        assert DEFAULT_HYSTERESIS_BAND == 1.0
-        assert DEFAULT_MIN_START_CURRENT == 2
-        assert DEFAULT_COOLDOWN_PERIOD == 60
-        assert DEFAULT_MAX_STEP_SIZE == 1
-        assert DEFAULT_STALE_THRESHOLD == 10
-        assert DEFAULT_MIN_ON_TIME == 300
-        assert DEFAULT_MIN_OFF_TIME == 120
-        assert SURPLUS_CLAMP_W == 20000
+        assert _DEFAULT_HYSTERESIS_BAND == 1.0
+        assert _DEFAULT_MIN_START_CURRENT == 2
+        assert _DEFAULT_COOLDOWN_PERIOD == 60
+        assert _DEFAULT_MAX_STEP_SIZE == 1
+        assert _DEFAULT_STALE_THRESHOLD == 10
+        assert _DEFAULT_MIN_ON_TIME == 300
+        assert _DEFAULT_MIN_OFF_TIME == 120
+        assert _SURPLUS_CLAMP_W == 20000
