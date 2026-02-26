@@ -36,10 +36,12 @@ async def async_setup_entry(
             AvailableCurrentRawFlooredSensor(coordinator, entry),
             AvailableCurrentSmoothedSensor(coordinator, entry),
             AvailableCurrentSmoothedFlooredSensor(coordinator, entry),
+            EMACurrentSensor(coordinator, entry),
             ComputedNetWSensor(coordinator, entry),
             ComputedEvWSensor(coordinator, entry),
             VoltageUsedSensor(coordinator, entry),
             SolarDoneStatusSensor(coordinator, entry),
+            AlignmentDiagnosticSensor(coordinator, entry),
         ]
     )
 
@@ -258,4 +260,56 @@ class SolarDoneStatusSensor(_BaseStormbreakerSensor):
         return {
             **base,
             "solar_w": data.get("solar_w"),
+        }
+
+
+class EMACurrentSensor(_BaseStormbreakerSensor):
+    """EMA-filtered charge current used for control decisions (A)."""
+
+    _attr_name = "EMA Current (A)"
+    _attr_device_class = SensorDeviceClass.CURRENT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+
+    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_ema_current_a"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("ema_current_a", 0.0)
+
+
+class AlignmentDiagnosticSensor(_BaseStormbreakerSensor):
+    """Diagnostic sensor exposing alignment engine state."""
+
+    _attr_name = "Alignment Diagnostics"
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_alignment_diagnostics"
+
+    @property
+    def native_value(self) -> str | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("confidence_level", "unknown")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "alignment_active": data.get("alignment_active"),
+            "confidence_level": data.get("confidence_level"),
+            "estimated_lag_seconds": data.get("estimated_lag_seconds"),
+            "net_update_interval_p95": data.get("net_update_interval_p95"),
+            "ev_update_interval_p95": data.get("ev_update_interval_p95"),
+            "committed_current": data.get("committed_current"),
+            "last_commit_reason": data.get("last_commit_reason"),
+            "ema_current_a": data.get("ema_current_a"),
         }

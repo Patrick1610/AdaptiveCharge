@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from datetime import datetime, timedelta
 from statistics import mean
@@ -14,6 +15,12 @@ from homeassistant.helpers.event import async_track_time_interval, async_track_t
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.util.dt as dt_util
 
+from .alignment import (
+    AlignmentEngine,
+    EMAFilter,
+    MeasurementTracker,
+    compute_confidence,
+)
 from .const import (
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
@@ -35,8 +42,24 @@ from .const import (
     CONF_START_DELAY,
     CONF_STOP_DELAY,
     CONF_VOLTAGE_SENSOR,
+    CONFIDENCE_HIGH,
+    CONFIDENCE_LOW,
+    CONFIDENCE_MEDIUM,
+    DEFAULT_ALIGNMENT_TIMEOUT_MAX,
+    DEFAULT_ALIGNMENT_TIMEOUT_MIN,
+    DEFAULT_COOLDOWN_DOWN_S,
+    DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
+    DEFAULT_EMA_SPAN_S,
+    DEFAULT_EV_STEP_THRESHOLD_W,
+    DEFAULT_HYSTERESIS_DOWN,
+    DEFAULT_HYSTERESIS_UP,
+    DEFAULT_IMPORT_SAFETY_DURATION_S,
+    DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
+    DEFAULT_MAX_STEP_A,
+    DEFAULT_MIN_OFF_TIME_S,
+    DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SMOOTHING_WINDOW,
@@ -149,8 +172,36 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._solar_below_threshold_since: datetime | None = None
         self._solar_done: bool = False
 
-        # Smoothing deque: list of (timestamp, current_a)
+        # Smoothing deque: list of (timestamp, current_a) — kept for UI sensors
         self._samples: deque[tuple[datetime, float]] = deque()
+
+        # --- Alignment engine ---
+        self._net_tracker = MeasurementTracker("net_power")
+        self._ev_tracker = MeasurementTracker("ev_power")
+        self._voltage_tracker = MeasurementTracker("voltage")
+        self._alignment = AlignmentEngine(
+            ev_step_threshold_w=DEFAULT_EV_STEP_THRESHOLD_W,
+            timeout_min_s=DEFAULT_ALIGNMENT_TIMEOUT_MIN,
+            timeout_max_s=DEFAULT_ALIGNMENT_TIMEOUT_MAX,
+        )
+        self._ema_filter = EMAFilter(span_s=DEFAULT_EMA_SPAN_S)
+
+        # --- Controller stabilization state ---
+        self._committed_current: float | None = None
+        self._last_committed_int: int | None = None
+        self._last_up_time: float | None = None
+        self._last_down_time: float | None = None
+        self._last_on_time: float | None = None
+        self._last_off_time: float | None = None
+        self._confidence: str = CONFIDENCE_LOW
+        self._last_commit_reason: str = ""
+
+        # Import safety
+        self._import_exceed_since: float | None = None
+
+        # Previous values for step detection
+        self._prev_ev_w: float | None = None
+        self._prev_net_w: float | None = None
 
         # Unsub for interval tracker and night-off timer
         self._unsub_interval = None
@@ -240,6 +291,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     async def _async_update_data_internal(self) -> dict[str, Any]:
         """Compute all values and run control logic."""
         now = datetime.now()
+        mono_now = time.monotonic()
 
         # --- Read raw sensor values ---
         net_raw = _get_float_state(self.hass, self._net_power_sensor)
@@ -291,24 +343,50 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             else:
                 computed_net_w = 0.0
 
-        # --- Compute surplus and current ---
-        # surplus_w = available surplus for EV = -(net_w) + ev_w
-        # net_w positive = importing from grid → negative surplus
-        # net_w negative = exporting to grid → positive surplus
+        # --- Update measurement trackers ---
+        self._net_tracker.update(computed_net_w, mono_now)
+        self._ev_tracker.update(ev_w, mono_now)
+        self._voltage_tracker.update(voltage, mono_now)
+
+        # --- EV step detection ---
+        self._alignment.on_ev_power_change(self._prev_ev_w, ev_w, mono_now)
+
+        # --- Net power change detection for alignment ---
+        net_delta = computed_net_w - self._prev_net_w if self._prev_net_w is not None else 0.0
+        self._alignment.on_net_power_update(mono_now, net_delta)
+        self._alignment.check_timeout(mono_now)
+
+        self._prev_ev_w = ev_w
+        self._prev_net_w = computed_net_w
+
+        # --- Compute surplus and current (float-based) ---
         surplus_w = (0.0 - computed_net_w) + ev_w
         raw_current_a = (surplus_w / (voltage * 3.0)) if voltage > 0 else 0.0
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
-        raw_floored = min(max(int(raw_current_a), 0), int(capped))
 
-        # --- Smoothing ---
+        # EMA-smoothed current for control decisions
+        ema_current_a = self._ema_filter.update(raw_current_a, mono_now)
+        ema_current_a = min(max(ema_current_a, 0.0), capped)
+
+        # --- Legacy smoothing (kept for UI sensor compatibility) ---
+        raw_floored = min(max(int(raw_current_a), 0), int(capped))
         self._samples.append((now, raw_current_a))
         cutoff = now - timedelta(seconds=self._smoothing_window)
         while self._samples and self._samples[0][0] < cutoff:
             self._samples.popleft()
-
         valid_samples = [v for _, v in self._samples]
         smoothed_a = mean(valid_samples) if valid_samples else 0.0
         smoothed_floored = min(max(int(smoothed_a), 0), int(capped))
+
+        # --- Confidence ---
+        self._confidence = compute_confidence(
+            net_tracker=self._net_tracker,
+            ev_tracker=self._ev_tracker,
+            alignment_active=self._alignment.active,
+            target_current=ema_current_a,
+            last_committed=self._committed_current,
+            sample_interval=float(self._sample_interval),
+        )
 
         # --- Solar done ---
         if solar_w is not None:
@@ -325,7 +403,6 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._solar_done = False
 
         # --- Force charge ---
-        # charge_now OR (tonight AND home AND cable AND need AND solar_done)
         need = (
             current_range is not None
             and current_range < self._desired_range
@@ -342,7 +419,6 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         # --- Cable plug-in detection ---
         if cable_connected is not None and cable_connected != self._cable_prev:
             if cable_connected and not self._cable_prev:
-                # Cable just connected — cancel any previous plugin task and track the new one
                 if self._pending_plugin_task and not self._pending_plugin_task.done():
                     self._pending_plugin_task.cancel()
                 self._pending_plugin_task = self.hass.async_create_task(
@@ -351,8 +427,20 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 )
             self._cable_prev = cable_connected
 
+        # --- Import safety check ---
+        import_safety_triggered = self._check_import_safety(
+            computed_net_w, mono_now
+        )
+
         # --- Control logic ---
-        await self._run_control_logic(force_charge, smoothed_floored, raw_floored)
+        await self._run_control_logic(
+            force_charge=force_charge,
+            smoothed_floored=smoothed_floored,
+            raw_floored=raw_floored,
+            ema_current=ema_current_a,
+            mono_now=mono_now,
+            import_safety=import_safety_triggered,
+        )
 
         self._last_raw_floored = raw_floored
 
@@ -365,6 +453,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "raw_floored": raw_floored,
             "smoothed_a": smoothed_a,
             "smoothed_floored": smoothed_floored,
+            "ema_current_a": round(ema_current_a, 2),
             "solar_w": solar_w,
             "solar_done": self._solar_done,
             "force_charge": force_charge,
@@ -383,17 +472,61 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "charging_on": self._charging_on,
             "sample_count": len(self._samples),
             "last_updated": now.isoformat(),
+            # --- Alignment diagnostics ---
+            "alignment_active": self._alignment.active,
+            "confidence_level": self._confidence,
+            "estimated_lag_seconds": (
+                round(self._alignment.estimated_lag, 2)
+                if self._alignment.estimated_lag is not None
+                else None
+            ),
+            "net_update_interval_p95": (
+                round(self._net_tracker.interval_p95, 2)
+                if self._net_tracker.interval_p95 is not None
+                else None
+            ),
+            "ev_update_interval_p95": (
+                round(self._ev_tracker.interval_p95, 2)
+                if self._ev_tracker.interval_p95 is not None
+                else None
+            ),
+            "committed_current": self._committed_current,
+            "last_commit_reason": self._last_commit_reason,
         }
         # Push to coordinator listeners
         self.async_set_updated_data(data)
         return data
 
     # ------------------------------------------------------------------
+    # Import safety
+    # ------------------------------------------------------------------
+
+    def _check_import_safety(self, net_w: float, mono_now: float) -> bool:
+        """Return True if import has exceeded threshold for long enough."""
+        threshold = DEFAULT_IMPORT_SAFETY_THRESHOLD_W
+        duration = DEFAULT_IMPORT_SAFETY_DURATION_S
+
+        if net_w > threshold:
+            if self._import_exceed_since is None:
+                self._import_exceed_since = mono_now
+            elif (mono_now - self._import_exceed_since) >= duration:
+                return True
+        else:
+            self._import_exceed_since = None
+        return False
+
+    # ------------------------------------------------------------------
     # Control logic
     # ------------------------------------------------------------------
 
     async def _run_control_logic(
-        self, force_charge: bool, smoothed_floored: int, raw_floored: int
+        self,
+        force_charge: bool,
+        smoothed_floored: int,
+        raw_floored: int,
+        ema_current: float,
+        mono_now: float,
+        import_safety: bool,
     ) -> None:
         """Evaluate and schedule control actions."""
         force_changed = force_charge != self._force_charge_prev
@@ -416,33 +549,132 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 return
 
         if force_charge:
-            # Already handling in force mode
             return
 
-        if smoothed_floored > 0 and not self._charging_on:
+        # --- Import safety: immediate reduction ---
+        if import_safety and self._charging_on and self._current_mode == MODE_SURPLUS:
+            new_target = (self._committed_current or 0.0) - 1.0
+            if new_target < 1.0:
+                self._cancel_pending()
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(0, self._action_stop_surplus),
+                    eager_start=False,
+                )
+                self._last_commit_reason = "import_safety_stop"
+            else:
+                await self._commit_current(
+                    new_target, mono_now, reason="import_safety_reduce"
+                )
+            return
+
+        # --- Start surplus charging ---
+        if ema_current >= 1.0 and not self._charging_on:
+            # Respect min-off time
+            if self._last_off_time is not None:
+                off_elapsed = mono_now - self._last_off_time
+                if off_elapsed < DEFAULT_MIN_OFF_TIME_S:
+                    return
             self._cancel_pending()
+            start_a = max(1, min(int(ema_current), int(min(self._max_current_limit, MAX_CURRENT_ABS))))
             self._pending_task = self.hass.async_create_task(
-                self._debounced(self._start_delay, self._action_start_surplus, smoothed_floored),
+                self._debounced(self._start_delay, self._action_start_surplus, start_a),
                 eager_start=False,
             )
-        elif smoothed_floored < 1 and self._charging_on and self._current_mode == MODE_SURPLUS:
+            return
+
+        # --- Stop surplus charging ---
+        if ema_current < 1.0 and self._charging_on and self._current_mode == MODE_SURPLUS:
+            # Respect min-on time
+            if self._last_on_time is not None:
+                on_elapsed = mono_now - self._last_on_time
+                if on_elapsed < DEFAULT_MIN_ON_TIME_S:
+                    return
             self._cancel_pending()
             self._pending_task = self.hass.async_create_task(
                 self._debounced(self._stop_delay, self._action_stop_surplus),
                 eager_start=False,
             )
-        elif (
+            return
+
+        # --- Modulate current (hysteresis + rate limiting) ---
+        if (
             self._charging_on
             and self._current_mode == MODE_SURPLUS
-            and raw_floored != self._last_raw_floored
-            and raw_floored > 0
+            and self._committed_current is not None
         ):
-            # Modulate current
-            if self._pending_modulate_task is None or self._pending_modulate_task.done():
-                self._pending_modulate_task = self.hass.async_create_task(
-                    self._debounced(self._modulate_min_interval, self._action_modulate, raw_floored),
-                    eager_start=False,
-                )
+            await self._try_modulate(ema_current, mono_now)
+
+    async def _try_modulate(self, ema_current: float, mono_now: float) -> None:
+        """Apply hysteresis and rate limiting to modulate current."""
+        current_setpoint = self._committed_current
+        if current_setpoint is None:
+            return
+
+        capped = min(self._max_current_limit, MAX_CURRENT_ABS)
+        target = min(max(ema_current, 0.0), capped)
+        delta = target - current_setpoint
+
+        # During alignment, only allow decreases (safety), hold otherwise
+        if self._alignment.active and delta > 0:
+            return
+
+        # Confidence gating
+        if delta > 0 and self._confidence == CONFIDENCE_LOW:
+            return
+
+        # Hysteresis check
+        if delta > 0 and delta < DEFAULT_HYSTERESIS_UP:
+            return
+        if delta < 0 and abs(delta) < DEFAULT_HYSTERESIS_DOWN:
+            return
+
+        # Rate limiting: max 1A per step
+        step = min(abs(delta), float(DEFAULT_MAX_STEP_A))
+        if delta > 0:
+            new_target = current_setpoint + step
+        else:
+            new_target = current_setpoint - step
+
+        new_target = min(max(new_target, 0.0), capped)
+
+        # Cooldown
+        if delta > 0:
+            if self._last_up_time is not None:
+                up_elapsed = mono_now - self._last_up_time
+                if up_elapsed < DEFAULT_COOLDOWN_UP_S:
+                    return
+
+        reason = "modulate_up" if delta > 0 else "modulate_down"
+        await self._commit_current(new_target, mono_now, reason=reason)
+
+    async def _commit_current(
+        self, target: float, mono_now: float, reason: str = ""
+    ) -> None:
+        """Commit a new current setpoint to the actuator."""
+        capped = min(self._max_current_limit, MAX_CURRENT_ABS)
+        target = min(max(target, 0.0), capped)
+        target_int = max(int(target), 0)
+
+        # Idempotent: skip if same integer value already sent
+        if target_int == self._last_committed_int:
+            return
+
+        if target_int > 0:
+            _LOGGER.debug(
+                "Stormbreaker: commit %dA (float=%.2f, reason=%s, confidence=%s)",
+                target_int, target, reason, self._confidence,
+            )
+            await self._set_charge_current(target_int)
+            self._committed_current = target
+            self._last_committed_int = target_int
+            self._last_commit_reason = reason
+
+            if "up" in reason:
+                self._last_up_time = mono_now
+            elif "down" in reason:
+                self._last_down_time = mono_now
+
+            self._last_action = f"modulate_{target_int}A"
 
     def _cancel_pending(self) -> None:
         if self._pending_task and not self._pending_task.done():
@@ -450,13 +682,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._pending_task = None
 
     async def _debounced(self, delay: int, action, *args) -> None:
-        """Wait delay seconds then execute action.
-
-        If this task is cancelled during the sleep the action will not run —
-        this is intentional: callers cancel pending tasks before scheduling
-        a replacement, so cancellation during delay means the action is no
-        longer relevant.
-        """
+        """Wait delay seconds then execute action."""
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
@@ -475,6 +701,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = True
         self._current_mode = MODE_FORCE
         self._last_action = "start_force"
+        self._last_on_time = time.monotonic()
+        self._committed_current = float(MAX_CURRENT_ABS)
+        self._last_committed_int = MAX_CURRENT_ABS
 
     async def _action_stop_force(self) -> None:
         _LOGGER.info("Stormbreaker: stop_force")
@@ -482,6 +711,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = False
         self._current_mode = MODE_STOPPED
         self._last_action = "stop_force"
+        self._last_off_time = time.monotonic()
+        self._committed_current = None
+        self._last_committed_int = None
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
 
@@ -493,6 +725,10 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = True
         self._current_mode = MODE_SURPLUS
         self._last_action = f"start_surplus_{current_a}A"
+        self._last_on_time = time.monotonic()
+        self._committed_current = float(current_a)
+        self._last_committed_int = current_a
+        self._last_commit_reason = "start_surplus"
 
     async def _action_stop_surplus(self) -> None:
         _LOGGER.info("Stormbreaker: stop_surplus")
@@ -500,14 +736,12 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = False
         self._current_mode = MODE_STOPPED
         self._last_action = "stop_surplus"
+        self._last_off_time = time.monotonic()
+        self._committed_current = None
+        self._last_committed_int = None
+        self._last_commit_reason = "stop_surplus"
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
-
-    async def _action_modulate(self, raw_floored: int) -> None:
-        if raw_floored > 0:
-            _LOGGER.debug("Stormbreaker: modulate to %dA", raw_floored)
-            await self._set_charge_current(raw_floored)
-            self._last_action = f"modulate_{raw_floored}A"
 
     async def _action_plug_in_delayed(self, force_charge: bool, smoothed_floored: int) -> None:
         await asyncio.sleep(2)
