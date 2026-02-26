@@ -80,7 +80,7 @@ class MeasurementTracker:
                 else:
                     self.avg_interval += _EWMA_ALPHA * (interval - self.avg_interval)
                 # Update EWMA jitter (abs deviation)
-                dev = abs(interval - (self.avg_interval or interval))
+                dev = abs(interval - (self.avg_interval if self.avg_interval is not None else interval))
                 if self.jitter is None:
                     self.jitter = dev
                 else:
@@ -326,7 +326,8 @@ def compute_coherence(
     # Reliability component: average of both tracker reliabilities
     rel_score = (net_tracker.reliability + ev_tracker.reliability) / 2.0
 
-    # Combined: geometric-ish mean
+    # Combined: skew weighted more heavily (0.6) because timestamp alignment
+    # is the primary indicator of coherent data; reliability (0.4) is secondary.
     return skew_score * 0.6 + rel_score * 0.4
 
 
