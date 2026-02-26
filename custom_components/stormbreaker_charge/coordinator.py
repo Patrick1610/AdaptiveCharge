@@ -10,8 +10,9 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceNotFound
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_track_time_interval, async_track_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+import homeassistant.util.dt as dt_util
 
 from .const import (
     CONF_CABLE_SENSOR,
@@ -140,6 +141,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_raw_floored: int = 0
         self._pending_task: asyncio.Task | None = None
         self._pending_modulate_task: asyncio.Task | None = None
+        self._pending_plugin_task: asyncio.Task | None = None
         self._force_charge_prev: bool = False
         self._cable_prev: bool | None = None
 
@@ -150,8 +152,10 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         # Smoothing deque: list of (timestamp, current_a)
         self._samples: deque[tuple[datetime, float]] = deque()
 
-        # Unsub for interval tracker
+        # Unsub for interval tracker and night-off timer
         self._unsub_interval = None
+        self._unsub_night_off = None
+        self._last_night_off_date: datetime | None = None
 
         super().__init__(
             hass,
@@ -173,12 +177,34 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._async_tick,
             timedelta(seconds=self._sample_interval),
         )
+        self._schedule_night_off()
+
+    def _schedule_night_off(self) -> None:
+        """Schedule the nightly 05:00 charge_tonight reset."""
+        if self._unsub_night_off:
+            self._unsub_night_off()
+        from datetime import time as dtime
+        self._unsub_night_off = async_track_time(
+            self.hass,
+            self._async_night_off,
+            dtime(5, 0, 0),
+        )
+
+    @callback
+    async def _async_night_off(self, _now) -> None:
+        """Turn off charge_tonight at 05:00."""
+        _LOGGER.info("Stormbreaker: Night-Off — disabling charge_tonight at 05:00")
+        self._charge_tonight = False
+        self._schedule_night_off()
 
     async def async_shutdown(self) -> None:
         """Cancel subscriptions."""
         if self._unsub_interval:
             self._unsub_interval()
             self._unsub_interval = None
+        if self._unsub_night_off:
+            self._unsub_night_off()
+            self._unsub_night_off = None
         if self._pending_task and not self._pending_task.done():
             self._pending_task.cancel()
         if self._pending_modulate_task and not self._pending_modulate_task.done():
@@ -298,13 +324,30 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._solar_done = False
 
         # --- Force charge ---
-        force_charge = self._charge_now
+        # charge_now OR (tonight AND home AND cable AND need AND solar_done)
+        need = (
+            current_range is not None
+            and current_range < self._desired_range
+        )
+        tonight_condition = (
+            self._charge_tonight
+            and bool(presence)
+            and bool(cable_connected)
+            and need
+            and self._solar_done
+        )
+        force_charge = self._charge_now or tonight_condition
 
         # --- Cable plug-in detection ---
         if cable_connected is not None and cable_connected != self._cable_prev:
             if cable_connected and not self._cable_prev:
-                # Cable just connected
-                asyncio.ensure_future(self._action_plug_in_delayed(force_charge, smoothed_floored))
+                # Cable just connected — cancel any previous plugin task and track the new one
+                if self._pending_plugin_task and not self._pending_plugin_task.done():
+                    self._pending_plugin_task.cancel()
+                self._pending_plugin_task = self.hass.async_create_task(
+                    self._action_plug_in_delayed(force_charge, smoothed_floored),
+                    eager_start=False,
+                )
             self._cable_prev = cable_connected
 
         # --- Control logic ---
@@ -331,6 +374,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "max_current_limit": self._max_current_limit,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
+            "tonight_condition": tonight_condition,
+            "need": need,
             "charging_enabled": self._charging_enabled,
             "current_mode": self._current_mode,
             "last_action": self._last_action,
@@ -356,14 +401,16 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._force_charge_prev = force_charge
             if force_charge:
                 self._cancel_pending()
-                self._pending_task = asyncio.ensure_future(
-                    self._debounced(5, self._action_start_force)
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(5, self._action_start_force),
+                    eager_start=False,
                 )
                 return
             else:
                 self._cancel_pending()
-                self._pending_task = asyncio.ensure_future(
-                    self._debounced(3, self._action_stop_force)
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(3, self._action_stop_force),
+                    eager_start=False,
                 )
                 return
 
@@ -373,13 +420,15 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
         if smoothed_floored > 0 and not self._charging_on:
             self._cancel_pending()
-            self._pending_task = asyncio.ensure_future(
-                self._debounced(self._start_delay, self._action_start_surplus, smoothed_floored)
+            self._pending_task = self.hass.async_create_task(
+                self._debounced(self._start_delay, self._action_start_surplus, smoothed_floored),
+                eager_start=False,
             )
         elif smoothed_floored < 1 and self._charging_on and self._current_mode == MODE_SURPLUS:
             self._cancel_pending()
-            self._pending_task = asyncio.ensure_future(
-                self._debounced(self._stop_delay, self._action_stop_surplus)
+            self._pending_task = self.hass.async_create_task(
+                self._debounced(self._stop_delay, self._action_stop_surplus),
+                eager_start=False,
             )
         elif (
             self._charging_on
@@ -389,8 +438,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         ):
             # Modulate current
             if self._pending_modulate_task is None or self._pending_modulate_task.done():
-                self._pending_modulate_task = asyncio.ensure_future(
-                    self._debounced(self._modulate_min_interval, self._action_modulate, raw_floored)
+                self._pending_modulate_task = self.hass.async_create_task(
+                    self._debounced(self._modulate_min_interval, self._action_modulate, raw_floored),
+                    eager_start=False,
                 )
 
     def _cancel_pending(self) -> None:
@@ -399,8 +449,17 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._pending_task = None
 
     async def _debounced(self, delay: int, action, *args) -> None:
-        """Wait delay seconds then execute action."""
-        await asyncio.sleep(delay)
+        """Wait delay seconds then execute action.
+
+        If this task is cancelled during the sleep the action will not run —
+        this is intentional: callers cancel pending tasks before scheduling
+        a replacement, so cancellation during delay means the action is no
+        longer relevant.
+        """
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
         await action(*args)
 
     # ------------------------------------------------------------------
@@ -511,13 +570,17 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         """Service: force start charging."""
         self._charge_now = True
         self._cancel_pending()
-        self._pending_task = asyncio.ensure_future(self._action_start_force())
+        self._pending_task = self.hass.async_create_task(
+            self._action_start_force(), eager_start=False
+        )
 
     async def async_service_force_stop(self) -> None:
         """Service: force stop charging."""
         self._charge_now = False
         self._cancel_pending()
-        self._pending_task = asyncio.ensure_future(self._action_stop_force())
+        self._pending_task = self.hass.async_create_task(
+            self._action_stop_force(), eager_start=False
+        )
 
     async def async_service_set_desired_range(self, range_km: float) -> None:
         """Service: set desired range."""
@@ -530,3 +593,27 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     async def async_service_disable_tonight(self) -> None:
         """Service: disable charge tonight."""
         self._charge_tonight = False
+
+    # ------------------------------------------------------------------
+    # Public setters (used by switch/number entities)
+    # ------------------------------------------------------------------
+
+    def set_charge_now(self, value: bool) -> None:
+        """Set the charge_now flag."""
+        self._charge_now = value
+
+    def set_charge_tonight(self, value: bool) -> None:
+        """Set the charge_tonight flag."""
+        self._charge_tonight = value
+
+    def set_charging_enabled(self, value: bool) -> None:
+        """Set the charging_enabled virtual state."""
+        self._charging_enabled = value
+
+    def set_desired_range(self, value: float) -> None:
+        """Set the desired range in km."""
+        self._desired_range = value
+
+    def set_max_current_limit(self, value: float) -> None:
+        """Set the max current limit in A."""
+        self._max_current_limit = value

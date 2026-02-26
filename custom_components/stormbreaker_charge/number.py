@@ -67,16 +67,16 @@ class DesiredRangeNumber(RestoreEntity, NumberEntity):
         state = await self.async_get_last_state()
         if state is not None:
             try:
-                self._coordinator._desired_range = float(state.state)
+                self._coordinator.set_desired_range(float(state.state))
             except (ValueError, TypeError):
-                self._coordinator._desired_range = DEFAULT_DESIRED_RANGE
+                self._coordinator.set_desired_range(DEFAULT_DESIRED_RANGE)
 
     @property
     def native_value(self) -> float:
         return self._coordinator._desired_range
 
     async def async_set_native_value(self, value: float) -> None:
-        self._coordinator._desired_range = value
+        self._coordinator.set_desired_range(value)
         self.async_write_ha_state()
 
 
@@ -105,14 +105,14 @@ class MaxCurrentLimitNumber(RestoreEntity, NumberEntity):
         state = await self.async_get_last_state()
         if state is not None:
             try:
-                self._coordinator._max_current_limit = float(state.state)
+                self._coordinator.set_max_current_limit(float(state.state))
             except (ValueError, TypeError):
-                self._coordinator._max_current_limit = DEFAULT_MAX_CURRENT_LIMIT
+                self._coordinator.set_max_current_limit(DEFAULT_MAX_CURRENT_LIMIT)
 
     @property
     def native_value(self) -> float:
         return self._coordinator._max_current_limit
 
     async def async_set_native_value(self, value: float) -> None:
-        self._coordinator._max_current_limit = value
+        self._coordinator.set_max_current_limit(value)
         self.async_write_ha_state()

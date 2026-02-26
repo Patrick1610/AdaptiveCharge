@@ -62,19 +62,19 @@ class ChargeNowSwitch(RestoreEntity, SwitchEntity):
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if state is not None:
-            self._coordinator._charge_now = state.state == "on"
+            self._coordinator.set_charge_now(state.state == "on")
 
     @property
     def is_on(self) -> bool:
         return self._coordinator._charge_now
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        self._coordinator._charge_now = True
+        self._coordinator.set_charge_now(True)
         self.async_write_ha_state()
         self._coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        self._coordinator._charge_now = False
+        self._coordinator.set_charge_now(False)
         self.async_write_ha_state()
         self._coordinator.async_request_refresh()
 
@@ -98,19 +98,19 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if state is not None:
-            self._coordinator._charge_tonight = state.state == "on"
+            self._coordinator.set_charge_tonight(state.state == "on")
 
     @property
     def is_on(self) -> bool:
         return self._coordinator._charge_tonight
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        self._coordinator._charge_tonight = True
+        self._coordinator.set_charge_tonight(True)
         self.async_write_ha_state()
         self._coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        self._coordinator._charge_tonight = False
+        self._coordinator.set_charge_tonight(False)
         self.async_write_ha_state()
         self._coordinator.async_request_refresh()
 
@@ -134,7 +134,7 @@ class ChargingEnableSwitch(RestoreEntity, SwitchEntity):
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if state is not None:
-            self._coordinator._charging_enabled = state.state == "on"
+            self._coordinator.set_charging_enabled(state.state == "on")
 
     @property
     def is_on(self) -> bool:
