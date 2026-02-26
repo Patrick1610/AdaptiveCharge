@@ -10,7 +10,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceNotFound
-from homeassistant.helpers.event import async_track_time_interval, async_track_time
+from homeassistant.helpers.event import async_track_time_interval, async_track_time_change
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.util.dt as dt_util
 
@@ -183,15 +183,16 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         """Schedule the nightly 05:00 charge_tonight reset."""
         if self._unsub_night_off:
             self._unsub_night_off()
-        from datetime import time as dtime
-        self._unsub_night_off = async_track_time(
+        self._unsub_night_off = async_track_time_change(
             self.hass,
             self._async_night_off,
-            dtime(5, 0, 0),
+            hour=5,
+            minute=0,
+            second=0,
         )
 
     @callback
-    async def _async_night_off(self, _now) -> None:
+    def _async_night_off(self, _now) -> None:
         """Turn off charge_tonight at 05:00."""
         _LOGGER.info("Stormbreaker: Night-Off — disabling charge_tonight at 05:00")
         self._charge_tonight = False
