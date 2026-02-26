@@ -40,6 +40,8 @@ async def async_setup_entry(
             ComputedEvWSensor(coordinator, entry),
             VoltageUsedSensor(coordinator, entry),
             SolarDoneStatusSensor(coordinator, entry),
+            DecisionReasonSensor(coordinator, entry),
+            AppliedCurrentSensor(coordinator, entry),
         ]
     )
 
@@ -259,3 +261,48 @@ class SolarDoneStatusSensor(_BaseStormbreakerSensor):
             **base,
             "solar_w": data.get("solar_w"),
         }
+
+
+class DecisionReasonSensor(_BaseStormbreakerSensor):
+    """Last decision reason (string): start, stop, upscale, downscale, hold, blocked, etc."""
+
+    _attr_name = "Decision Reason"
+
+    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_decision_reason"
+
+    @property
+    def native_value(self) -> str | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("decision_reason", "")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "applied_current": data.get("applied_current"),
+            "samples_stale": data.get("samples_stale"),
+        }
+
+
+class AppliedCurrentSensor(_BaseStormbreakerSensor):
+    """Currently applied charge current (A)."""
+
+    _attr_name = "Applied Current (A)"
+    _attr_device_class = SensorDeviceClass.CURRENT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+
+    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_applied_current_a"
+
+    @property
+    def native_value(self) -> int | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("applied_current", 0)

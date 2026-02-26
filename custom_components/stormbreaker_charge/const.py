@@ -41,9 +41,27 @@ DEFAULT_SAMPLE_INTERVAL = 10
 DEFAULT_SOLAR_DONE_THRESHOLD = 50
 DEFAULT_SOLAR_DONE_DURATION = 600
 DEFAULT_START_DELAY = 30
-DEFAULT_STOP_DELAY = 30
+DEFAULT_STOP_DELAY = 90
 DEFAULT_MODULATE_MIN_INTERVAL = 30
 DEFAULT_MAX_CURRENT_LIMIT = 16
+
+# Anti-flap / hysteresis
+DEFAULT_HYSTERESIS_BAND = 1.0  # Amps
+DEFAULT_MIN_START_CURRENT = 2  # Amps
+
+# Rate limiting
+DEFAULT_COOLDOWN_PERIOD = 60  # Seconds
+DEFAULT_MAX_STEP_SIZE = 1  # Amps
+
+# Timestamp coherency
+DEFAULT_STALE_THRESHOLD = 10  # Seconds
+
+# Minimum on/off times
+DEFAULT_MIN_ON_TIME = 300  # Seconds (5 min)
+DEFAULT_MIN_OFF_TIME = 120  # Seconds (2 min)
+
+# Safety rails
+SURPLUS_CLAMP_W = 20000  # ±20 kW
 
 # --- Platforms ---
 PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]

@@ -35,13 +35,20 @@ from .const import (
     CONF_START_DELAY,
     CONF_STOP_DELAY,
     CONF_VOLTAGE_SENSOR,
+    DEFAULT_COOLDOWN_PERIOD,
     DEFAULT_DESIRED_RANGE,
+    DEFAULT_HYSTERESIS_BAND,
     DEFAULT_MAX_CURRENT_LIMIT,
+    DEFAULT_MAX_STEP_SIZE,
+    DEFAULT_MIN_OFF_TIME,
+    DEFAULT_MIN_ON_TIME,
+    DEFAULT_MIN_START_CURRENT,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SMOOTHING_WINDOW,
     DEFAULT_SOLAR_DONE_DURATION,
     DEFAULT_SOLAR_DONE_THRESHOLD,
+    DEFAULT_STALE_THRESHOLD,
     DEFAULT_START_DELAY,
     DEFAULT_STOP_DELAY,
     DOMAIN,
@@ -50,6 +57,7 @@ from .const import (
     MODE_NET_ONLY,
     MODE_STOPPED,
     MODE_SURPLUS,
+    SURPLUS_CLAMP_W,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -126,6 +134,21 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._stop_delay: int = int(options.get(CONF_STOP_DELAY, DEFAULT_STOP_DELAY))
         self._modulate_min_interval: int = int(options.get(CONF_MODULATE_MIN_INTERVAL, DEFAULT_MODULATE_MIN_INTERVAL))
 
+        # Anti-flap / hysteresis
+        self._hysteresis_band: float = DEFAULT_HYSTERESIS_BAND
+        self._min_start_current: int = DEFAULT_MIN_START_CURRENT
+
+        # Rate limiting
+        self._cooldown_period: int = DEFAULT_COOLDOWN_PERIOD
+        self._max_step_size: int = DEFAULT_MAX_STEP_SIZE
+
+        # Timestamp coherency
+        self._stale_threshold: int = DEFAULT_STALE_THRESHOLD
+
+        # Minimum on/off times
+        self._min_on_time: int = DEFAULT_MIN_ON_TIME
+        self._min_off_time: int = DEFAULT_MIN_OFF_TIME
+
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
@@ -144,6 +167,15 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._pending_plugin_task: asyncio.Task | None = None
         self._force_charge_prev: bool = False
         self._cable_prev: bool | None = None
+        self._pending_action: str | None = None  # "start", "stop", or None
+
+        # Hysteresis / rate-limiting state
+        self._applied_current: int = 0
+        self._last_change_time: datetime | None = None
+        self._last_start_time: datetime | None = None
+        self._last_stop_time: datetime | None = None
+        self._decision_reason: str = ""
+        self._samples_stale: bool = False
 
         # Solar done tracking
         self._solar_below_threshold_since: datetime | None = None
@@ -296,7 +328,15 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         # net_w positive = importing from grid → negative surplus
         # net_w negative = exporting to grid → positive surplus
         surplus_w = (0.0 - computed_net_w) + ev_w
-        raw_current_a = (surplus_w / (voltage * 3.0)) if voltage > 0 else 0.0
+
+        # Safety rail: clamp surplus to ±SURPLUS_CLAMP_W
+        surplus_w = max(-SURPLUS_CLAMP_W, min(SURPLUS_CLAMP_W, surplus_w))
+
+        # Safety rail: if voltage is 0/unknown, hold safe
+        if voltage <= 0:
+            voltage = 230.0
+
+        raw_current_a = surplus_w / (voltage * 3.0)
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
         raw_floored = min(max(int(raw_current_a), 0), int(capped))
 
@@ -351,10 +391,16 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 )
             self._cable_prev = cable_connected
 
-        # --- Control logic ---
-        await self._run_control_logic(force_charge, smoothed_floored, raw_floored)
+        # --- Timestamp coherency ---
+        self._samples_stale = not self._check_sample_coherency()
 
-        self._last_raw_floored = raw_floored
+        # --- Control logic ---
+        if self._samples_stale:
+            self._decision_reason = "blocked:stale_samples"
+        else:
+            await self._run_control_logic(
+                force_charge, smoothed_floored, raw_floored, smoothed_a, now
+            )
 
         data: dict[str, Any] = {
             "net_w": computed_net_w,
@@ -383,6 +429,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "charging_on": self._charging_on,
             "sample_count": len(self._samples),
             "last_updated": now.isoformat(),
+            "decision_reason": self._decision_reason,
+            "applied_current": self._applied_current,
+            "samples_stale": self._samples_stale,
         }
         # Push to coordinator listeners
         self.async_set_updated_data(data)
@@ -393,15 +442,17 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
 
     async def _run_control_logic(
-        self, force_charge: bool, smoothed_floored: int, raw_floored: int
+        self, force_charge: bool, smoothed_floored: int, raw_floored: int,
+        smoothed_a: float, now: datetime,
     ) -> None:
-        """Evaluate and schedule control actions."""
+        """Evaluate and schedule control actions with hysteresis and rate limiting."""
         force_changed = force_charge != self._force_charge_prev
 
         if force_changed:
             self._force_charge_prev = force_charge
             if force_charge:
                 self._cancel_pending()
+                self._decision_reason = "start_force"
                 self._pending_task = self.hass.async_create_task(
                     self._debounced(5, self._action_start_force),
                     eager_start=False,
@@ -409,6 +460,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 return
             else:
                 self._cancel_pending()
+                self._decision_reason = "stop_force"
                 self._pending_task = self.hass.async_create_task(
                     self._debounced(3, self._action_stop_force),
                     eager_start=False,
@@ -419,35 +471,146 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             # Already handling in force mode
             return
 
-        if smoothed_floored > 0 and not self._charging_on:
-            self._cancel_pending()
-            self._pending_task = self.hass.async_create_task(
-                self._debounced(self._start_delay, self._action_start_surplus, smoothed_floored),
-                eager_start=False,
-            )
-        elif smoothed_floored < 1 and self._charging_on and self._current_mode == MODE_SURPLUS:
-            self._cancel_pending()
-            self._pending_task = self.hass.async_create_task(
-                self._debounced(self._stop_delay, self._action_stop_surplus),
-                eager_start=False,
-            )
-        elif (
-            self._charging_on
-            and self._current_mode == MODE_SURPLUS
-            and raw_floored != self._last_raw_floored
-            and raw_floored > 0
-        ):
-            # Modulate current
-            if self._pending_modulate_task is None or self._pending_modulate_task.done():
-                self._pending_modulate_task = self.hass.async_create_task(
-                    self._debounced(self._modulate_min_interval, self._action_modulate, raw_floored),
-                    eager_start=False,
-                )
+        capped = int(min(self._max_current_limit, MAX_CURRENT_ABS))
+
+        if not self._charging_on:
+            # --- Not charging: evaluate start condition ---
+            # Enforce minimum off-time
+            if self._last_stop_time:
+                off_elapsed = (now - self._last_stop_time).total_seconds()
+                if off_elapsed < self._min_off_time:
+                    self._decision_reason = "hold:min_off_time"
+                    # Cancel any pending start while in min_off_time
+                    if self._pending_action == "start":
+                        self._cancel_pending()
+                    return
+
+            if smoothed_floored >= self._min_start_current:
+                # Only schedule start if not already pending
+                if self._pending_action != "start":
+                    self._cancel_pending()
+                    self._pending_action = "start"
+                    self._decision_reason = "pending:start"
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(
+                            self._start_delay,
+                            self._action_start_surplus,
+                            smoothed_floored,
+                        ),
+                        eager_start=False,
+                    )
+            else:
+                # Below start threshold, cancel any pending start
+                if self._pending_action == "start":
+                    self._cancel_pending()
+                    self._decision_reason = "cancelled:below_start_threshold"
+        else:
+            # --- Currently charging in surplus mode ---
+            if self._current_mode != MODE_SURPLUS:
+                return
+
+            if smoothed_a < 1.0:
+                # --- Stop condition ---
+                # Enforce minimum on-time (stop still allowed if forced)
+                if self._last_start_time:
+                    on_elapsed = (now - self._last_start_time).total_seconds()
+                    if on_elapsed < self._min_on_time:
+                        self._decision_reason = "hold:min_on_time"
+                        return
+
+                # Only schedule stop if not already pending
+                if self._pending_action != "stop":
+                    self._cancel_pending()
+                    self._cancel_pending_modulate()
+                    self._pending_action = "stop"
+                    self._decision_reason = "pending:stop"
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(self._stop_delay, self._action_stop_surplus),
+                        eager_start=False,
+                    )
+            else:
+                # Cancel any pending stop since conditions improved
+                if self._pending_action == "stop":
+                    self._cancel_pending()
+                    self._decision_reason = "cancelled:surplus_recovered"
+
+                # --- Modulation with hysteresis + cooldown + max step ---
+                diff = smoothed_a - self._applied_current
+                if abs(diff) < self._hysteresis_band:
+                    # Within hysteresis band — no change needed
+                    return
+
+                # Check cooldown
+                if self._last_change_time:
+                    cooldown_elapsed = (now - self._last_change_time).total_seconds()
+                    if cooldown_elapsed < self._cooldown_period:
+                        self._decision_reason = "hold:cooldown"
+                        return
+
+                # Calculate target with max step size
+                if diff > 0:
+                    target = min(
+                        self._applied_current + self._max_step_size,
+                        smoothed_floored,
+                    )
+                else:
+                    target = max(
+                        self._applied_current - self._max_step_size,
+                        smoothed_floored,
+                    )
+
+                target = min(max(target, 1), capped)
+
+                if target != self._applied_current:
+                    if self._pending_modulate_task is None or self._pending_modulate_task.done():
+                        direction = "upscale" if target > self._applied_current else "downscale"
+                        self._decision_reason = f"pending:{direction}"
+                        self._pending_modulate_task = self.hass.async_create_task(
+                            self._debounced(
+                                self._modulate_min_interval,
+                                self._action_modulate,
+                                target,
+                            ),
+                            eager_start=False,
+                        )
+
+        self._last_raw_floored = raw_floored
+
+    def _check_sample_coherency(self) -> bool:
+        """Check if net-power and EV-power samples are coherent (not stale)."""
+        if self._net_power_mode == MODE_CONSUMPTION_PRODUCTION:
+            power_entities = [
+                e for e in [self._consumption_sensor, self._production_sensor] if e
+            ]
+        else:
+            power_entities = [self._net_power_sensor] if self._net_power_sensor else []
+
+        if self._ev_power_sensor:
+            power_entities.append(self._ev_power_sensor)
+
+        if len(power_entities) < 2:
+            return True  # Only one source, no cross-check possible
+
+        timestamps = []
+        for eid in power_entities:
+            state = self.hass.states.get(eid)
+            if state is None or state.state in ("unavailable", "unknown", ""):
+                return False
+            timestamps.append(state.last_updated)
+
+        gap = (max(timestamps) - min(timestamps)).total_seconds()
+        return gap <= self._stale_threshold
 
     def _cancel_pending(self) -> None:
         if self._pending_task and not self._pending_task.done():
             self._pending_task.cancel()
         self._pending_task = None
+        self._pending_action = None
+
+    def _cancel_pending_modulate(self) -> None:
+        if self._pending_modulate_task and not self._pending_modulate_task.done():
+            self._pending_modulate_task.cancel()
+        self._pending_modulate_task = None
 
     async def _debounced(self, delay: int, action, *args) -> None:
         """Wait delay seconds then execute action.
@@ -474,14 +637,21 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         await self._enable_charging()
         self._charging_on = True
         self._current_mode = MODE_FORCE
+        self._applied_current = MAX_CURRENT_ABS
+        self._last_start_time = datetime.now()
+        self._last_change_time = self._last_start_time
         self._last_action = "start_force"
+        self._decision_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
         _LOGGER.info("Stormbreaker: stop_force")
         await self._disable_charging()
         self._charging_on = False
         self._current_mode = MODE_STOPPED
+        self._applied_current = 0
+        self._last_stop_time = datetime.now()
         self._last_action = "stop_force"
+        self._decision_reason = "stop_force"
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
 
@@ -492,28 +662,40 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         await self._enable_charging()
         self._charging_on = True
         self._current_mode = MODE_SURPLUS
+        self._applied_current = current_a
+        self._last_start_time = datetime.now()
+        self._last_change_time = self._last_start_time
         self._last_action = f"start_surplus_{current_a}A"
+        self._decision_reason = f"start_surplus_{current_a}A"
+        self._pending_action = None
 
     async def _action_stop_surplus(self) -> None:
         _LOGGER.info("Stormbreaker: stop_surplus")
         await self._disable_charging()
         self._charging_on = False
         self._current_mode = MODE_STOPPED
+        self._applied_current = 0
+        self._last_stop_time = datetime.now()
         self._last_action = "stop_surplus"
+        self._decision_reason = "stop_surplus"
+        self._pending_action = None
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
 
-    async def _action_modulate(self, raw_floored: int) -> None:
-        if raw_floored > 0:
-            _LOGGER.debug("Stormbreaker: modulate to %dA", raw_floored)
-            await self._set_charge_current(raw_floored)
-            self._last_action = f"modulate_{raw_floored}A"
+    async def _action_modulate(self, target_a: int) -> None:
+        if target_a > 0:
+            _LOGGER.debug("Stormbreaker: modulate to %dA", target_a)
+            await self._set_charge_current(target_a)
+            self._applied_current = target_a
+            self._last_change_time = datetime.now()
+            self._last_action = f"modulate_{target_a}A"
+            self._decision_reason = f"modulate_{target_a}A"
 
     async def _action_plug_in_delayed(self, force_charge: bool, smoothed_floored: int) -> None:
         await asyncio.sleep(2)
         if force_charge:
             await self._action_start_force()
-        elif smoothed_floored > 0:
+        elif smoothed_floored >= self._min_start_current:
             await self._action_start_surplus(smoothed_floored)
         else:
             await self._action_stop_surplus()
