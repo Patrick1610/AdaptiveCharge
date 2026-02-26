@@ -95,6 +95,67 @@ If left empty the integration tracks state internally but does not issue actual 
 
 ---
 
+## How It Stabilizes
+
+The controller uses a multi-layered approach to prevent flapping, overreaction, and stale-data faults:
+
+### 1. Sample-Based Freshness
+
+Every poll cycle updates the `last_seen` timestamp of each sensor — even when the value hasn't changed. This prevents false staleness detection when power is steady.
+
+### 2. Dynamic Alignment
+
+When the charger setpoint changes by a significant amount (>400W), the controller enters an **alignment phase**. During this phase:
+
+- Upward current adjustments are blocked.
+- Downward safety adjustments remain responsive.
+- The phase ends when the net power sensor reacts in the expected direction, or when a dynamic timeout expires.
+
+The timeout is learned from observed reaction lag: `timeout = min(max(2 × median_lag, 8s), 60s)`.
+
+### 3. Settling Window
+
+After every setpoint commit, a short settling window (10s) suppresses further upward steps. This prevents "self-induced dip" flapping where the controller reacts to the transient caused by its own action.
+
+### 4. Measurement Coherence
+
+The controller computes a **coherence score** (0–1) from the timestamp skew between net and EV power streams, and their individual reliabilities. When coherence is low, upward changes are gated.
+
+### 5. Float-Based Control with Hysteresis
+
+Internal calculations use float current values. Integer rounding only happens at the final actuator call. A ±1A hysteresis dead zone prevents rapid toggling at integer boundaries (e.g. 1↔2A).
+
+### 6. Rate Limiting & Cooldown
+
+- Max 1A change per step.
+- 45s minimum between upward steps.
+- Downward steps and safety actions are immediate.
+
+### 7. Confidence Gating
+
+Each tick computes a confidence level (HIGH/MEDIUM/LOW) from data staleness, alignment state, settling state, and target stability. Upward changes require at least MEDIUM confidence.
+
+### Diagnostics
+
+The **Alignment Diagnostics** sensor exposes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `alignment_active` | True during alignment phase |
+| `settling_active` | True during settling window |
+| `confidence_level` | LOW / MEDIUM / HIGH |
+| `measurement_coherence` | 0..1 coherence score |
+| `estimated_skew_seconds` | Current timestamp skew between net and EV |
+| `estimated_lag_seconds` | Learned median reaction lag |
+| `net_update_interval_s` | EWMA of net power update interval |
+| `ev_update_interval_s` | EWMA of EV power update interval |
+| `last_sample_age_net_s` | Seconds since last net power poll |
+| `last_sample_age_ev_s` | Seconds since last EV power poll |
+| `last_applied_current_a` | Last integer setpoint sent to charger |
+| `last_control_reason` | Why the last decision was made |
+
+---
+
 ## Sign Convention for Net Power
 
 ```
@@ -188,6 +249,8 @@ When the cable sensor transitions off → on:
 | `sensor.computed_ev_power_w` _(debug)_ | W | EV power after unit conversion |
 | `sensor.voltage_used_v` _(debug)_ | V | Voltage used for calculation |
 | `sensor.solar_done_status` _(debug)_ | on/off | Whether solar generation has ended |
+| `sensor.ema_current_a` | A | EMA-filtered current driving control decisions |
+| `sensor.alignment_diagnostics` _(debug)_ | LOW/MED/HIGH | Alignment engine state and diagnostics |
 
 ### Binary Sensors
 
