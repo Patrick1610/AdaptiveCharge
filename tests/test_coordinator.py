@@ -261,3 +261,64 @@ class TestSolarDoneLogic:
         done, below_since = self._solar_done_state(200.0, 50.0, 600, start, now)
         assert done is False
         assert below_since is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: charge_tonight auto-disable logic
+# ---------------------------------------------------------------------------
+
+class TestChargeTonightAutoDisable:
+    """Test that charge_tonight is disabled on cable disconnect and surplus start."""
+
+    @staticmethod
+    def _simulate_cable_disconnect(charge_tonight: bool, cable_prev: bool, cable_connected: bool):
+        """Mirror the cable disconnect → charge_tonight disable logic."""
+        if cable_connected is not None and cable_connected != cable_prev:
+            if not cable_connected and cable_prev:
+                # Cable just disconnected
+                if charge_tonight:
+                    charge_tonight = False
+        return charge_tonight
+
+    @staticmethod
+    def _simulate_surplus_start(charge_tonight: bool):
+        """Mirror the surplus start → charge_tonight disable logic."""
+        if charge_tonight:
+            charge_tonight = False
+        return charge_tonight
+
+    def test_cable_disconnect_disables_charge_tonight(self):
+        # charge_tonight is on, cable was connected, now disconnected
+        result = self._simulate_cable_disconnect(
+            charge_tonight=True, cable_prev=True, cable_connected=False
+        )
+        assert result is False
+
+    def test_cable_disconnect_no_change_when_tonight_off(self):
+        # charge_tonight already off, cable disconnected
+        result = self._simulate_cable_disconnect(
+            charge_tonight=False, cable_prev=True, cable_connected=False
+        )
+        assert result is False
+
+    def test_cable_connect_does_not_disable_tonight(self):
+        # charge_tonight is on, cable just connected → should stay on
+        result = self._simulate_cable_disconnect(
+            charge_tonight=True, cable_prev=False, cable_connected=True
+        )
+        assert result is True
+
+    def test_cable_no_change_keeps_tonight(self):
+        # No state change → charge_tonight stays
+        result = self._simulate_cable_disconnect(
+            charge_tonight=True, cable_prev=True, cable_connected=True
+        )
+        assert result is True
+
+    def test_surplus_start_disables_charge_tonight(self):
+        result = self._simulate_surplus_start(charge_tonight=True)
+        assert result is False
+
+    def test_surplus_start_no_change_when_tonight_off(self):
+        result = self._simulate_surplus_start(charge_tonight=False)
+        assert result is False

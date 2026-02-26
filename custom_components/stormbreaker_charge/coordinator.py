@@ -349,6 +349,11 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                     self._action_plug_in_delayed(force_charge, smoothed_floored),
                     eager_start=False,
                 )
+            elif not cable_connected and self._cable_prev:
+                # Cable just disconnected — disable charge_tonight
+                if self._charge_tonight:
+                    _LOGGER.info("Stormbreaker: Cable disconnected — disabling charge_tonight")
+                    self._charge_tonight = False
             self._cable_prev = cable_connected
 
         # --- Control logic ---
@@ -487,6 +492,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
     async def _action_start_surplus(self, current_a: int) -> None:
         _LOGGER.info("Stormbreaker: start_surplus at %dA", current_a)
+        if self._charge_tonight:
+            _LOGGER.info("Stormbreaker: Solar surplus charging started — disabling charge_tonight")
+            self._charge_tonight = False
         await self._set_charge_current(current_a)
         await asyncio.sleep(5)
         await self._enable_charging()
