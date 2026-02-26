@@ -553,6 +553,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
         # --- Import safety: immediate reduction ---
         if import_safety and self._charging_on and self._current_mode == MODE_SURPLUS:
+            # When committed_current is None the charger state is inconsistent;
+            # treat as 0 so the logic correctly triggers a stop.
             new_target = (self._committed_current or 0.0) - 1.0
             if new_target < 1.0:
                 self._cancel_pending()
@@ -575,7 +577,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 if off_elapsed < DEFAULT_MIN_OFF_TIME_S:
                     return
             self._cancel_pending()
-            start_a = max(1, min(int(ema_current), int(min(self._max_current_limit, MAX_CURRENT_ABS))))
+            capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
+            start_a = max(1, min(int(ema_current), int(capped_limit)))
             self._pending_task = self.hass.async_create_task(
                 self._debounced(self._start_delay, self._action_start_surplus, start_a),
                 eager_start=False,

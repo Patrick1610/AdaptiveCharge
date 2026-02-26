@@ -25,6 +25,9 @@ _LOGGER = logging.getLogger(__name__)
 # Maximum samples kept for interval statistics
 _MAX_INTERVAL_SAMPLES = 30
 
+# Minimum delta-time (seconds) to prevent division-by-zero in EMA alpha
+_MIN_DT_S = 0.001
+
 
 class MeasurementTracker:
     """Tracks a single measurement source with timing statistics."""
@@ -88,7 +91,7 @@ class EMAFilter:
             self._last_t = mono_now
             return raw
 
-        dt = max(mono_now - self._last_t, 0.001)
+        dt = max(mono_now - self._last_t, _MIN_DT_S)
         alpha = min(1.0, 2.0 * dt / (self._span_s + dt))
         self._value = self._value + alpha * (raw - self._value)
         self._last_t = mono_now

@@ -279,9 +279,8 @@ class TestConfidence:
             last_committed=5.0,
             sample_interval=10.0,
         )
-        assert result in (CONFIDENCE_MEDIUM, CONFIDENCE_HIGH)
-        # With alignment active, confidence should be at most MEDIUM
-        assert result != CONFIDENCE_HIGH or True  # alignment alone drops by 1
+        # With alignment active, confidence drops by 1 → at most MEDIUM
+        assert result == CONFIDENCE_MEDIUM
 
     def test_large_target_jump_reduces_confidence(self):
         net = self._make_tracker(0.0)
