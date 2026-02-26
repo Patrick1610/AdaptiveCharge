@@ -252,6 +252,71 @@ Every sensor exposes the following extra attributes:
 
 ---
 
+## How It Stabilizes
+
+Rapid toggling of the charge current is the most common complaint with surplus-based EV charging. This integration uses several complementary mechanisms to prevent it.
+
+### Sample-based freshness
+
+Every coordinator poll cycle is treated as a new sample for each measurement source, regardless of whether the sensor value has changed. The internal `MeasurementTracker` records the elapsed time between successive polls and maintains a rolling EWMA of the poll cadence (`avg_interval_s`) and its jitter. Freshness and staleness checks are therefore never fooled by sensors whose output stays constant for extended periods.
+
+### Measurement coherence and adaptive skew detection
+
+After a setpoint change the EV power sensor typically responds faster than the net-power sensor, or vice-versa. The integration computes an **alignment active** flag that is `True` whenever the timestamp skew between the two streams exceeds an adaptive threshold:
+
+```
+threshold = max(2 s,
+                1.0 × max(net_interval, ev_interval)
+              + 2.0 × max(net_jitter,   ev_jitter))
+```
+
+This threshold scales with the observed update cadence so that a slow (60 s) sensor installation gets a proportionally wider window while a fast (5 s) installation remains responsive.
+
+While `alignment_active` is `True`:
+- **Upward** current steps are blocked — the controller waits for coherent data.
+- **Downward** safety steps proceed immediately.
+
+### Settling window
+
+Each time the controller commits a new integer setpoint it starts a **settling window** of `max(30 s, 2 × sample_interval)`. Inside this window, further upward adjustments are held so that the transient power response of the charger does not cause the controller to immediately raise the current again.
+
+### Hysteresis and rate limiting
+
+Before any setpoint change is sent to the charger:
+- An upward change requires a surplus of at least **+1 A** above the current setpoint.
+- A downward change requires a deficit of at least **−1 A** below the current setpoint.
+- Only **1 A per decision cycle** is allowed (rate limiting).
+- A **45 s cooldown** is enforced between successive upward steps.
+
+These limits are float-based internally; integer rounding only happens at the final "apply to charger" step, eliminating hidden biases caused by early rounding.
+
+### Minimum on/off times
+
+- The charger will not stop surplus charging until it has been running for at least **5 minutes** (configurable).
+- After a stop, the charger will not restart until at least **2 minutes** have elapsed.
+
+---
+
+## Diagnostics Attributes
+
+The following additional attributes are exposed on every sensor to help diagnose stabilization behaviour:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `alignment_active` | bool | True when EV-step or skew-based coherence loss has been detected |
+| `confidence_level` | str | `high` / `medium` / `low` — current data quality assessment |
+| `measurement_coherence` | float 0–1 | 1.0 = fully aligned streams; 0.0 = fully incoherent |
+| `estimated_skew_seconds` | float | Absolute timestamp difference between the last net and EV samples |
+| `net_update_interval_s` | float | EWMA-estimated poll cadence of the net-power sensor |
+| `ev_update_interval_s` | float | EWMA-estimated poll cadence of the EV-power sensor |
+| `voltage_update_interval_s` | float | EWMA-estimated poll cadence of the voltage sensor |
+| `last_sample_age_net_s` | float | Seconds since the last net-power sample arrived |
+| `last_sample_age_ev_s` | float | Seconds since the last EV-power sample arrived |
+| `last_applied_current_a` | int | Most recent integer setpoint sent to the charger |
+| `last_commit_reason` | str | Reason code for the last setpoint decision (e.g. `modulate_up`, `import_safety_reduce`, `blocked_settling_window`) |
+
+---
+
 ## Troubleshooting
 
 **Charging never starts**

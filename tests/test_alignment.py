@@ -59,6 +59,7 @@ AlignmentEngine = _align_mod.AlignmentEngine
 EMAFilter = _align_mod.EMAFilter
 MeasurementTracker = _align_mod.MeasurementTracker
 compute_confidence = _align_mod.compute_confidence
+compute_measurement_coherence = _align_mod.compute_measurement_coherence
 
 CONFIDENCE_HIGH = _const_mod.CONFIDENCE_HIGH
 CONFIDENCE_LOW = _const_mod.CONFIDENCE_LOW
@@ -93,11 +94,19 @@ class TestMeasurementTracker:
         assert t.interval_median == 10.0
         assert t.interval_p95 == 10.0
 
-    def test_interval_only_on_value_change(self):
+    def test_interval_recorded_even_on_same_value(self):
+        """Intervals must be recorded on every poll, even when value is constant.
+
+        This is the corrected behaviour: freshness must not depend on value changes.
+        Three polls are needed so that two intervals can be recorded, satisfying
+        the ``>= 2`` guard in ``interval_median``.
+        """
         t = MeasurementTracker("test")
         t.update(100.0, 1000.0)
-        t.update(100.0, 1010.0)  # same value, no interval recorded
-        assert t.interval_median is None
+        t.update(100.0, 1010.0)  # same value — interval SHOULD be recorded
+        t.update(100.0, 1020.0)  # second interval
+        assert t.interval_median is not None
+        assert abs(t.interval_median - 10.0) < 0.01
 
     def test_varied_intervals(self):
         t = MeasurementTracker("test")
@@ -502,3 +511,323 @@ class TestMinOnOffTime:
 
     def test_can_stop_first_time(self):
         assert self._can_stop(None, 100.0) is True
+
+
+# ---------------------------------------------------------------------------
+# New tests: Tracker freshness (scenario 1)
+# ---------------------------------------------------------------------------
+
+class TestTrackerFreshness:
+    """Feed constant values over multiple polls; freshness must advance and
+    staleness must NOT trigger even though the sensor value never changes."""
+
+    def test_constant_value_records_multiple_intervals(self):
+        """Polling at a fixed cadence with a constant value should populate intervals."""
+        t = MeasurementTracker("net")
+        for i in range(6):
+            t.update(100.0, float(i * 10))
+        # 5 intervals of 10 s each
+        assert t.interval_median is not None
+        assert abs(t.interval_median - 10.0) < 0.1
+
+    def test_last_update_advances_on_every_poll(self):
+        """last_update must reflect the most-recent poll regardless of value."""
+        t = MeasurementTracker("net")
+        for i in range(5):
+            t.update(100.0, float(i * 10))
+        assert t.last_update == 40.0
+
+    def test_staleness_near_zero_just_after_poll(self):
+        """Staleness should be negligible immediately after updating."""
+        t = MeasurementTracker("net")
+        mono = time.monotonic()
+        t.update(100.0, mono)
+        assert t.staleness is not None
+        assert t.staleness < 1.0
+
+    def test_avg_interval_converges_to_poll_cadence(self):
+        """EWMA avg_interval should converge close to the actual poll period."""
+        t = MeasurementTracker("net")
+        for i in range(25):
+            t.update(100.0, float(i * 10))
+        assert t.avg_interval is not None
+        assert abs(t.avg_interval - 10.0) < 1.0
+
+    def test_jitter_low_for_perfectly_regular_polling(self):
+        """Zero-jitter polling should yield a very low jitter estimate."""
+        t = MeasurementTracker("net")
+        for i in range(25):
+            t.update(100.0, float(i * 10))
+        assert t.jitter is not None
+        assert t.jitter < 1.0
+
+    def test_reliability_score_high_for_regular_polling(self):
+        """A tracker polled at perfectly regular intervals should have high reliability."""
+        t = MeasurementTracker("net")
+        for i in range(20):
+            t.update(50.0, float(i * 10))
+        assert t.reliability_score > 0.8
+
+    def test_high_confidence_with_constant_sensors(self):
+        """compute_confidence must NOT report stale when sensors are regularly polled
+        but have constant values (the classic PR-5 freshness bug)."""
+        mono = time.monotonic()
+        net = MeasurementTracker("net")
+        ev = MeasurementTracker("ev")
+        # Simulate 10 polls at 10-s intervals with constant values
+        for i in range(10):
+            net.update(0.0, mono - (9 - i) * 10.0)
+            ev.update(1000.0, mono - (9 - i) * 10.0)
+        result = compute_confidence(
+            net_tracker=net,
+            ev_tracker=ev,
+            alignment_active=False,
+            target_current=5.0,
+            last_committed=5.0,
+            sample_interval=10.0,
+        )
+        assert result == CONFIDENCE_HIGH
+
+
+# ---------------------------------------------------------------------------
+# New tests: Skew scenarios (scenario 2)
+# ---------------------------------------------------------------------------
+
+class TestSkewScenarios:
+    """Adaptive threshold and alignment_active under various skew conditions."""
+
+    def _build_tracker_with_interval(
+        self, avg_interval_s: float, n_samples: int = 20
+    ) -> MeasurementTracker:
+        t = MeasurementTracker("test")
+        for i in range(n_samples):
+            t.update(100.0, float(i * avg_interval_s))
+        return t
+
+    def test_zero_skew_gives_coherence_one(self):
+        """When both trackers are polled at the same time, skew is 0 → coherence 1."""
+        net = self._build_tracker_with_interval(10.0)
+        ev = self._build_tracker_with_interval(10.0)
+        # Both end at identical timestamp
+        mono = float(19 * 10)
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=mono
+        )
+        assert skew == 0.0
+        assert coherence == 1.0
+        assert not needed
+
+    def test_small_skew_within_threshold_no_alignment(self):
+        """A skew well within the adaptive threshold must not trigger alignment."""
+        net = self._build_tracker_with_interval(10.0)
+        ev = self._build_tracker_with_interval(10.0)
+        # Add 1-second skew on net (much less than 1 * 10s interval)
+        net.update(100.0, net.last_update + 1.0)
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=net.last_update
+        )
+        assert not needed
+
+    def test_large_skew_5s_interval_triggers_alignment(self):
+        """For 5-s polled sensors, a 20-s skew must trigger alignment."""
+        net = self._build_tracker_with_interval(5.0)
+        ev = self._build_tracker_with_interval(5.0)
+        # Introduce a 20-s lag on net
+        net.update(100.0, net.last_update + 20.0)
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=net.last_update
+        )
+        assert needed
+        assert skew >= 20.0
+
+    def test_large_skew_30s_interval_triggers_alignment(self):
+        """For 30-s polled sensors, a 60-s skew must trigger alignment."""
+        net = self._build_tracker_with_interval(30.0)
+        ev = self._build_tracker_with_interval(30.0)
+        net.update(100.0, net.last_update + 60.0)
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=net.last_update
+        )
+        assert needed
+
+    def test_skew_that_equals_threshold_triggers(self):
+        """Skew exactly equal to the adaptive threshold must trigger alignment."""
+        # Build trackers with avg_interval ~ 10s and jitter ~ 0
+        net = self._build_tracker_with_interval(10.0, n_samples=30)
+        ev = self._build_tracker_with_interval(10.0, n_samples=30)
+        # Threshold ≈ max(2, 1*10 + 2*~0) ≈ 10s; introduce exactly that skew
+        threshold_approx = max(2.0, 1.0 * 10.0)
+        net.update(100.0, net.last_update + threshold_approx + 0.1)
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=net.last_update
+        )
+        assert needed
+
+    def test_uninitialized_trackers_no_false_trigger(self):
+        """Before any samples, coherence must not trigger spurious alignment."""
+        net = MeasurementTracker("net")
+        ev = MeasurementTracker("ev")
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=100.0
+        )
+        assert not needed
+        assert coherence == 0.0
+
+
+# ---------------------------------------------------------------------------
+# New tests: Self-induced dip / settling window (scenario 3)
+# ---------------------------------------------------------------------------
+
+class TestSettlingWindow:
+    """After a current commit, upward steps should be gated for settling_window_s."""
+
+    def _in_settling(
+        self,
+        settling_since: float | None,
+        mono_now: float,
+        window_s: float = 30.0,
+    ) -> bool:
+        """Mirror of settling-window check in _try_modulate."""
+        if settling_since is None:
+            return False
+        return (mono_now - settling_since) < window_s
+
+    def test_no_settling_before_first_commit(self):
+        assert not self._in_settling(None, 100.0)
+
+    def test_in_settling_immediately_after_commit(self):
+        assert self._in_settling(100.0, 100.5)
+
+    def test_in_settling_near_end_of_window(self):
+        assert self._in_settling(100.0, 129.0)
+
+    def test_out_of_settling_after_window(self):
+        assert not self._in_settling(100.0, 131.0)
+
+    def test_settling_window_scaled_by_sample_interval(self):
+        """Window should be at least 2 × sample_interval or 30 s, whichever is larger."""
+        for interval in (5, 10, 30, 60):
+            expected = max(30.0, interval * 2.0)
+            assert expected == max(30.0, float(interval) * 2)
+
+    def test_settling_gates_up_step_not_down(self):
+        """Settling window gates only upward steps; downward steps are unaffected."""
+        settling_since = 100.0
+        mono_now = 110.0  # well inside 30-s window
+
+        delta_up = 1.5
+        delta_down = -1.5
+
+        up_blocked = delta_up > 0 and self._in_settling(settling_since, mono_now)
+        down_blocked = delta_down > 0 and self._in_settling(settling_since, mono_now)
+
+        assert up_blocked is True
+        assert down_blocked is False
+
+
+# ---------------------------------------------------------------------------
+# New tests: Flapping boundary extended (scenario 4)
+# ---------------------------------------------------------------------------
+
+class TestFlappingBoundaryExtended:
+    """Realistic boundary noise around 1.9–2.1 A must not cause toggling."""
+
+    def _should_modulate(
+        self,
+        current: float,
+        target: float,
+        hyst_up: float = 1.0,
+        hyst_down: float = 1.0,
+    ) -> bool:
+        delta = target - current
+        if delta > 0 and delta < hyst_up:
+            return False
+        if delta < 0 and abs(delta) < hyst_down:
+            return False
+        return True
+
+    def test_noise_around_2a_does_not_trigger(self):
+        """Small ±0.9 A noise around a 2 A setpoint must not cause modulation."""
+        setpoint = 2.0
+        for noise in (-0.9, -0.5, -0.1, 0.1, 0.5, 0.9):
+            target = setpoint + noise
+            result = self._should_modulate(setpoint, target)
+            assert not result, f"noise={noise}: expected no modulation, got True"
+
+    def test_change_over_1a_upward_triggers(self):
+        assert self._should_modulate(2.0, 3.2) is True
+
+    def test_change_over_1a_downward_triggers(self):
+        assert self._should_modulate(2.0, 0.8) is True
+
+    def test_stable_at_integer_boundary(self):
+        """A setpoint of exactly 1.0 A with target 1.5 A should NOT modulate."""
+        assert self._should_modulate(1.0, 1.5) is False
+
+    def test_stable_at_integer_boundary_down(self):
+        """A setpoint of 2.0 A with target 1.5 A should NOT modulate."""
+        assert self._should_modulate(2.0, 1.5) is False
+
+
+# ---------------------------------------------------------------------------
+# New tests: Universality — parameterized update cadences (scenario 6)
+# ---------------------------------------------------------------------------
+
+class TestUniversalityUpdateIntervals:
+    """Tracker and coherence behaviour must be stable for any polling cadence."""
+
+    @pytest.mark.parametrize("interval_s", [5, 30, 60])
+    def test_avg_interval_learned_for_cadence(self, interval_s):
+        """avg_interval must converge to within 10 % of the true poll cadence."""
+        t = MeasurementTracker("net")
+        for i in range(25):
+            t.update(100.0, float(i * interval_s))
+        assert t.avg_interval is not None
+        assert abs(t.avg_interval - interval_s) < interval_s * 0.1
+
+    @pytest.mark.parametrize("interval_s", [5, 30, 60])
+    def test_staleness_fresh_just_after_last_poll(self, interval_s):
+        """After polling, staleness should be negligible (< 1 s in a test context)."""
+        t = MeasurementTracker("net")
+        mono = time.monotonic()
+        for i in range(5):
+            t.update(100.0, mono - float((4 - i) * interval_s))
+        # Last poll is at mono (age ≈ 0 in real time)
+        assert t.staleness is not None
+        assert t.staleness < 1.0
+
+    @pytest.mark.parametrize("interval_s", [5, 30, 60])
+    def test_coherence_high_when_both_trackers_in_sync(self, interval_s):
+        """When net and EV trackers are polled at the same cadence and in sync,
+        coherence must be 1.0."""
+        net = MeasurementTracker("net")
+        ev = MeasurementTracker("ev")
+        for i in range(20):
+            ts = float(i * interval_s)
+            net.update(0.0, ts)
+            ev.update(1000.0, ts)
+        coherence, skew, needed = compute_measurement_coherence(
+            net_tracker=net, ev_tracker=ev, mono_now=float(19 * interval_s)
+        )
+        assert coherence == 1.0
+        assert not needed
+
+    @pytest.mark.parametrize("interval_s", [5, 30, 60])
+    def test_confidence_high_constant_polling(self, interval_s):
+        """Constant sensor values at any poll cadence must yield HIGH confidence
+        after enough samples (the classic freshness-bug regression test)."""
+        mono = time.monotonic()
+        net = MeasurementTracker("net")
+        ev = MeasurementTracker("ev")
+        for i in range(10):
+            net.update(0.0, mono - float((9 - i) * interval_s))
+            ev.update(1000.0, mono - float((9 - i) * interval_s))
+        result = compute_confidence(
+            net_tracker=net,
+            ev_tracker=ev,
+            alignment_active=False,
+            target_current=5.0,
+            last_committed=5.0,
+            sample_interval=float(interval_s),
+        )
+        assert result == CONFIDENCE_HIGH

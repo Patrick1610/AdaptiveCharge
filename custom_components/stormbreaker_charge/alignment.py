@@ -30,22 +30,69 @@ _MIN_DT_S = 0.001
 
 
 class MeasurementTracker:
-    """Tracks a single measurement source with timing statistics."""
+    """Tracks a single measurement source with timing statistics.
+
+    Freshness (``last_update`` / ``staleness``) is updated on **every**
+    coordinator poll, regardless of whether the sensor value changed.
+    Interval statistics therefore reflect the actual poll cadence, not
+    the value-change cadence.  ``last_value`` is kept separately so
+    delta-based computations can still detect changes.
+    """
+
+    # EWMA alpha used for avg_interval and jitter estimation
+    _EWMA_ALPHA: float = 0.2
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.last_value: float | None = None
         self.last_update: float | None = None  # monotonic seconds
         self._intervals: deque[float] = deque(maxlen=_MAX_INTERVAL_SAMPLES)
+        self._avg_interval: float | None = None  # EWMA of poll intervals
+        self._jitter: float | None = None  # EWMA of absolute deviation from avg
 
     def update(self, value: float, mono_now: float) -> None:
-        """Record a new measurement value."""
-        if self.last_update is not None and value != self.last_value:
+        """Record a new measurement value (called every poll cycle).
+
+        The interval between successive calls is recorded unconditionally
+        so that freshness and cadence statistics are not biased by periods
+        of constant sensor values.
+        """
+        if self.last_update is not None:
             interval = mono_now - self.last_update
             if interval > 0:
                 self._intervals.append(interval)
+                alpha = self._EWMA_ALPHA
+                if self._avg_interval is None:
+                    self._avg_interval = interval
+                    self._jitter = 0.0
+                else:
+                    dev = abs(interval - self._avg_interval)
+                    self._avg_interval = (
+                        (1 - alpha) * self._avg_interval + alpha * interval
+                    )
+                    self._jitter = (1 - alpha) * (self._jitter or 0.0) + alpha * dev
         self.last_value = value
         self.last_update = mono_now
+
+    @property
+    def avg_interval(self) -> float | None:
+        """EWMA of observed poll intervals in seconds."""
+        return self._avg_interval
+
+    @property
+    def jitter(self) -> float | None:
+        """EWMA of absolute deviation from avg_interval (seconds)."""
+        return self._jitter
+
+    @property
+    def reliability_score(self) -> float:
+        """0..1 reliability score: 1 = perfectly regular, 0 = highly irregular."""
+        if self._avg_interval is None or self._avg_interval == 0:
+            return 0.0
+        if self._jitter is None or self._jitter == 0:
+            return 1.0
+        ratio = self._jitter / self._avg_interval
+        return max(0.0, min(1.0, 1.0 - ratio))
 
     @property
     def interval_median(self) -> float | None:
@@ -181,6 +228,14 @@ class AlignmentEngine:
             _LOGGER.debug("Alignment: timeout after %.1fs", elapsed)
             self._complete()
 
+    def on_skew_exceeded(self, mono_now: float) -> None:
+        """Activate alignment when skew-based detection fires (if not already active)."""
+        if not self.active:
+            self.active = True
+            self._ev_step_ts = mono_now
+            self._ev_step_direction = 0.0
+            _LOGGER.debug("Alignment: activated by skew detection")
+
     def _record_lag(self, lag_s: float) -> None:
         self._lag_samples.append(lag_s)
         if self._lag_samples:
@@ -229,3 +284,59 @@ def compute_confidence(
     if score >= 2:
         return CONFIDENCE_MEDIUM
     return CONFIDENCE_LOW
+
+
+def compute_measurement_coherence(
+    *,
+    net_tracker: MeasurementTracker,
+    ev_tracker: MeasurementTracker,
+    mono_now: float,
+    k_interval: float = 1.0,
+    m_jitter: float = 2.0,
+    min_threshold_s: float = 2.0,
+) -> tuple[float, float, bool]:
+    """Compute coherence between the net-power and EV-power measurement streams.
+
+    Returns a tuple ``(coherence, estimated_skew_s, alignment_needed)`` where:
+
+    - ``coherence`` is 0.0 (fully incoherent) … 1.0 (perfectly aligned)
+    - ``estimated_skew_s`` is the absolute timestamp difference between the
+      two most-recent samples
+    - ``alignment_needed`` is ``True`` when the skew exceeds an adaptive
+      threshold derived from the observed update cadences and jitter
+
+    The adaptive threshold prevents false positives on slow-polling sensors:
+
+    .. code-block:: text
+
+        threshold = max(min_threshold_s,
+                        k_interval * max(net_interval, ev_interval)
+                        + m_jitter  * max(net_jitter,  ev_jitter))
+
+    Both ``net_tracker`` and ``ev_tracker`` must have received at least one
+    sample; otherwise ``(0.0, 0.0, False)`` is returned to avoid spurious
+    triggers during start-up.
+    """
+    net_ts = net_tracker.last_update
+    ev_ts = ev_tracker.last_update
+
+    if net_ts is None or ev_ts is None:
+        return 0.0, 0.0, False
+
+    skew = abs(net_ts - ev_ts)
+
+    net_interval = net_tracker.avg_interval or 0.0
+    ev_interval = ev_tracker.avg_interval or 0.0
+    net_jitter = net_tracker.jitter or 0.0
+    ev_jitter = ev_tracker.jitter or 0.0
+
+    threshold = max(
+        min_threshold_s,
+        k_interval * max(net_interval, ev_interval)
+        + m_jitter * max(net_jitter, ev_jitter),
+    )
+
+    coherence = max(0.0, min(1.0, 1.0 - skew / threshold))
+    alignment_needed = skew > threshold
+
+    return coherence, skew, alignment_needed

@@ -20,6 +20,7 @@ from .alignment import (
     EMAFilter,
     MeasurementTracker,
     compute_confidence,
+    compute_measurement_coherence,
 )
 from .const import (
     CONF_CABLE_SENSOR,
@@ -199,6 +200,15 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         # Import safety
         self._import_exceed_since: float | None = None
 
+        # Settling window: after a controller-initiated current change, gate
+        # upward steps for a short period to avoid reacting to the transient
+        # power response caused by the change itself.
+        self._settling_since: float | None = None
+        self._settling_window_s: float = max(30.0, float(self._sample_interval) * 2)
+
+        # Skew-based alignment active flag (separate from EV-step based)
+        self._skew_alignment_active: bool = False
+
         # Previous values for step detection
         self._prev_ev_w: float | None = None
         self._prev_net_w: float | None = None
@@ -356,6 +366,16 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._alignment.on_net_power_update(mono_now, net_delta)
         self._alignment.check_timeout(mono_now)
 
+        # --- Skew-based coherence / alignment ---
+        _coherence, _estimated_skew, _skew_needed = compute_measurement_coherence(
+            net_tracker=self._net_tracker,
+            ev_tracker=self._ev_tracker,
+            mono_now=mono_now,
+        )
+        self._skew_alignment_active = _skew_needed
+        if _skew_needed:
+            self._alignment.on_skew_exceeded(mono_now)
+
         self._prev_ev_w = ev_w
         self._prev_net_w = computed_net_w
 
@@ -473,13 +493,42 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "sample_count": len(self._samples),
             "last_updated": now.isoformat(),
             # --- Alignment diagnostics ---
-            "alignment_active": self._alignment.active,
+            "alignment_active": self._alignment.active or self._skew_alignment_active,
             "confidence_level": self._confidence,
+            "measurement_coherence": round(_coherence, 3),
+            "estimated_skew_seconds": round(_estimated_skew, 2),
             "estimated_lag_seconds": (
                 round(self._alignment.estimated_lag, 2)
                 if self._alignment.estimated_lag is not None
                 else None
             ),
+            "net_update_interval_s": (
+                round(self._net_tracker.avg_interval, 2)
+                if self._net_tracker.avg_interval is not None
+                else None
+            ),
+            "ev_update_interval_s": (
+                round(self._ev_tracker.avg_interval, 2)
+                if self._ev_tracker.avg_interval is not None
+                else None
+            ),
+            "voltage_update_interval_s": (
+                round(self._voltage_tracker.avg_interval, 2)
+                if self._voltage_tracker.avg_interval is not None
+                else None
+            ),
+            "last_sample_age_net_s": (
+                round(self._net_tracker.staleness, 2)
+                if self._net_tracker.staleness is not None
+                else None
+            ),
+            "last_sample_age_ev_s": (
+                round(self._ev_tracker.staleness, 2)
+                if self._ev_tracker.staleness is not None
+                else None
+            ),
+            "last_applied_current_a": self._last_committed_int,
+            # Legacy p95 kept for backward compatibility
             "net_update_interval_p95": (
                 round(self._net_tracker.interval_p95, 2)
                 if self._net_tracker.interval_p95 is not None
@@ -617,12 +666,22 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         target = min(max(ema_current, 0.0), capped)
         delta = target - current_setpoint
 
-        # During alignment, only allow decreases (safety), hold otherwise
-        if self._alignment.active and delta > 0:
+        # During alignment (EV-step or skew-based), only allow decreases
+        if (self._alignment.active or self._skew_alignment_active) and delta > 0:
+            self._last_commit_reason = "blocked_alignment_active"
             return
+
+        # During settling window, gate upward steps to avoid reacting to the
+        # transient caused by the controller's own previous current change.
+        if delta > 0 and self._settling_since is not None:
+            settled = mono_now - self._settling_since
+            if settled < self._settling_window_s:
+                self._last_commit_reason = "blocked_settling_window"
+                return
 
         # Confidence gating
         if delta > 0 and self._confidence == CONFIDENCE_LOW:
+            self._last_commit_reason = "blocked_low_confidence"
             return
 
         # Hysteresis check
@@ -671,6 +730,11 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._committed_current = target
             self._last_committed_int = target_int
             self._last_commit_reason = reason
+
+            # Start settling window so that transient power response from
+            # this change does not trigger further upward steps immediately.
+            self._settling_since = mono_now
+            self._settling_window_s = max(30.0, float(self._sample_interval) * 2)
 
             if "up" in reason:
                 self._last_up_time = mono_now
