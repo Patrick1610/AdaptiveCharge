@@ -1,7 +1,13 @@
 """Dynamic alignment engine for Stormbreaker Surplus EV Charge.
 
 Tracks measurement sources, detects EV step events, manages alignment
-phases, and computes confidence scores for charge current decisions.
+phases, computes confidence and coherence scores for charge current decisions.
+
+Key design principles:
+- Sample-based freshness: timestamps update on EVERY poll, not just value changes.
+- Adaptive thresholds: alignment uses learned intervals and jitter, not fixed constants.
+- Settling awareness: after a setpoint change a settling window prevents self-induced
+  dip flapping.
 """
 from __future__ import annotations
 
@@ -22,30 +28,68 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Maximum samples kept for interval statistics
+# Maximum samples kept for interval / lag statistics
 _MAX_INTERVAL_SAMPLES = 30
 
 # Minimum delta-time (seconds) to prevent division-by-zero in EMA alpha
 _MIN_DT_S = 0.001
 
+# EWMA smoothing factor for interval and jitter estimates
+_EWMA_ALPHA = 0.15
+
+# Default multipliers for adaptive alignment threshold
+_SKEW_K = 0.5  # fraction of max interval
+_SKEW_M = 2.0  # multiplier for max jitter
+_MIN_SKEW_THRESHOLD = 2.0  # minimum threshold in seconds
+
 
 class MeasurementTracker:
-    """Tracks a single measurement source with timing statistics."""
+    """Tracks a single measurement source with timing statistics.
+
+    Freshness is tracked on **every** call to :meth:`update`, regardless
+    of whether the value changed.  This prevents false staleness when a
+    sensor reports the same value repeatedly (e.g. steady power draw).
+    """
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.last_value: float | None = None
-        self.last_update: float | None = None  # monotonic seconds
+        # last_seen: updated on every poll (sample-based freshness)
+        self.last_seen: float | None = None  # monotonic seconds
+        # last_changed: updated only when the value changes
+        self.last_changed: float | None = None
         self._intervals: deque[float] = deque(maxlen=_MAX_INTERVAL_SAMPLES)
+        # EWMA-based interval and jitter estimates
+        self.avg_interval: float | None = None
+        self.jitter: float | None = None
 
     def update(self, value: float, mono_now: float) -> None:
-        """Record a new measurement value."""
-        if self.last_update is not None and value != self.last_value:
-            interval = mono_now - self.last_update
+        """Record a new sample — called every poll cycle."""
+        # Always update freshness timestamp
+        prev_seen = self.last_seen
+        self.last_seen = mono_now
+
+        # Track intervals between polls (regardless of value change)
+        if prev_seen is not None:
+            interval = mono_now - prev_seen
             if interval > 0:
                 self._intervals.append(interval)
+                # Update EWMA interval estimate
+                if self.avg_interval is None:
+                    self.avg_interval = interval
+                else:
+                    self.avg_interval += _EWMA_ALPHA * (interval - self.avg_interval)
+                # Update EWMA jitter (abs deviation)
+                dev = abs(interval - (self.avg_interval or interval))
+                if self.jitter is None:
+                    self.jitter = dev
+                else:
+                    self.jitter += _EWMA_ALPHA * (dev - self.jitter)
+
+        # Track value changes separately
+        if self.last_value is None or value != self.last_value:
+            self.last_changed = mono_now
         self.last_value = value
-        self.last_update = mono_now
 
     @property
     def interval_median(self) -> float | None:
@@ -66,10 +110,28 @@ class MeasurementTracker:
 
     @property
     def staleness(self) -> float | None:
-        """Seconds since last update (monotonic)."""
-        if self.last_update is None:
+        """Seconds since last sample (monotonic).  Uses last_seen, not last_changed."""
+        if self.last_seen is None:
             return None
-        return time.monotonic() - self.last_update
+        return time.monotonic() - self.last_seen
+
+    @property
+    def sample_age(self) -> float | None:
+        """Alias for staleness — seconds since last poll sample."""
+        return self.staleness
+
+    @property
+    def reliability(self) -> float:
+        """Reliability score 0..1 based on jitter relative to interval.
+
+        Low jitter relative to interval → high reliability.
+        """
+        if self.avg_interval is None or self.avg_interval <= 0:
+            return 0.0
+        if self.jitter is None:
+            return 1.0
+        ratio = self.jitter / self.avg_interval
+        return max(0.0, min(1.0, 1.0 - ratio))
 
 
 class EMAFilter:
@@ -105,6 +167,9 @@ class AlignmentEngine:
     takes a few seconds to reflect the new draw.  During this
     *alignment phase* the controller should hold its setpoint to avoid
     over-reacting to stale data.
+
+    The alignment threshold is *adaptive*: it is computed from the
+    learned update intervals and jitter of the net and EV trackers.
     """
 
     def __init__(
@@ -124,6 +189,11 @@ class AlignmentEngine:
         # Rolling lag estimates
         self._lag_samples: deque[float] = deque(maxlen=_MAX_INTERVAL_SAMPLES)
         self.estimated_lag: float | None = None
+
+        # Settling window: after a setpoint commit, expect transient
+        self.settling: bool = False
+        self._settle_start: float | None = None
+        self._settle_duration: float = 0.0
 
     @property
     def timeout(self) -> float:
@@ -160,7 +230,6 @@ class AlignmentEngine:
         elapsed = mono_now - self._ev_step_ts
 
         # Check if net reacted in the expected direction
-        # EV step up → net should increase; EV step down → net should decrease
         expected_sign = self._ev_step_direction
         if net_delta * expected_sign > 0 and elapsed > 0:
             self._record_lag(elapsed)
@@ -181,6 +250,20 @@ class AlignmentEngine:
             _LOGGER.debug("Alignment: timeout after %.1fs", elapsed)
             self._complete()
 
+    def start_settling(self, mono_now: float, duration: float) -> None:
+        """Start a settling window after a setpoint change."""
+        self.settling = True
+        self._settle_start = mono_now
+        self._settle_duration = duration
+
+    def check_settling(self, mono_now: float) -> None:
+        """Check if settling window has expired."""
+        if not self.settling or self._settle_start is None:
+            return
+        if mono_now - self._settle_start >= self._settle_duration:
+            self.settling = False
+            self._settle_start = None
+
     def _record_lag(self, lag_s: float) -> None:
         self._lag_samples.append(lag_s)
         if self._lag_samples:
@@ -192,6 +275,61 @@ class AlignmentEngine:
         self._ev_step_direction = 0.0
 
 
+def compute_skew(
+    net_tracker: MeasurementTracker,
+    ev_tracker: MeasurementTracker,
+) -> float | None:
+    """Compute the absolute timestamp skew between net and ev streams.
+
+    Returns None if either tracker has no data yet.
+    """
+    if net_tracker.last_seen is None or ev_tracker.last_seen is None:
+        return None
+    return abs(net_tracker.last_seen - ev_tracker.last_seen)
+
+
+def compute_adaptive_skew_threshold(
+    net_tracker: MeasurementTracker,
+    ev_tracker: MeasurementTracker,
+) -> float:
+    """Compute the adaptive skew threshold from learned intervals and jitter.
+
+    threshold = max(min_threshold, k * max(net_interval, ev_interval) + m * max(jitter))
+    """
+    net_int = net_tracker.avg_interval or 10.0
+    ev_int = ev_tracker.avg_interval or 10.0
+    net_jit = net_tracker.jitter or 0.0
+    ev_jit = ev_tracker.jitter or 0.0
+
+    threshold = _SKEW_K * max(net_int, ev_int) + _SKEW_M * max(net_jit, ev_jit)
+    return max(_MIN_SKEW_THRESHOLD, threshold)
+
+
+def compute_coherence(
+    net_tracker: MeasurementTracker,
+    ev_tracker: MeasurementTracker,
+) -> float:
+    """Compute measurement coherence score 0..1.
+
+    1.0 = perfectly coherent (low skew, high reliability)
+    0.0 = completely incoherent
+    """
+    skew = compute_skew(net_tracker, ev_tracker)
+    threshold = compute_adaptive_skew_threshold(net_tracker, ev_tracker)
+
+    if skew is None:
+        return 0.0
+
+    # Skew component: 1.0 when skew=0, 0.0 when skew >= threshold
+    skew_score = max(0.0, 1.0 - skew / threshold) if threshold > 0 else 0.0
+
+    # Reliability component: average of both tracker reliabilities
+    rel_score = (net_tracker.reliability + ev_tracker.reliability) / 2.0
+
+    # Combined: geometric-ish mean
+    return skew_score * 0.6 + rel_score * 0.4
+
+
 def compute_confidence(
     *,
     net_tracker: MeasurementTracker,
@@ -200,6 +338,7 @@ def compute_confidence(
     target_current: float,
     last_committed: float | None,
     sample_interval: float,
+    settling: bool = False,
 ) -> str:
     """Compute a confidence level for the current recalculation.
 
@@ -207,7 +346,7 @@ def compute_confidence(
     """
     score = 3  # start HIGH
 
-    # Data staleness: if any source hasn't updated in > 3× sample interval
+    # Data staleness: if any source hasn't been seen in > 3× sample interval
     stale_threshold = sample_interval * 3.0
     for tracker in (net_tracker, ev_tracker):
         staleness = tracker.staleness
@@ -216,6 +355,10 @@ def compute_confidence(
 
     # Alignment active → reduce confidence
     if alignment_active:
+        score -= 1
+
+    # Settling window active → reduce confidence
+    if settling:
         score -= 1
 
     # Target instability: large jump from last committed

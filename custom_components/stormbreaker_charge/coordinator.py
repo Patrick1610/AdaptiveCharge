@@ -19,7 +19,9 @@ from .alignment import (
     AlignmentEngine,
     EMAFilter,
     MeasurementTracker,
+    compute_coherence,
     compute_confidence,
+    compute_skew,
 )
 from .const import (
     CONF_CABLE_SENSOR,
@@ -62,6 +64,7 @@ from .const import (
     DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_SAMPLE_INTERVAL,
+    DEFAULT_SETTLING_DURATION_S,
     DEFAULT_SMOOTHING_WINDOW,
     DEFAULT_SOLAR_DONE_DURATION,
     DEFAULT_SOLAR_DONE_THRESHOLD,
@@ -343,7 +346,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             else:
                 computed_net_w = 0.0
 
-        # --- Update measurement trackers ---
+        # --- Update measurement trackers (every poll, regardless of value change) ---
         self._net_tracker.update(computed_net_w, mono_now)
         self._ev_tracker.update(ev_w, mono_now)
         self._voltage_tracker.update(voltage, mono_now)
@@ -356,10 +359,17 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._alignment.on_net_power_update(mono_now, net_delta)
         self._alignment.check_timeout(mono_now)
 
+        # --- Settling window check ---
+        self._alignment.check_settling(mono_now)
+
+        # --- Skew-based alignment activation ---
+        skew = compute_skew(self._net_tracker, self._ev_tracker)
+        coherence = compute_coherence(self._net_tracker, self._ev_tracker)
+
         self._prev_ev_w = ev_w
         self._prev_net_w = computed_net_w
 
-        # --- Compute surplus and current (float-based) ---
+        # --- Compute surplus (coherence-aware) ---
         surplus_w = (0.0 - computed_net_w) + ev_w
         raw_current_a = (surplus_w / (voltage * 3.0)) if voltage > 0 else 0.0
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
@@ -386,7 +396,17 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             target_current=ema_current_a,
             last_committed=self._committed_current,
             sample_interval=float(self._sample_interval),
+            settling=self._alignment.settling,
         )
+
+        # --- Determine control reason prefix ---
+        control_reason = ""
+        if coherence < 0.3:
+            control_reason = "low_coherence"
+        elif self._alignment.active:
+            control_reason = "alignment_active"
+        elif self._alignment.settling:
+            control_reason = "settling_window"
 
         # --- Solar done ---
         if solar_w is not None:
@@ -440,6 +460,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             ema_current=ema_current_a,
             mono_now=mono_now,
             import_safety=import_safety_triggered,
+            coherence=coherence,
+            control_reason=control_reason,
         )
 
         self._last_raw_floored = raw_floored
@@ -472,12 +494,32 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "charging_on": self._charging_on,
             "sample_count": len(self._samples),
             "last_updated": now.isoformat(),
-            # --- Alignment diagnostics ---
+            # --- Alignment & coherence diagnostics ---
             "alignment_active": self._alignment.active,
+            "settling_active": self._alignment.settling,
             "confidence_level": self._confidence,
+            "measurement_coherence": round(coherence, 3),
+            "estimated_skew_seconds": (
+                round(skew, 3) if skew is not None else None
+            ),
             "estimated_lag_seconds": (
                 round(self._alignment.estimated_lag, 2)
                 if self._alignment.estimated_lag is not None
+                else None
+            ),
+            "net_update_interval_s": (
+                round(self._net_tracker.avg_interval, 2)
+                if self._net_tracker.avg_interval is not None
+                else None
+            ),
+            "ev_update_interval_s": (
+                round(self._ev_tracker.avg_interval, 2)
+                if self._ev_tracker.avg_interval is not None
+                else None
+            ),
+            "voltage_update_interval_s": (
+                round(self._voltage_tracker.avg_interval, 2)
+                if self._voltage_tracker.avg_interval is not None
                 else None
             ),
             "net_update_interval_p95": (
@@ -490,8 +532,19 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 if self._ev_tracker.interval_p95 is not None
                 else None
             ),
+            "last_sample_age_net_s": (
+                round(self._net_tracker.sample_age, 2)
+                if self._net_tracker.sample_age is not None
+                else None
+            ),
+            "last_sample_age_ev_s": (
+                round(self._ev_tracker.sample_age, 2)
+                if self._ev_tracker.sample_age is not None
+                else None
+            ),
+            "last_applied_current_a": self._last_committed_int,
             "committed_current": self._committed_current,
-            "last_commit_reason": self._last_commit_reason,
+            "last_control_reason": self._last_commit_reason,
         }
         # Push to coordinator listeners
         self.async_set_updated_data(data)
@@ -527,6 +580,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         ema_current: float,
         mono_now: float,
         import_safety: bool,
+        coherence: float,
+        control_reason: str,
     ) -> None:
         """Evaluate and schedule control actions."""
         force_changed = force_charge != self._force_charge_prev
@@ -617,8 +672,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         target = min(max(ema_current, 0.0), capped)
         delta = target - current_setpoint
 
-        # During alignment, only allow decreases (safety), hold otherwise
-        if self._alignment.active and delta > 0:
+        # During alignment or settling, only allow decreases (safety), hold otherwise
+        if (self._alignment.active or self._alignment.settling) and delta > 0:
             return
 
         # Confidence gating
@@ -678,6 +733,11 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 self._last_down_time = mono_now
 
             self._last_action = f"modulate_{target_int}A"
+
+            # Start settling window to avoid self-induced dip flapping
+            self._alignment.start_settling(
+                mono_now, DEFAULT_SETTLING_DURATION_S
+            )
 
     def _cancel_pending(self) -> None:
         if self._pending_task and not self._pending_task.done():

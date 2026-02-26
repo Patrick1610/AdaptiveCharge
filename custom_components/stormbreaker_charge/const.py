@@ -66,6 +66,7 @@ DEFAULT_COOLDOWN_UP_S = 45.0
 DEFAULT_COOLDOWN_DOWN_S = 0.0
 DEFAULT_MIN_ON_TIME_S = 300.0
 DEFAULT_MIN_OFF_TIME_S = 120.0
+DEFAULT_SETTLING_DURATION_S = 10.0
 
 # --- Platforms ---
 PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]
