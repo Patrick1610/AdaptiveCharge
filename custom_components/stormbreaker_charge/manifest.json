@@ -1,0 +1,11 @@
+{
+  "domain": "stormbreaker_charge",
+  "name": "Stormbreaker Surplus EV Charge",
+  "codeowners": ["@Patrick1610"],
+  "config_flow": true,
+  "documentation": "https://github.com/Patrick1610/AdaptiveCharge",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "version": "1.0.0",
+  "requirements": []
+}
