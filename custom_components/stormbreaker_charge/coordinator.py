@@ -88,6 +88,9 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_CURRENT_ABS = 16
 
+# Minimum tracker samples before lag can fall back to 0.0 (warmup threshold)
+_LAG_WARMUP_SAMPLES = 5
+
 
 def _get_float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
     """Return the float value of an entity state, or None."""
@@ -570,7 +573,14 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "estimated_lag_seconds": (
                 round(self._alignment.estimated_lag, 2)
                 if self._alignment.estimated_lag is not None
-                else None
+                else (
+                    0.0
+                    if (
+                        len(self._net_tracker._intervals) >= _LAG_WARMUP_SAMPLES
+                        and len(self._ev_tracker._intervals) >= _LAG_WARMUP_SAMPLES
+                    )
+                    else None
+                )
             ),
             "net_update_interval_s": (
                 round(self._net_tracker.avg_interval, 2)
@@ -659,6 +669,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_off_time = time.monotonic()
         self._committed_current = None
         self._last_committed_int = None
+        self._last_commit_reason = "controller_disabled"
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
 
@@ -867,6 +878,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_on_time = time.monotonic()
         self._committed_current = float(MAX_CURRENT_ABS)
         self._last_committed_int = MAX_CURRENT_ABS
+        self._last_commit_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
         _LOGGER.info("Stormbreaker: stop_force")
@@ -879,6 +891,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_off_time = time.monotonic()
         self._committed_current = None
         self._last_committed_int = None
+        self._last_commit_reason = "stop_force"
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
 
@@ -976,6 +989,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
     async def async_service_force_start(self) -> None:
         """Service: force start charging."""
+        if not self._controller_enabled:
+            _LOGGER.warning("Stormbreaker: force_start ignored — controller disabled")
+            return
         self._charge_now = True
         self._cancel_pending()
         self._pending_task = self.hass.async_create_task(
@@ -984,6 +1000,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
     async def async_service_force_stop(self) -> None:
         """Service: force stop charging."""
+        if not self._controller_enabled:
+            _LOGGER.warning("Stormbreaker: force_stop ignored — controller disabled")
+            return
         self._charge_now = False
         self._cancel_pending()
         self._pending_task = self.hass.async_create_task(
@@ -1013,10 +1032,6 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     def set_charge_tonight(self, value: bool) -> None:
         """Set the charge_tonight flag."""
         self._charge_tonight = value
-
-    def set_charging_enabled(self, value: bool) -> None:
-        """Set the charging_enabled virtual state."""
-        self._charging_enabled = value
 
     def set_desired_range(self, value: float) -> None:
         """Set the desired range in km."""

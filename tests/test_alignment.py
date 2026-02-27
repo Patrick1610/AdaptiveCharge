@@ -785,3 +785,96 @@ class TestUniversality:
             last_committed=3.0, sample_interval=float(interval),
         )
         assert result == CONFIDENCE_HIGH
+
+
+# ===========================================================================
+# Tests: Lag warmup — never permanently Unknown
+# ===========================================================================
+
+# Warmup threshold matching coordinator._LAG_WARMUP_SAMPLES
+_LAG_WARMUP_SAMPLES = 5
+
+
+def _compute_estimated_lag(alignment_lag, net_intervals_count, ev_intervals_count):
+    """Mirror coordinator lag output logic (warmup-aware fallback)."""
+    if alignment_lag is not None:
+        return round(alignment_lag, 2)
+    if (net_intervals_count >= _LAG_WARMUP_SAMPLES
+            and ev_intervals_count >= _LAG_WARMUP_SAMPLES):
+        return 0.0
+    return None
+
+
+class TestLagWarmup:
+    """Lag must become numeric after warmup; never stay Unknown forever."""
+
+    def test_lag_is_none_before_warmup(self):
+        """Before enough samples, lag is None (Unknown)."""
+        assert _compute_estimated_lag(None, 2, 2) is None
+
+    def test_lag_becomes_zero_after_warmup_no_steps(self):
+        """After warmup with no EV steps, lag defaults to 0.0."""
+        assert _compute_estimated_lag(None, 5, 5) == 0.0
+
+    def test_lag_becomes_zero_with_extra_samples(self):
+        """Well past warmup, lag is still 0.0 if no steps detected."""
+        assert _compute_estimated_lag(None, 20, 20) == 0.0
+
+    def test_lag_uses_real_value_when_available(self):
+        """When alignment engine computes lag, use it instead of fallback."""
+        assert _compute_estimated_lag(3.5, 20, 20) == 3.5
+
+    def test_lag_numeric_after_warmup_with_trackers(self):
+        """Feed real trackers enough samples and verify lag is numeric."""
+        net = MeasurementTracker("net")
+        ev = MeasurementTracker("ev")
+        ae = AlignmentEngine()
+        for i in range(10):
+            net.update(float(i * 100), i * 10.0)
+            ev.update(float(i * 50), i * 10.0)
+        lag = _compute_estimated_lag(
+            ae.estimated_lag, len(net._intervals), len(ev._intervals)
+        )
+        assert lag is not None
+        assert isinstance(lag, float)
+        assert lag == 0.0
+
+    def test_lag_stays_numeric_across_mode_transitions(self):
+        """Lag must remain numeric even when switching modes."""
+        net = MeasurementTracker("net")
+        ev = MeasurementTracker("ev")
+        ae = AlignmentEngine()
+        # Warm up
+        for i in range(10):
+            net.update(float(i * 100), i * 10.0)
+            ev.update(float(i * 50), i * 10.0)
+        # Surplus mode → lag is numeric
+        lag1 = _compute_estimated_lag(
+            ae.estimated_lag, len(net._intervals), len(ev._intervals)
+        )
+        assert lag1 is not None
+        # Simulate switch to force mode (no EV steps, just more samples)
+        for i in range(10, 20):
+            net.update(float(i * 100), i * 10.0)
+            ev.update(3000.0, i * 10.0)
+        lag2 = _compute_estimated_lag(
+            ae.estimated_lag, len(net._intervals), len(ev._intervals)
+        )
+        assert lag2 is not None
+        # Simulate switch back to surplus
+        for i in range(20, 30):
+            net.update(float(i * 50), i * 10.0)
+            ev.update(float(i * 25), i * 10.0)
+        lag3 = _compute_estimated_lag(
+            ae.estimated_lag, len(net._intervals), len(ev._intervals)
+        )
+        assert lag3 is not None
+
+    def test_lag_real_value_after_ev_step(self):
+        """After an EV step and net reaction, lag is the real measured value."""
+        ae = AlignmentEngine(ev_step_threshold_w=400.0)
+        ae.on_ev_power_change(1000.0, 1500.0, 100.0)
+        ae.on_net_power_update(105.0, 400.0)
+        assert ae.estimated_lag is not None
+        lag = _compute_estimated_lag(ae.estimated_lag, 10, 10)
+        assert abs(lag - 5.0) < 0.1
