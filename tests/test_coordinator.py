@@ -1629,10 +1629,10 @@ class TestImportGuardLongRunData:
         assert action == "settle_hold"
 
         # t=60: new reading (-1644W) → guard starts clearing
-        _, exceed, below, active, lr = self._check_import_guard(
+        t2, exceed, below, active, lr = self._check_import_guard(
             -1644, 60, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
         )
-        assert t is True  # previous trigger, but active will clear
+        assert t2 is False  # not triggered — import below threshold now
         # t=80: clear duration passed
         _, exceed, below, active, lr = self._check_import_guard(
             -1644, 80, threshold, duration, hyst, clear_dur, exceed, below, active, lr
