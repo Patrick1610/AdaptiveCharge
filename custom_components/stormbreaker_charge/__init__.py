@@ -52,8 +52,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Stormbreaker Surplus EV Charge from a config entry."""
     # Remove stale charging_enable switch entity (replaced by binary_sensor.charging_active)
     registry = er.async_get(hass)
-    stale_uid = f"{entry.entry_id}_charging_enable"
-    stale_entity_id = registry.async_get_entity_id("switch", DOMAIN, stale_uid)
+    stale_unique_id = f"{entry.entry_id}_charging_enable"
+    stale_entity_id = registry.async_get_entity_id("switch", DOMAIN, stale_unique_id)
     if stale_entity_id:
         _LOGGER.info("Removing stale entity %s", stale_entity_id)
         registry.async_remove(stale_entity_id)

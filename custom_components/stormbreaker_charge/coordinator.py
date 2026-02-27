@@ -487,7 +487,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
         # --- Cable plug-in detection (only when controller enabled) ---
         # Skip when _cable_prev is None (first read after startup) to avoid
-        # false plug-in detection before all sensors are available.
+        # spurious plug-in detection before all sensors are available.
         if self._controller_enabled and cable_connected is not None and self._cable_prev is not None and cable_connected != self._cable_prev:
             if cable_connected and not self._cable_prev:
                 if self._pending_plugin_task and not self._pending_plugin_task.done():
