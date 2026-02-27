@@ -733,6 +733,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 self._import_guard_reason = ""
                 self._import_guard_state_since = mono_now
                 self._import_below_since = None
+                self._import_guard_last_reduce_time = None
         else:
             # Between clear_threshold and threshold — hold current state (dead zone)
             self._import_exceed_since = None
@@ -1053,6 +1054,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_commit_reason = "stop_surplus"
         self._import_guard_active = False
         self._import_guard_state = IMPORT_GUARD_OK
+        self._import_guard_last_reduce_time = None
+        self._import_below_since = None
+        self._import_exceed_since = None
         await asyncio.sleep(10)
         await self._set_charge_current(int(self._max_current_limit))
 

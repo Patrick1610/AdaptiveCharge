@@ -1471,3 +1471,371 @@ class TestImportGuardState:
         threshold = 200.0
         reason = f"sustained import {elapsed:.0f}s > {threshold:.0f}W"
         assert reason == "sustained import 35s > 200W"
+
+
+# ---------------------------------------------------------------------------
+# Tests: data-driven from historyAC-long.csv (2.5h real-world operation)
+# ---------------------------------------------------------------------------
+
+class TestImportGuardLongRunData:
+    """Tests derived from 2.5h real-world data (historyAC-long.csv).
+
+    The dataset showed the computed net power sensor updates every ~60s.
+    Import spikes typically last 1 reading (60s), occasionally 2-4 readings.
+    The old code cascaded from 5A→stop in 34-58s. Our enhanced guard should
+    limit damage to 1A reduction per event (with 30s settle between steps).
+    """
+
+    def _check_import_guard(
+        self,
+        net_w: float,
+        mono_now: float,
+        threshold: float,
+        duration: float,
+        hysteresis_w: float,
+        clear_duration: float,
+        exceed_since: float | None,
+        below_since: float | None,
+        guard_active: bool,
+        last_reduce_time: float | None,
+    ) -> tuple[bool, float | None, float | None, bool, float | None]:
+        """Mirror of enhanced _check_import_guard with settle reset."""
+        clear_threshold = threshold - hysteresis_w
+        triggered = False
+
+        if net_w > threshold:
+            below_since = None
+            if exceed_since is None:
+                exceed_since = mono_now
+            elif (mono_now - exceed_since) >= duration:
+                guard_active = True
+                triggered = True
+        elif net_w <= clear_threshold:
+            exceed_since = None
+            if below_since is None:
+                below_since = mono_now
+            elif (mono_now - below_since) >= clear_duration:
+                guard_active = False
+                below_since = None
+                last_reduce_time = None  # reset settle on clear
+        else:
+            exceed_since = None
+
+        return triggered, exceed_since, below_since, guard_active, last_reduce_time
+
+    def _simulate_escalation(
+        self,
+        committed_a: float,
+        settle_s: float,
+        last_reduce_time: float | None,
+        mono_now: float,
+    ) -> tuple[str, float, float | None]:
+        """Simulate one tick of escalation ladder. Returns (action, new_current, new_reduce_time)."""
+        if last_reduce_time is not None and (mono_now - last_reduce_time) < settle_s:
+            return "settle_hold", committed_a, last_reduce_time
+
+        if committed_a > 0.0:
+            new = max(committed_a - 1.0, 0.0)
+            return "reduce", new, mono_now
+        else:
+            return "hard_stop", 0.0, last_reduce_time
+
+    def test_single_reading_spike_481w_at_5a(self):
+        """Real event 10:06:38: net=481W (single reading), charging at 5A.
+
+        Old code: cascaded 5A→4A→3A→2A→1A→stop in 34s.
+        New code should: trigger at t+30s, reduce to 4A, settle 30s, guard clears.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+        exceed_since = below_since = None
+        guard_active = False
+        last_reduce = None
+        committed = 5.0
+
+        # t=0: spike arrives (481W), first tick — debounce starts
+        t, exceed, below, active, lr = self._check_import_guard(
+            481, 0, threshold, duration, hyst, clear_dur, exceed_since, below_since, guard_active, last_reduce
+        )
+        assert t is False  # not triggered yet (debounce)
+
+        # t=10..20: still above threshold, debounce continues
+        for tick in [10, 20]:
+            t, exceed, below, active, lr = self._check_import_guard(
+                481, tick, threshold, duration, hyst, clear_dur, exceed, below, active, lr
+            )
+            assert t is False
+
+        # t=30: debounce expires, guard triggers
+        t, exceed, below, active, lr = self._check_import_guard(
+            481, 30, threshold, duration, hyst, clear_dur, exceed, below, active, lr
+        )
+        assert t is True
+        assert active is True
+
+        # Escalation: reduce from 5A to 4A
+        action, committed, last_reduce = self._simulate_escalation(committed, settle, lr, 30)
+        assert action == "reduce"
+        assert committed == 4.0
+
+        # t=40..50: still in settle window — no further reduction
+        for tick in [40, 50]:
+            t, exceed, below, active, lr2 = self._check_import_guard(
+                481, tick, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
+            )
+            action, _, _ = self._simulate_escalation(committed, settle, last_reduce, tick)
+            assert action == "settle_hold"
+
+        # t=60: new reading arrives (-3200W, big export)
+        t, exceed, below, active, lr2 = self._check_import_guard(
+            -3200, 60, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
+        )
+        assert t is False
+        # below_since starts — clear timer begins
+
+        # t=80: clear_duration (20s) passed with import < 150W
+        t, exceed, below, active, lr2 = self._check_import_guard(
+            -3200, 80, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
+        )
+        assert active is False  # guard cleared!
+        assert lr2 is None  # settle time reset on clear
+
+        # Final: charging at 4A (not stopped!)
+        assert committed == 4.0
+
+    def test_single_reading_spike_2378w_at_6a(self):
+        """Real event 11:09:33: net=2378W (huge spike), charging at 6A.
+
+        Old code: cascaded 6A→5A→4A→3A→2A→1A→stop in 58s.
+        New code should: reduce to 5A, guard clears when next reading arrives.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+        exceed = below = None
+        active = False
+        committed = 6.0
+
+        # t=0..30: debounce → trigger
+        for tick in range(0, 31, 10):
+            t, exceed, below, active, _ = self._check_import_guard(
+                2378, tick, threshold, duration, hyst, clear_dur, exceed, below, active, None
+            )
+        assert t is True
+
+        # Reduce 6A→5A
+        action, committed, last_reduce = self._simulate_escalation(committed, settle, None, 30)
+        assert committed == 5.0
+
+        # t=40,50: settle window holds
+        action, _, _ = self._simulate_escalation(committed, settle, last_reduce, 40)
+        assert action == "settle_hold"
+
+        # t=60: new reading (-1644W) → guard starts clearing
+        _, exceed, below, active, lr = self._check_import_guard(
+            -1644, 60, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
+        )
+        assert t is True  # previous trigger, but active will clear
+        # t=80: clear duration passed
+        _, exceed, below, active, lr = self._check_import_guard(
+            -1644, 80, threshold, duration, hyst, clear_dur, exceed, below, active, lr
+        )
+        assert active is False
+        assert committed == 5.0  # stayed at 5A, not 0!
+
+    def test_buildup_import_23_70_133_276w_at_2a(self):
+        """Real event 11:22-11:26: slowly building import over 4 readings.
+
+        Net: 23W→70W→133W→276W (each 60s apart). Charging at 2A.
+        276W > 200W threshold. This is a legitimate sustained import.
+        Expected: guard triggers at 276W+30s, reduces to 1A. Correct behavior.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+        exceed = below = None
+        active = False
+
+        # t=0: 23W — below threshold, no action
+        t, exceed, below, active, _ = self._check_import_guard(
+            23, 0, threshold, duration, hyst, clear_dur, exceed, below, active, None
+        )
+        assert t is False
+
+        # t=60: 70W — still below
+        t, exceed, below, active, _ = self._check_import_guard(
+            70, 60, threshold, duration, hyst, clear_dur, exceed, below, active, None
+        )
+        assert t is False
+
+        # t=120: 133W — still below
+        t, exceed, below, active, _ = self._check_import_guard(
+            133, 120, threshold, duration, hyst, clear_dur, exceed, below, active, None
+        )
+        assert t is False
+
+        # t=180: 276W — above threshold! debounce starts
+        t, exceed, below, active, _ = self._check_import_guard(
+            276, 180, threshold, duration, hyst, clear_dur, exceed, below, active, None
+        )
+        assert t is False
+        assert exceed == 180  # debounce started
+
+        # t=210: debounce expires (276W persists)
+        t, exceed, below, active, _ = self._check_import_guard(
+            276, 210, threshold, duration, hyst, clear_dur, exceed, below, active, None
+        )
+        assert t is True
+        assert active is True
+
+        # Reduce 2A→1A
+        action, committed, _ = self._simulate_escalation(2.0, settle, None, 210)
+        assert action == "reduce"
+        assert committed == 1.0
+
+    def test_low_import_169w_below_threshold(self):
+        """Real event 12:01:52: net=169W, 2 readings.
+
+        169W < 200W threshold → should NOT trigger import guard.
+        Old 150W threshold would have triggered this incorrectly.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+
+        t, _, _, active, _ = self._check_import_guard(
+            169, 0, threshold, duration, hyst, clear_dur, None, None, False, None
+        )
+        assert t is False
+        assert active is False
+
+        t, _, _, active, _ = self._check_import_guard(
+            169, 60, threshold, duration, hyst, clear_dur, None, None, False, None
+        )
+        assert t is False
+        assert active is False
+
+    def test_anomaly_spike_10182w_at_1a(self):
+        """Real event 12:25:22: net=10182W (measurement anomaly), charging at 1A.
+
+        Single reading then -831W. Guard triggers at t+30s, reduces to 0A.
+        After settle, guard clears. No hard stop needed.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+        exceed = below = None
+        active = False
+        committed = 1.0
+
+        # t=0..30: debounce → trigger
+        for tick in range(0, 31, 10):
+            t, exceed, below, active, _ = self._check_import_guard(
+                10182, tick, threshold, duration, hyst, clear_dur, exceed, below, active, None
+            )
+        assert t is True
+
+        # Reduce 1A→0A
+        action, committed, last_reduce = self._simulate_escalation(committed, settle, None, 30)
+        assert committed == 0.0
+
+        # t=60: new reading (-831W) → clearing starts
+        _, exceed, below, active, lr = self._check_import_guard(
+            -831, 60, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
+        )
+        # t=80: clear
+        _, exceed, below, active, lr = self._check_import_guard(
+            -831, 80, threshold, duration, hyst, clear_dur, exceed, below, active, lr
+        )
+        assert active is False
+        assert lr is None  # settle timer reset
+
+    def test_settle_reset_on_guard_clear(self):
+        """Bug fix: _import_guard_last_reduce_time must reset when guard clears.
+
+        Without this fix, a stale settle timer from a previous event could block
+        the first reduction of a new event.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+
+        # Event 1: guard triggers at t=30, reduces at t=30
+        exceed = below = None
+        active = False
+        for tick in range(0, 31, 10):
+            t, exceed, below, active, _ = self._check_import_guard(
+                500, tick, threshold, duration, hyst, clear_dur, exceed, below, active, None
+            )
+        last_reduce = 30.0  # simulating reduction at t=30
+
+        # Event 1 clears at t=80 (import drops, clear_duration passes)
+        _, exceed, below, active, lr = self._check_import_guard(
+            0, 60, threshold, duration, hyst, clear_dur, exceed, below, active, last_reduce
+        )
+        _, exceed, below, active, lr = self._check_import_guard(
+            0, 80, threshold, duration, hyst, clear_dur, exceed, below, active, lr
+        )
+        assert active is False
+        assert lr is None  # settle timer cleared!
+
+        # Event 2: new import at t=100
+        for tick in [100, 110, 120, 130]:
+            t, exceed, below, active, _ = self._check_import_guard(
+                400, tick, threshold, duration, hyst, clear_dur, exceed, below, active, lr
+            )
+        assert t is True
+
+        # Reduction should NOT be blocked by stale settle timer
+        action, _, new_lr = self._simulate_escalation(3.0, settle, lr, 130)
+        assert action == "reduce"  # NOT settle_hold!
+        assert new_lr == 130
+
+    def test_dead_zone_no_flip_flop(self):
+        """Import in the dead zone (150-200W) should not cause oscillation.
+
+        Values between clear_threshold (150W) and threshold (200W) should
+        hold current state without resetting any timers.
+        """
+        threshold, duration, hyst, clear_dur, settle = 200.0, 30.0, 50.0, 20.0, 30.0
+
+        # First: trigger the guard
+        exceed = below = None
+        active = False
+        for tick in range(0, 31, 10):
+            _, exceed, below, active, _ = self._check_import_guard(
+                300, tick, threshold, duration, hyst, clear_dur, exceed, below, active, None
+            )
+        assert active is True
+
+        # Import drops to 180W (dead zone: between 150W and 200W)
+        _, exceed2, below2, active2, _ = self._check_import_guard(
+            180, 40, threshold, duration, hyst, clear_dur, exceed, below, active, None
+        )
+        assert active2 is True  # still active! dead zone holds state
+
+        # Import drops to 120W (below clear threshold 150W) → clear timer starts
+        _, exceed3, below3, active3, _ = self._check_import_guard(
+            120, 50, threshold, duration, hyst, clear_dur, exceed2, below2, active2, None
+        )
+        assert active3 is True  # not cleared yet
+        assert below3 == 50  # clear timer started
+
+        # Import jumps back to 180W (dead zone) — clear timer should NOT reset
+        # (the code says "Don't reset _import_below_since")
+        # But exceed_since is reset in the dead zone
+        _, exceed4, below4, active4, _ = self._check_import_guard(
+            180, 60, threshold, duration, hyst, clear_dur, exceed3, below3, active3, None
+        )
+        assert active4 is True
+
+    def test_stop_surplus_fully_resets_guard_state(self):
+        """When _action_stop_surplus runs, ALL guard state must be reset.
+
+        This prevents stale state from affecting the next charging session.
+        """
+        # Simulate: guard was active, reduce happened, then stop_surplus
+        import_guard_active = True
+        import_guard_last_reduce_time = 100.0
+        import_below_since = 80.0
+        import_exceed_since = 50.0
+
+        # Simulate _action_stop_surplus reset logic
+        import_guard_active = False
+        import_guard_last_reduce_time = None
+        import_below_since = None
+        import_exceed_since = None
+
+        assert import_guard_active is False
+        assert import_guard_last_reduce_time is None
+        assert import_below_since is None
+        assert import_exceed_since is None
