@@ -71,6 +71,7 @@ from .const import (
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MAX_STEP_A,
+    DEFAULT_RANGE_HYSTERESIS_KM,
     DEFAULT_MIN_OFF_TIME_S,
     DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S,
@@ -209,6 +210,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._pending_plugin_task: asyncio.Task | None = None
         self._force_charge_prev: bool = False
         self._force_source: str = ""
+        self._need_active: bool = False
         self._cable_prev: bool | None = None
 
         # Timestamps for diagnostics
@@ -533,10 +535,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Force charge ---
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
-        need = (
-            current_range is not None
-            and current_range < effective_range
-        )
+        # Hysteresis: start charging when below effective_range,
+        # stop only when 5km above effective_range to prevent cycling.
+        if current_range is not None:
+            if self._need_active:
+                self._need_active = current_range < (effective_range + DEFAULT_RANGE_HYSTERESIS_KM)
+            else:
+                self._need_active = current_range < effective_range
+        else:
+            self._need_active = False
+        need = self._need_active
         tonight_condition = (
             self._charge_tonight
             and bool(presence)
@@ -610,6 +618,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "current_range": current_range,
             "desired_range": self._desired_range,
             "effective_range": effective_range,
+            "range_hysteresis_km": DEFAULT_RANGE_HYSTERESIS_KM,
             "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
             "charge_now": self._charge_now,
