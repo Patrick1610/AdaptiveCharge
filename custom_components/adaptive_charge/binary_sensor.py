@@ -1,4 +1,4 @@
-"""Binary sensor platform for Stormbreaker Surplus EV Charge."""
+"""Binary sensor platform for AdaptiveCharge."""
 from __future__ import annotations
 
 import logging
@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import StormbreakerCoordinator
+from .coordinator import AdaptiveChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up binary sensor entities."""
-    coordinator: StormbreakerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: AdaptiveChargeCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([
         ForceChargeSensor(coordinator, entry),
         ChargingActiveSensor(coordinator, entry),
@@ -36,8 +36,8 @@ async def async_setup_entry(
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name="Stormbreaker Surplus EV Charge",
-        manufacturer="Stormbreaker Surplus",
+        name="AdaptiveCharge",
+        manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
         sw_version="2.0.0",
     )
@@ -51,7 +51,7 @@ class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         super().__init__(coordinator)
         self._entry = entry
@@ -87,7 +87,7 @@ class ChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         super().__init__(coordinator)
         self._entry = entry

@@ -1,4 +1,4 @@
-"""Number platform for Stormbreaker Surplus EV Charge."""
+"""Number platform for AdaptiveCharge."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DOMAIN
-from .coordinator import StormbreakerCoordinator
+from .coordinator import AdaptiveChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up number entities."""
-    coordinator: StormbreakerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: AdaptiveChargeCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             DesiredRangeNumber(coordinator, entry),
@@ -35,8 +35,8 @@ async def async_setup_entry(
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name="Stormbreaker Surplus EV Charge",
-        manufacturer="Stormbreaker Surplus",
+        name="AdaptiveCharge",
+        manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
         sw_version="2.0.0",
     )
@@ -54,7 +54,7 @@ class DesiredRangeNumber(RestoreEntity, NumberEntity):
     _attr_mode = NumberMode.BOX
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         self._coordinator = coordinator
         self._entry = entry
@@ -92,7 +92,7 @@ class MaxCurrentLimitNumber(RestoreEntity, NumberEntity):
     _attr_mode = NumberMode.BOX
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         self._coordinator = coordinator
         self._entry = entry

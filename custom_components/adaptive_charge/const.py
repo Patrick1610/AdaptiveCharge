@@ -1,7 +1,7 @@
-"""Constants for Stormbreaker Surplus EV Charge."""
+"""Constants for AdaptiveCharge."""
 from __future__ import annotations
 
-DOMAIN = "stormbreaker_charge"
+DOMAIN = "adaptive_charge"
 
 # --- Configuration Keys ---
 CONF_NET_POWER_MODE = "net_power_mode"

@@ -1,4 +1,4 @@
-"""Sensor platform for Stormbreaker Surplus EV Charge."""
+"""Sensor platform for AdaptiveCharge."""
 from __future__ import annotations
 
 import logging
@@ -17,7 +17,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import StormbreakerCoordinator
+from .coordinator import AdaptiveChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up sensor entities."""
-    coordinator: StormbreakerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: AdaptiveChargeCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             SurplusExclEvSensor(coordinator, entry),
@@ -64,21 +64,21 @@ async def async_setup_entry(
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name="Stormbreaker Surplus EV Charge",
-        manufacturer="Stormbreaker Surplus",
+        name="AdaptiveCharge",
+        manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
         sw_version="2.0.0",
     )
 
 
-class _BaseStormbreakerSensor(CoordinatorEntity, SensorEntity):
-    """Base class for Stormbreaker sensors."""
+class _BaseAdaptiveChargeSensor(CoordinatorEntity, SensorEntity):
+    """Base class for AdaptiveCharge sensors."""
 
     _attr_has_entity_name = True
 
     def __init__(
         self,
-        coordinator: StormbreakerCoordinator,
+        coordinator: AdaptiveChargeCoordinator,
         entry: ConfigEntry,
     ) -> None:
         super().__init__(coordinator)
@@ -97,7 +97,7 @@ class _BaseStormbreakerSensor(CoordinatorEntity, SensorEntity):
         }
 
 
-class SurplusExclEvSensor(_BaseStormbreakerSensor):
+class SurplusExclEvSensor(_BaseAdaptiveChargeSensor):
     """Net surplus excluding EV consumption (W)."""
 
     _attr_name = "Net Surplus Excl EV (W)"
@@ -105,7 +105,7 @@ class SurplusExclEvSensor(_BaseStormbreakerSensor):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_net_surplus_excl_ev_w"
 
@@ -116,7 +116,7 @@ class SurplusExclEvSensor(_BaseStormbreakerSensor):
         return round(self.coordinator.data.get("surplus_w", 0.0), 1)
 
 
-class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
+class AvailableCurrentRawSensor(_BaseAdaptiveChargeSensor):
     """Available charge current raw (A). Deprecated: use EMA Current or Available Current Decision."""
 
     _attr_name = "Available Current Raw (A)"
@@ -125,7 +125,7 @@ class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_available_current_excl_ev_a_raw"
 
@@ -136,7 +136,7 @@ class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
         return round(self.coordinator.data.get("raw_current_a", 0.0), 2)
 
 
-class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
+class AvailableCurrentRawFlooredSensor(_BaseAdaptiveChargeSensor):
     """Available charge current raw floored (A). Deprecated: use Current Setting."""
 
     _attr_name = "Available Charge Current Raw Floored (A)"
@@ -145,7 +145,7 @@ class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_available_current_raw_floored_a"
 
@@ -156,7 +156,7 @@ class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
         return self.coordinator.data.get("raw_floored", 0)
 
 
-class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
+class AvailableCurrentSmoothedSensor(_BaseAdaptiveChargeSensor):
     """Available charge current smoothed (A). Deprecated: use EMA Current."""
 
     _attr_name = "Available Charge Current Smoothed (A)"
@@ -165,7 +165,7 @@ class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_available_current_smoothed_a"
 
@@ -176,7 +176,7 @@ class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
         return round(self.coordinator.data.get("smoothed_a", 0.0), 2)
 
 
-class AvailableCurrentSmoothedFlooredSensor(_BaseStormbreakerSensor):
+class AvailableCurrentSmoothedFlooredSensor(_BaseAdaptiveChargeSensor):
     """Available charge current smoothed and floored (A). Deprecated: use Current Setting."""
 
     _attr_name = "Available Charge Current Smoothed Floored (A)"
@@ -185,7 +185,7 @@ class AvailableCurrentSmoothedFlooredSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_available_current_smoothed_floored_a"
 
@@ -196,7 +196,7 @@ class AvailableCurrentSmoothedFlooredSensor(_BaseStormbreakerSensor):
         return self.coordinator.data.get("smoothed_floored", 0)
 
 
-class ComputedNetWSensor(_BaseStormbreakerSensor):
+class ComputedNetWSensor(_BaseAdaptiveChargeSensor):
     """Computed net power (W) used internally."""
 
     _attr_name = "Computed Net Power (W)"
@@ -205,7 +205,7 @@ class ComputedNetWSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_computed_net_w"
 
@@ -216,7 +216,7 @@ class ComputedNetWSensor(_BaseStormbreakerSensor):
         return round(self.coordinator.data.get("net_w", 0.0), 1)
 
 
-class ComputedEvWSensor(_BaseStormbreakerSensor):
+class ComputedEvWSensor(_BaseAdaptiveChargeSensor):
     """Computed EV power (W) used internally."""
 
     _attr_name = "Computed EV Power (W)"
@@ -225,7 +225,7 @@ class ComputedEvWSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_computed_ev_w"
 
@@ -236,7 +236,7 @@ class ComputedEvWSensor(_BaseStormbreakerSensor):
         return round(self.coordinator.data.get("ev_w", 0.0), 1)
 
 
-class VoltageUsedSensor(_BaseStormbreakerSensor):
+class VoltageUsedSensor(_BaseAdaptiveChargeSensor):
     """Voltage used for current calculation (V)."""
 
     _attr_name = "Voltage Used (V)"
@@ -245,7 +245,7 @@ class VoltageUsedSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_voltage_used_v"
 
@@ -256,13 +256,13 @@ class VoltageUsedSensor(_BaseStormbreakerSensor):
         return round(self.coordinator.data.get("voltage", 230.0), 1)
 
 
-class SolarDoneStatusSensor(_BaseStormbreakerSensor):
+class SolarDoneStatusSensor(_BaseAdaptiveChargeSensor):
     """Solar done status (on/off as string)."""
 
     _attr_name = "Solar Done Status"
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_solar_done_status"
 
@@ -282,7 +282,7 @@ class SolarDoneStatusSensor(_BaseStormbreakerSensor):
         }
 
 
-class EMACurrentSensor(_BaseStormbreakerSensor):
+class EMACurrentSensor(_BaseAdaptiveChargeSensor):
     """EMA-filtered charge current used for control decisions (A)."""
 
     _attr_name = "EMA Current (A)"
@@ -290,7 +290,7 @@ class EMACurrentSensor(_BaseStormbreakerSensor):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_ema_current_a"
 
@@ -301,13 +301,13 @@ class EMACurrentSensor(_BaseStormbreakerSensor):
         return self.coordinator.data.get("ema_current_a", 0.0)
 
 
-class AlignmentDiagnosticSensor(_BaseStormbreakerSensor):
+class AlignmentDiagnosticSensor(_BaseAdaptiveChargeSensor):
     """Diagnostic sensor exposing alignment engine state."""
 
     _attr_name = "Alignment Diagnostics"
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_alignment_diagnostics"
 
@@ -347,13 +347,13 @@ class AlignmentDiagnosticSensor(_BaseStormbreakerSensor):
 # Mode state machine sensor
 # ---------------------------------------------------------------------------
 
-class ModeSensor(_BaseStormbreakerSensor):
+class ModeSensor(_BaseAdaptiveChargeSensor):
     """Current charging mode (surplus / force_max / night_target / stopped / off)."""
 
     _attr_name = "Mode"
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_mode"
 
@@ -383,7 +383,7 @@ class ModeSensor(_BaseStormbreakerSensor):
 # Measurement alignment / skew sensors
 # ---------------------------------------------------------------------------
 
-class InputSkewSensor(_BaseStormbreakerSensor):
+class InputSkewSensor(_BaseAdaptiveChargeSensor):
     """Skew between net and EV sensor update timestamps (seconds)."""
 
     _attr_name = "Input Skew (s)"
@@ -391,7 +391,7 @@ class InputSkewSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = "s"
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_input_skew_seconds"
 
@@ -413,7 +413,7 @@ class InputSkewSensor(_BaseStormbreakerSensor):
         }
 
 
-class NetUpdateIntervalSensor(_BaseStormbreakerSensor):
+class NetUpdateIntervalSensor(_BaseAdaptiveChargeSensor):
     """Estimated update interval of the net power sensor (seconds)."""
 
     _attr_name = "Net Update Interval (s)"
@@ -421,7 +421,7 @@ class NetUpdateIntervalSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = "s"
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_net_update_interval_seconds"
 
@@ -433,7 +433,7 @@ class NetUpdateIntervalSensor(_BaseStormbreakerSensor):
         return round(val, 2) if val is not None else None
 
 
-class EvUpdateIntervalSensor(_BaseStormbreakerSensor):
+class EvUpdateIntervalSensor(_BaseAdaptiveChargeSensor):
     """Estimated update interval of the EV power sensor (seconds)."""
 
     _attr_name = "EV Update Interval (s)"
@@ -441,7 +441,7 @@ class EvUpdateIntervalSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = "s"
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_ev_update_interval_seconds"
 
@@ -457,13 +457,13 @@ class EvUpdateIntervalSensor(_BaseStormbreakerSensor):
 # Import guard sensors
 # ---------------------------------------------------------------------------
 
-class ImportGuardStateSensor(_BaseStormbreakerSensor):
+class ImportGuardStateSensor(_BaseAdaptiveChargeSensor):
     """Import guard state: 'ok', 'reducing', or 'stopped'."""
 
     _attr_name = "Import Guard State"
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_import_guard_state"
 
@@ -485,7 +485,7 @@ class ImportGuardStateSensor(_BaseStormbreakerSensor):
         }
 
 
-class ImportWattsSensor(_BaseStormbreakerSensor):
+class ImportWattsSensor(_BaseAdaptiveChargeSensor):
     """Grid import power used by the import guard (W, 0 when exporting)."""
 
     _attr_name = "Import Watts (W)"
@@ -494,7 +494,7 @@ class ImportWattsSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_import_watts"
 
@@ -509,13 +509,13 @@ class ImportWattsSensor(_BaseStormbreakerSensor):
 # Diagnostics sensors
 # ---------------------------------------------------------------------------
 
-class LastActionSensor(_BaseStormbreakerSensor):
+class LastActionSensor(_BaseAdaptiveChargeSensor):
     """Last control action taken by the coordinator."""
 
     _attr_name = "Last Action"
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_last_action"
 
@@ -535,13 +535,13 @@ class LastActionSensor(_BaseStormbreakerSensor):
         }
 
 
-class LastReasonSensor(_BaseStormbreakerSensor):
+class LastReasonSensor(_BaseAdaptiveChargeSensor):
     """Reason for the last control action."""
 
     _attr_name = "Last Reason"
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_last_reason"
 
@@ -552,7 +552,7 @@ class LastReasonSensor(_BaseStormbreakerSensor):
         return self.coordinator.data.get("last_reason") or "none"
 
 
-class TargetCurrentSensor(_BaseStormbreakerSensor):
+class TargetCurrentSensor(_BaseAdaptiveChargeSensor):
     """Decision-level target current (A) before idempotency/rate limiting."""
 
     _attr_name = "Target Current (A)"
@@ -561,7 +561,7 @@ class TargetCurrentSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_target_current"
 
@@ -572,7 +572,7 @@ class TargetCurrentSensor(_BaseStormbreakerSensor):
         return self.coordinator.data.get("target_current", 0.0)
 
 
-class CurrentSettingSensor(_BaseStormbreakerSensor):
+class CurrentSettingSensor(_BaseAdaptiveChargeSensor):
     """Last current value actually sent to the charger (A)."""
 
     _attr_name = "Current Setting (A)"
@@ -581,7 +581,7 @@ class CurrentSettingSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_current_setting"
 
@@ -592,7 +592,7 @@ class CurrentSettingSensor(_BaseStormbreakerSensor):
         return self.coordinator.data.get("current_setting")
 
 
-class AvailableCurrentDecisionSensor(_BaseStormbreakerSensor):
+class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):
     """EMA-smoothed available current used for control decisions (A)."""
 
     _attr_name = "Available Current Decision (A)"
@@ -601,7 +601,7 @@ class AvailableCurrentDecisionSensor(_BaseStormbreakerSensor):
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_available_current_decision"
 
