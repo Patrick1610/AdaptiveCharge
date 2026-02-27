@@ -54,8 +54,21 @@ DEFAULT_MAX_CURRENT_LIMIT = 16
 # --- Import guard (configurable fail-safe) ---
 CONF_IMPORT_GUARD_THRESHOLD = "import_guard_threshold_w"
 CONF_IMPORT_GUARD_DURATION = "import_guard_duration_s"
-DEFAULT_IMPORT_GUARD_THRESHOLD_W = 150.0
-DEFAULT_IMPORT_GUARD_DURATION_S = 10.0
+DEFAULT_IMPORT_GUARD_THRESHOLD_W = 200.0
+DEFAULT_IMPORT_GUARD_DURATION_S = 30.0
+
+# --- Import guard enhanced (debounce + hysteresis + escalation) ---
+CONF_IMPORT_GUARD_HYSTERESIS_W = "import_guard_hysteresis_w"
+CONF_IMPORT_GUARD_CLEAR_DURATION_S = "import_guard_clear_duration_s"
+CONF_IMPORT_GUARD_SETTLE_S = "import_guard_settle_s"
+DEFAULT_IMPORT_GUARD_HYSTERESIS_W = 50.0
+DEFAULT_IMPORT_GUARD_CLEAR_DURATION_S = 20.0
+DEFAULT_IMPORT_GUARD_SETTLE_S = 30.0
+
+# Import guard states
+IMPORT_GUARD_OK = "ok"
+IMPORT_GUARD_REDUCING = "reducing"
+IMPORT_GUARD_STOPPED = "stopped"
 
 # --- Alignment engine defaults ---
 DEFAULT_EV_STEP_THRESHOLD_W = 400.0
