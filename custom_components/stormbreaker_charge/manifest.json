@@ -1,6 +1,6 @@
 {
-  "domain": "stormbreaker_charge",
-  "name": "Stormbreaker Surplus EV Charge",
+  "domain": "adaptive_charge",
+  "name": "Adaptive EV charger on PV Surplus",
   "codeowners": ["@Patrick1610"],
   "config_flow": true,
   "documentation": "https://github.com/Patrick1610/AdaptiveCharge",
