@@ -595,12 +595,17 @@ class TestSurplusInvariance:
         assert surplus == 2500.0
 
     def test_surplus_formula_same_in_force_and_surplus_mode(self):
-        """Force mode must NOT change the surplus definition."""
-        net_w, ev_w = 300.0, 3000.0
-        surplus_surplus_mode = compute_surplus(net_w, ev_w)
-        # In force mode, same formula applies — mode doesn't affect definition
-        surplus_force_mode = compute_surplus(net_w, ev_w)
-        assert surplus_surplus_mode == surplus_force_mode
+        """Force mode must NOT change the surplus definition.
+
+        Two different scenarios both use the same formula.
+        """
+        # Scenario 1: low EV draw (surplus mode typical)
+        surplus_low_ev = compute_surplus(300.0, 1000.0)
+        # Scenario 2: max EV draw (force mode typical — 16A × 230V ≈ 3680W)
+        surplus_high_ev = compute_surplus(300.0, 3680.0)
+        # Both computed with the same formula: -net + ev
+        assert surplus_low_ev == -300.0 + 1000.0
+        assert surplus_high_ev == -300.0 + 3680.0
 
     def test_surplus_always_excludes_ev(self):
         """EV consumption must never inflate available surplus."""
@@ -609,9 +614,10 @@ class TestSurplusInvariance:
         surplus = compute_surplus(net_w, ev_w)
         # surplus = 3680 → this is the power that would be exported without EV
         assert surplus == 3680.0
-        # Verify raw current calculation uses this surplus, not net alone
+        # Verify raw current calculation uses this surplus correctly
         raw_a = compute_raw_current(surplus, 230.0)
-        assert raw_a > 0
+        # 3680 / (230 * 3) ≈ 5.33A
+        assert abs(raw_a - (3680.0 / 690.0)) < 0.01
 
     def test_no_ev_no_export(self):
         """Importing 1000W, no EV → negative surplus (no available power)."""
@@ -775,7 +781,6 @@ class TestControllerEnabledGatesServices:
         """Disabling controller during force charge triggers shutdown."""
         controller_enabled = True
         charging_on = True
-        current_mode = "force"
         shutdown_triggered = False
 
         prev = controller_enabled
