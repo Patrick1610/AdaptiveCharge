@@ -1,4 +1,4 @@
-"""Switch platform for Stormbreaker Surplus EV Charge."""
+"""Switch platform for AdaptiveCharge."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
-from .coordinator import StormbreakerCoordinator
+from .coordinator import AdaptiveChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up switch entities."""
-    coordinator: StormbreakerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: AdaptiveChargeCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             ControllerEnabledSwitch(coordinator, entry),
@@ -36,10 +36,10 @@ async def async_setup_entry(
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name="Stormbreaker Surplus EV Charge",
-        manufacturer="Stormbreaker Surplus",
+        name="AdaptiveCharge",
+        manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
-        sw_version="1.1.0",
+        sw_version="2.0.0",
     )
 
 
@@ -54,7 +54,7 @@ class ControllerEnabledSwitch(RestoreEntity, SwitchEntity):
     _attr_has_entity_name = True
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         self._coordinator = coordinator
         self._entry = entry
@@ -90,7 +90,7 @@ class ChargeNowSwitch(RestoreEntity, SwitchEntity):
     _attr_has_entity_name = True
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         self._coordinator = coordinator
         self._entry = entry
@@ -126,7 +126,7 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
     _attr_has_entity_name = True
 
     def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
     ) -> None:
         self._coordinator = coordinator
         self._entry = entry

@@ -1,4 +1,4 @@
-"""Dynamic alignment engine for Stormbreaker Surplus EV Charge.
+"""Dynamic alignment engine for AdaptiveCharge.
 
 Tracks measurement sources, detects EV step events, manages alignment
 phases, computes confidence and coherence scores for charge current decisions.

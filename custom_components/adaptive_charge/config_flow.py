@@ -1,4 +1,4 @@
-"""Config flow for Stormbreaker Surplus EV Charge."""
+"""Config flow for AdaptiveCharge."""
 from __future__ import annotations
 
 import logging
@@ -47,8 +47,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class StormbreakerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Stormbreaker Surplus EV Charge."""
+class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for AdaptiveCharge."""
 
     VERSION = 1
     _data: dict[str, Any] = {}
@@ -233,7 +233,7 @@ class StormbreakerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
-                title="Stormbreaker Surplus EV Charge",
+                title="AdaptiveCharge",
                 data=self._data,
             )
 
@@ -281,10 +281,10 @@ class StormbreakerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     def async_get_options_flow(config_entry):
         """Return options flow handler."""
-        return StormbreakerOptionsFlow(config_entry)
+        return AdaptiveChargeOptionsFlow(config_entry)
 
 
-class StormbreakerOptionsFlow(config_entries.OptionsFlow):
+class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for reconfiguring advanced settings."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:

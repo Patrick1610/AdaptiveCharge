@@ -1,11 +1,11 @@
 {
   "domain": "adaptive_charge",
-  "name": "Adaptive EV charger on PV Surplus",
+  "name": "AdaptiveCharge",
   "codeowners": ["@Patrick1610"],
   "config_flow": true,
   "documentation": "https://github.com/Patrick1610/AdaptiveCharge",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "version": "2.0.0",
+  "version": "beta-v2.1.1",
   "requirements": []
 }
