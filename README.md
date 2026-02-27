@@ -26,14 +26,14 @@ A Home Assistant custom integration that intelligently controls EV charging base
 1. Open **HACS** in Home Assistant.
 2. Go to **Integrations** → three-dot menu → **Custom repositories**.
 3. Add `https://github.com/Patrick1610/AdaptiveCharge` with category **Integration**.
-4. Click **Download** on the _Stormbreaker Surplus EV Charge_ card.
+4. Click **Download** on the _AdaptiveCharge_ card.
 5. Restart Home Assistant.
 
 ---
 
 ## Configuration
 
-Navigate to **Settings → Devices & Services → Add Integration** and search for _Stormbreaker Surplus EV Charge_.
+Navigate to **Settings → Devices & Services → Add Integration** and search for _AdaptiveCharge_.
 
 ### Step 1 – Net Power Mode
 
@@ -135,6 +135,36 @@ Internal calculations use float current values. Integer rounding only happens at
 
 Each tick computes a confidence level (HIGH/MEDIUM/LOW) from data staleness, alignment state, settling state, and target stability. Upward changes require at least MEDIUM confidence.
 
+### 8. Import Guard (Enhanced)
+
+The import guard prevents grid import while surplus charging. It uses a multi-stage approach:
+
+**Debounce**: Import must exceed the threshold (default 200W) for a sustained period (default 30s) before any action is taken. Short transient spikes are ignored.
+
+**Escalation Ladder**:
+1. **Reduce current** — decrease by 1A (soft mitigation)
+2. **Settle window** — wait 30s to observe if net import improves
+3. **Reduce to 0A** — if import persists, reduce to 0A (charger stays connected)
+4. **Hard stop** — only if 0A doesn't resolve import, disable the charger relay
+
+**Hysteresis**: Import must drop below `threshold − margin` (default 150W) for 20s before the guard clears. This prevents rapid flip-flop at the threshold boundary.
+
+**Guard States**: `ok` → `reducing` → `stopped` (visible in the Import Guard State sensor)
+
+### 9. Mode Tracking
+
+Every mode transition records:
+- `mode_reason`: why the mode is currently active
+- `mode_source`: what triggered it (e.g. `auto_rule`, `charge_now_switch`, `user_toggle`, `import_guard`)
+- `mode_since`: ISO timestamp of when the current mode was entered
+- `last_transition`: `previous_mode → current_mode: reason`
+
+### 10. Charge Tonight Auto-Off
+
+The Charge Tonight switch automatically turns off when:
+- The EV cable is unplugged
+- The `solar_done` condition transitions from active to inactive (solar production recovers)
+
 ### Diagnostics
 
 The **Alignment Diagnostics** sensor exposes:
@@ -153,6 +183,23 @@ The **Alignment Diagnostics** sensor exposes:
 | `last_sample_age_ev_s` | Seconds since last EV power poll |
 | `last_applied_current_a` | Last integer setpoint sent to charger |
 | `last_control_reason` | Why the last decision was made |
+
+The **Import Guard State** sensor exposes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `import_guard_reason` | Reason string (e.g. "transient spike ignored", "sustained import 35s > 200W") |
+| `time_in_import_state` | Seconds in current guard state |
+| `import_watts` | Current grid import power (W) |
+
+The **Mode** sensor exposes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `mode_reason` | Why the current mode is active |
+| `mode_source` | What triggered it (auto_rule, charge_now_switch, user_toggle, import_guard) |
+| `mode_since` | ISO timestamp of when current mode was entered |
+| `last_transition` | Previous → current mode with reason |
 
 ---
 
@@ -276,11 +323,11 @@ When the cable sensor transitions off → on:
 
 | Service | Description |
 |---------|-------------|
-| `stormbreaker_charge.force_start` | Enable Charge Now and start immediately |
-| `stormbreaker_charge.force_stop` | Disable Charge Now and stop |
-| `stormbreaker_charge.set_desired_range` | Set desired range (km) |
-| `stormbreaker_charge.enable_tonight` | Turn on Charge Tonight |
-| `stormbreaker_charge.disable_tonight` | Turn off Charge Tonight |
+| `adaptive_charge.force_start` | Enable Charge Now and start immediately |
+| `adaptive_charge.force_stop` | Disable Charge Now and stop |
+| `adaptive_charge.set_desired_range` | Set desired range (km) |
+| `adaptive_charge.enable_tonight` | Turn on Charge Tonight |
+| `adaptive_charge.disable_tonight` | Turn off Charge Tonight |
 
 ---
 
@@ -288,7 +335,7 @@ When the cable sensor transitions off → on:
 
 If you use [Tessie](https://tessie.com/) or the Tesla integration, map entities like this:
 
-| Stormbreaker field | Tesla / Tessie entity |
+| AdaptiveCharge field | Tesla / Tessie entity |
 |-------------------|-----------------------|
 | EV Power Sensor | `sensor.my_car_charger_power` |
 | Voltage Sensor | `sensor.my_car_charger_voltage` |
