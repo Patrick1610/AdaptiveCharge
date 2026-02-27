@@ -29,7 +29,6 @@ async def async_setup_entry(
             ControllerEnabledSwitch(coordinator, entry),
             ChargeNowSwitch(coordinator, entry),
             ChargeTonightSwitch(coordinator, entry),
-            ChargingEnableSwitch(coordinator, entry),
         ]
     )
 
@@ -156,45 +155,4 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
         self._coordinator.async_request_refresh()
 
 
-class ChargingEnableSwitch(RestoreEntity, SwitchEntity):
-    """Virtual switch that mirrors the charging enabled state."""
 
-    _attr_name = "Charging Enable"
-    _attr_has_entity_name = True
-
-    def __init__(
-        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
-    ) -> None:
-        self._coordinator = coordinator
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_charging_enable"
-        self._attr_device_info = _device_info(entry)
-
-    async def async_added_to_hass(self) -> None:
-        """Restore previous state."""
-        await super().async_added_to_hass()
-        state = await self.async_get_last_state()
-        if state is not None:
-            self._coordinator.set_charging_enabled(state.state == "on")
-
-    @property
-    def is_on(self) -> bool:
-        return self._coordinator._charging_enabled
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        await self._coordinator._enable_charging()
-        self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        await self._coordinator._disable_charging()
-        self.async_write_ha_state()
-
-
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name="Stormbreaker Surplus EV Charge",
-        manufacturer="Stormbreaker Surplus",
-        model="EV Charge Controller",
-        sw_version="1.0.0",
-    )
