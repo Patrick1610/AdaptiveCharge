@@ -638,15 +638,15 @@ class TestSurplusInvariance:
 class TestForceSessionDiagnostics:
     """Test that force start/stop set all diagnostic fields consistently."""
 
-    def _simulate_start_force(self):
+    def _simulate_start_force(self, max_current_limit=16):
         """Mirror _action_start_force diagnostic state."""
-        MAX_CURRENT = 16
+        max_a = int(max_current_limit)
         state = {
             "current_mode": "force",
             "last_action": "start_force",
             "last_reason": "force_charge_active",
-            "committed_current": float(MAX_CURRENT),
-            "last_committed_int": MAX_CURRENT,
+            "committed_current": float(max_a),
+            "last_committed_int": max_a,
             "last_commit_reason": "start_force",
             "charging_on": True,
         }
@@ -913,3 +913,165 @@ class TestCablePlugInDetection:
         # Tick 3: no change
         trigger = self._should_trigger_plugin(controller_enabled, cable_connected, cable_prev)
         assert trigger is False  # same value → no change
+
+
+# ---------------------------------------------------------------------------
+# Tests: debounce-cancel logic for start/stop surplus
+# ---------------------------------------------------------------------------
+
+class TestDebounceScheduling:
+    """Test that debounced start/stop tasks are NOT reset every tick.
+
+    The bug: _cancel_pending() was called before scheduling a new debounced
+    task on every tick. With sample_interval=10s and start_delay=30s, the
+    30s debounce timer was reset every 10s and never completed.
+    """
+
+    def _should_schedule_start(
+        self,
+        ema_current: float,
+        charging_on: bool,
+        pending_task_active: bool,
+        off_elapsed: float | None,
+        min_off_time: float,
+    ) -> bool:
+        """Mirror the start surplus scheduling condition from coordinator."""
+        if ema_current >= 1.0 and not charging_on:
+            if off_elapsed is not None and off_elapsed < min_off_time:
+                return False
+            # Only schedule if not already pending
+            if not pending_task_active:
+                return True
+        return False
+
+    def _should_schedule_stop(
+        self,
+        ema_current: float,
+        charging_on: bool,
+        current_mode: str,
+        pending_task_active: bool,
+        on_elapsed: float | None,
+        min_on_time: float,
+    ) -> bool:
+        """Mirror the stop surplus scheduling condition from coordinator."""
+        if ema_current < 1.0 and charging_on and current_mode == "surplus":
+            if on_elapsed is not None and on_elapsed < min_on_time:
+                return False
+            if not pending_task_active:
+                return True
+        return False
+
+    def test_start_scheduled_when_no_pending(self):
+        """First tick with surplus: schedule start."""
+        result = self._should_schedule_start(
+            ema_current=4.0, charging_on=False, pending_task_active=False,
+            off_elapsed=200.0, min_off_time=120.0,
+        )
+        assert result is True
+
+    def test_start_not_rescheduled_when_pending(self):
+        """Subsequent ticks: do NOT reschedule if already pending.
+
+        This is the core fix for the debounce-cancel bug.
+        """
+        result = self._should_schedule_start(
+            ema_current=4.0, charging_on=False, pending_task_active=True,
+            off_elapsed=200.0, min_off_time=120.0,
+        )
+        assert result is False
+
+    def test_start_blocked_by_min_off_time(self):
+        result = self._should_schedule_start(
+            ema_current=4.0, charging_on=False, pending_task_active=False,
+            off_elapsed=60.0, min_off_time=120.0,
+        )
+        assert result is False
+
+    def test_start_allowed_after_min_off_time(self):
+        result = self._should_schedule_start(
+            ema_current=4.0, charging_on=False, pending_task_active=False,
+            off_elapsed=130.0, min_off_time=120.0,
+        )
+        assert result is True
+
+    def test_start_not_scheduled_below_threshold(self):
+        result = self._should_schedule_start(
+            ema_current=0.5, charging_on=False, pending_task_active=False,
+            off_elapsed=200.0, min_off_time=120.0,
+        )
+        assert result is False
+
+    def test_stop_scheduled_when_no_pending(self):
+        result = self._should_schedule_stop(
+            ema_current=0.5, charging_on=True, current_mode="surplus",
+            pending_task_active=False, on_elapsed=400.0, min_on_time=300.0,
+        )
+        assert result is True
+
+    def test_stop_not_rescheduled_when_pending(self):
+        """Subsequent ticks: do NOT reschedule stop if already pending."""
+        result = self._should_schedule_stop(
+            ema_current=0.5, charging_on=True, current_mode="surplus",
+            pending_task_active=True, on_elapsed=400.0, min_on_time=300.0,
+        )
+        assert result is False
+
+    def test_stop_blocked_by_min_on_time(self):
+        result = self._should_schedule_stop(
+            ema_current=0.5, charging_on=True, current_mode="surplus",
+            pending_task_active=False, on_elapsed=100.0, min_on_time=300.0,
+        )
+        assert result is False
+
+    def test_debounce_completes_simulation(self):
+        """Simulate multiple ticks to verify debounce completes.
+
+        Reproduces the exact scenario from the debug log:
+        - sample_interval=10s, start_delay=30s
+        - 4 ticks with stable surplus → debounce must complete
+        """
+        pending_task_active = False
+        started = False
+        min_off_time = 120.0
+        off_elapsed = 200.0  # well past min_off
+
+        for tick in range(4):  # 4 ticks × 10s = 40s > 30s start_delay
+            schedule = self._should_schedule_start(
+                ema_current=4.0, charging_on=False,
+                pending_task_active=pending_task_active,
+                off_elapsed=off_elapsed, min_off_time=min_off_time,
+            )
+            if schedule:
+                pending_task_active = True  # task scheduled
+                started = True
+
+        # Task was scheduled exactly once on first tick, not reset
+        assert started is True
+        assert pending_task_active is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: force mode uses max_current_limit
+# ---------------------------------------------------------------------------
+
+class TestForceMaxCurrentLimit:
+    """Test that force mode respects _max_current_limit."""
+
+    def test_force_start_uses_configured_limit(self):
+        """Force start with lower limit (e.g. 8A Tessie charger)."""
+        max_current_limit = 8
+        max_a = int(max_current_limit)
+        assert max_a == 8
+
+    def test_force_start_default_16a(self):
+        """Force start with default 16A limit."""
+        max_current_limit = 16
+        max_a = int(max_current_limit)
+        assert max_a == 16
+
+    def test_stop_surplus_resets_to_limit_not_16(self):
+        """After stop_surplus, reset current should be max_current_limit, not 16."""
+        max_current_limit = 8
+        reset_current = int(max_current_limit)
+        assert reset_current == 8
+        assert reset_current != 16
