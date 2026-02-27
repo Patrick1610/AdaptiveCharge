@@ -295,7 +295,6 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     # Tick
     # ------------------------------------------------------------------
 
-    @callback
     async def _async_tick(self, _now) -> None:
         """Periodic update tick."""
         try:
@@ -487,7 +486,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         force_charge = self._charge_now or tonight_condition
 
         # --- Cable plug-in detection (only when controller enabled) ---
-        if self._controller_enabled and cable_connected is not None and cable_connected != self._cable_prev:
+        # Skip when _cable_prev is None (first read after startup) to avoid
+        # false plug-in detection before all sensors are available.
+        if self._controller_enabled and cable_connected is not None and self._cable_prev is not None and cable_connected != self._cable_prev:
             if cable_connected and not self._cable_prev:
                 if self._pending_plugin_task and not self._pending_plugin_task.done():
                     self._pending_plugin_task.cancel()

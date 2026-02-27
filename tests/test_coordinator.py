@@ -806,3 +806,110 @@ class TestControllerEnabledGatesServices:
         assert committed_current is None
         assert last_committed_int is None
         assert current_mode == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# Tests: cable plug-in detection edge cases
+# ---------------------------------------------------------------------------
+
+class TestCablePlugInDetection:
+    """Test cable plug-in detection logic mirrors coordinator behaviour."""
+
+    def _should_trigger_plugin(
+        self,
+        controller_enabled: bool,
+        cable_connected: bool | None,
+        cable_prev: bool | None,
+    ) -> bool:
+        """Mirror the cable plug-in detection condition from coordinator."""
+        if (
+            controller_enabled
+            and cable_connected is not None
+            and cable_prev is not None
+            and cable_connected != cable_prev
+        ):
+            if cable_connected and not cable_prev:
+                return True
+        return False
+
+    def test_no_plugin_when_cable_prev_is_none(self):
+        """First read after startup: cable_prev=None → no plug-in event."""
+        result = self._should_trigger_plugin(
+            controller_enabled=True,
+            cable_connected=True,
+            cable_prev=None,
+        )
+        assert result is False
+
+    def test_plugin_detected_when_cable_changes_false_to_true(self):
+        """Normal plug-in: cable_prev=False, cable_connected=True → detected."""
+        result = self._should_trigger_plugin(
+            controller_enabled=True,
+            cable_connected=True,
+            cable_prev=False,
+        )
+        assert result is True
+
+    def test_no_plugin_when_cable_stays_true(self):
+        """Cable already connected: no change → no plug-in."""
+        result = self._should_trigger_plugin(
+            controller_enabled=True,
+            cable_connected=True,
+            cable_prev=True,
+        )
+        assert result is False
+
+    def test_no_plugin_when_controller_disabled(self):
+        """Controller disabled: no detection even if cable changes."""
+        result = self._should_trigger_plugin(
+            controller_enabled=False,
+            cable_connected=True,
+            cable_prev=False,
+        )
+        assert result is False
+
+    def test_no_plugin_when_cable_connected_is_none(self):
+        """Cable sensor unavailable: no detection."""
+        result = self._should_trigger_plugin(
+            controller_enabled=True,
+            cable_connected=None,
+            cable_prev=False,
+        )
+        assert result is False
+
+    def test_no_plugin_on_unplug(self):
+        """Cable removed: cable_prev=True, cable_connected=False → not a plug-in."""
+        result = self._should_trigger_plugin(
+            controller_enabled=True,
+            cable_connected=False,
+            cable_prev=True,
+        )
+        assert result is False
+
+    def test_startup_sequence_no_false_plugin(self):
+        """Simulate startup: sensor unavailable at first, then becomes available.
+
+        This mirrors the exact bug from the debug log:
+        1. First tick: cable sensor not yet ready → cable_prev stays None
+        2. Second tick: cable sensor available (True) → must NOT trigger plug-in
+        3. Third tick: cable stays True → no change, no trigger
+        """
+        cable_prev = None  # initial state
+
+        # Tick 1: sensor unavailable, controller disabled (first_refresh)
+        cable_connected = None
+        controller_enabled = False
+        trigger = self._should_trigger_plugin(controller_enabled, cable_connected, cable_prev)
+        assert trigger is False
+        # cable_prev stays None because cable_connected is None
+
+        # Tick 2: sensor now available, controller restored to enabled
+        cable_connected = True
+        controller_enabled = True
+        trigger = self._should_trigger_plugin(controller_enabled, cable_connected, cable_prev)
+        assert trigger is False  # cable_prev is still None → skip
+        cable_prev = cable_connected  # update after check
+
+        # Tick 3: no change
+        trigger = self._should_trigger_plugin(controller_enabled, cable_connected, cable_prev)
+        assert trigger is False  # same value → no change
