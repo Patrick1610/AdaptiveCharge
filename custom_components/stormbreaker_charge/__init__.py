@@ -8,7 +8,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 
 from .const import (
     DOMAIN,
@@ -50,6 +50,14 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> StormbreakerCoor
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Stormbreaker Surplus EV Charge from a config entry."""
+    # Remove stale charging_enable switch entity (replaced by binary_sensor.charging_active)
+    registry = er.async_get(hass)
+    stale_unique_id = f"{entry.entry_id}_charging_enable"
+    stale_entity_id = registry.async_get_entity_id("switch", DOMAIN, stale_unique_id)
+    if stale_entity_id:
+        _LOGGER.info("Removing stale entity %s", stale_entity_id)
+        registry.async_remove(stale_entity_id)
+
     coordinator = StormbreakerCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 

@@ -76,7 +76,7 @@ class ControllerEnabledSwitch(RestoreEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._coordinator.set_controller_enabled(True)
         self.async_write_ha_state()
-        self._coordinator.async_request_refresh()
+        await self._coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._coordinator.set_controller_enabled(False)
@@ -111,12 +111,12 @@ class ChargeNowSwitch(RestoreEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._coordinator.set_charge_now(True)
         self.async_write_ha_state()
-        self._coordinator.async_request_refresh()
+        await self._coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._coordinator.set_charge_now(False)
         self.async_write_ha_state()
-        self._coordinator.async_request_refresh()
+        await self._coordinator.async_request_refresh()
 
 
 class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
@@ -147,12 +147,12 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._coordinator.set_charge_tonight(True)
         self.async_write_ha_state()
-        self._coordinator.async_request_refresh()
+        await self._coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._coordinator.set_charge_tonight(False)
         self.async_write_ha_state()
-        self._coordinator.async_request_refresh()
+        await self._coordinator.async_request_refresh()
 
 
 

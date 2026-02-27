@@ -295,7 +295,6 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     # Tick
     # ------------------------------------------------------------------
 
-    @callback
     async def _async_tick(self, _now) -> None:
         """Periodic update tick."""
         try:
@@ -487,7 +486,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         force_charge = self._charge_now or tonight_condition
 
         # --- Cable plug-in detection (only when controller enabled) ---
-        if self._controller_enabled and cable_connected is not None and cable_connected != self._cable_prev:
+        # Skip when _cable_prev is None (first read after startup) to avoid
+        # spurious plug-in detection before all sensors are available.
+        if self._controller_enabled and cable_connected is not None and self._cable_prev is not None and cable_connected != self._cable_prev:
             if cable_connected and not self._cable_prev:
                 if self._pending_plugin_task and not self._pending_plugin_task.done():
                     self._pending_plugin_task.cancel()
@@ -671,7 +672,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
         await asyncio.sleep(10)
-        await self._set_charge_current(MAX_CURRENT_ABS)
+        await self._set_charge_current(int(self._max_current_limit))
 
     # ------------------------------------------------------------------
     # Control logic
@@ -738,13 +739,15 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 off_elapsed = mono_now - self._last_off_time
                 if off_elapsed < DEFAULT_MIN_OFF_TIME_S:
                     return
-            self._cancel_pending()
-            capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
-            start_a = max(1, min(int(ema_current), int(capped_limit)))
-            self._pending_task = self.hass.async_create_task(
-                self._debounced(self._start_delay, self._action_start_surplus, start_a),
-                eager_start=False,
-            )
+            # Only schedule if not already pending — avoid resetting the
+            # debounce timer every tick which would prevent it from completing.
+            if self._pending_task is None or self._pending_task.done():
+                capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
+                start_a = max(1, min(int(ema_current), int(capped_limit)))
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(self._start_delay, self._action_start_surplus, start_a),
+                    eager_start=False,
+                )
             return
 
         # --- Stop surplus charging ---
@@ -754,11 +757,13 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 on_elapsed = mono_now - self._last_on_time
                 if on_elapsed < DEFAULT_MIN_ON_TIME_S:
                     return
-            self._cancel_pending()
-            self._pending_task = self.hass.async_create_task(
-                self._debounced(self._stop_delay, self._action_stop_surplus),
-                eager_start=False,
-            )
+            # Only schedule if not already pending — avoid resetting the
+            # debounce timer every tick which would prevent it from completing.
+            if self._pending_task is None or self._pending_task.done():
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(self._stop_delay, self._action_stop_surplus),
+                    eager_start=False,
+                )
             return
 
         # --- Modulate current (hysteresis + rate limiting) ---
@@ -866,8 +871,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
 
     async def _action_start_force(self) -> None:
-        _LOGGER.info("Stormbreaker: start_force")
-        await self._set_charge_current(MAX_CURRENT_ABS)
+        max_a = int(self._max_current_limit)
+        _LOGGER.info("Stormbreaker: start_force at %dA", max_a)
+        await self._set_charge_current(max_a)
         await asyncio.sleep(5)
         await self._enable_charging()
         self._charging_on = True
@@ -876,8 +882,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_reason = "force_charge_active"
         self._last_action_ts = time.monotonic()
         self._last_on_time = time.monotonic()
-        self._committed_current = float(MAX_CURRENT_ABS)
-        self._last_committed_int = MAX_CURRENT_ABS
+        self._committed_current = float(max_a)
+        self._last_committed_int = max_a
         self._last_commit_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
@@ -893,7 +899,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_committed_int = None
         self._last_commit_reason = "stop_force"
         await asyncio.sleep(10)
-        await self._set_charge_current(MAX_CURRENT_ABS)
+        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_start_surplus(self, current_a: int) -> None:
         _LOGGER.info("Stormbreaker: start_surplus at %dA", current_a)
@@ -924,7 +930,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_commit_reason = "stop_surplus"
         self._import_guard_active = False
         await asyncio.sleep(10)
-        await self._set_charge_current(MAX_CURRENT_ABS)
+        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_plug_in_delayed(self, force_charge: bool, smoothed_floored: int) -> None:
         await asyncio.sleep(2)

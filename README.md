@@ -271,7 +271,6 @@ When the cable sensor transitions off → on:
 |--------|-------------|
 | `switch.charge_now` | Force charge at maximum current immediately |
 | `switch.charge_tonight` | Enable overnight charge-to-range scheduling |
-| `switch.charging_enable` | Virtual mirror of the EVSE enable state |
 
 ### Services
 

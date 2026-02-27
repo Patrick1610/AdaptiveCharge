@@ -134,8 +134,7 @@
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},
       "charge_now": {"name": "Charge Now"},
-      "charge_tonight": {"name": "Charge Tonight"},
-      "charging_enable": {"name": "Charging Enable"}
+      "charge_tonight": {"name": "Charge Tonight"}
     }
   }
 }
