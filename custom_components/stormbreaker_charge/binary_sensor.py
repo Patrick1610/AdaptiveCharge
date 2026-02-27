@@ -27,7 +27,20 @@ async def async_setup_entry(
 ) -> None:
     """Set up binary sensor entities."""
     coordinator: StormbreakerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([ForceChargeSensor(coordinator, entry)])
+    async_add_entities([
+        ForceChargeSensor(coordinator, entry),
+        ChargingActiveSensor(coordinator, entry),
+    ])
+
+
+def _device_info(entry: ConfigEntry) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="Stormbreaker Surplus EV Charge",
+        manufacturer="Stormbreaker Surplus",
+        model="EV Charge Controller",
+        sw_version="1.0.0",
+    )
 
 
 class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
@@ -43,13 +56,7 @@ class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_force_charge"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Stormbreaker Surplus EV Charge",
-            manufacturer="Stormbreaker Surplus",
-            model="EV Charge Controller",
-            sw_version="1.0.0",
-        )
+        self._attr_device_info = _device_info(entry)
 
     @property
     def is_on(self) -> bool | None:
@@ -66,4 +73,39 @@ class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
             "current_mode": data.get("current_mode"),
             "last_action": data.get("last_action"),
             "last_updated": data.get("last_updated"),
+        }
+
+
+class ChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
+    """Read-only binary sensor showing if the integration is actively controlling charging.
+
+    True only when the coordinator has started charging (not merely 'cable connected').
+    """
+
+    _attr_name = "Charging Active"
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+
+    def __init__(
+        self, coordinator: StormbreakerCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_charging_active"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        if self.coordinator.data is None:
+            return None
+        return bool(self.coordinator.data.get("charging_active", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "controller_enabled": data.get("controller_enabled"),
+            "current_mode": data.get("current_mode"),
+            "last_action": data.get("last_action"),
+            "last_reason": data.get("last_reason"),
         }
