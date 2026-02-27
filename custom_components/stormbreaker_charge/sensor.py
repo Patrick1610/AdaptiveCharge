@@ -117,12 +117,13 @@ class SurplusExclEvSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
-    """Available charge current raw (A)."""
+    """Available charge current raw (A). Deprecated: use EMA Current or Available Current Decision."""
 
     _attr_name = "Available Current Raw (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -136,12 +137,13 @@ class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
-    """Available charge current raw floored (A)."""
+    """Available charge current raw floored (A). Deprecated: use Current Setting."""
 
     _attr_name = "Available Charge Current Raw Floored (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -155,12 +157,13 @@ class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
-    """Available charge current smoothed (A)."""
+    """Available charge current smoothed (A). Deprecated: use EMA Current."""
 
     _attr_name = "Available Charge Current Smoothed (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -174,12 +177,13 @@ class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentSmoothedFlooredSensor(_BaseStormbreakerSensor):
-    """Available charge current smoothed and floored (A)."""
+    """Available charge current smoothed and floored (A). Deprecated: use Current Setting."""
 
     _attr_name = "Available Charge Current Smoothed Floored (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
