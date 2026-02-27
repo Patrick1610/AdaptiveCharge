@@ -19,38 +19,38 @@ _const_path = os.path.join(
     os.path.dirname(__file__),
     "..",
     "custom_components",
-    "stormbreaker_charge",
+    "adaptive_charge",
     "const.py",
 )
 _const_spec = importlib.util.spec_from_file_location(
-    "stormbreaker_charge.const", _const_path
+    "adaptive_charge.const", _const_path
 )
 _const_mod = importlib.util.module_from_spec(_const_spec)
-sys.modules["stormbreaker_charge.const"] = _const_mod
-pkg = types.ModuleType("stormbreaker_charge")
+sys.modules["adaptive_charge.const"] = _const_mod
+pkg = types.ModuleType("adaptive_charge")
 pkg.__path__ = [
     os.path.join(
         os.path.dirname(__file__),
         "..",
         "custom_components",
-        "stormbreaker_charge",
+        "adaptive_charge",
     )
 ]
-sys.modules.setdefault("stormbreaker_charge", pkg)
+sys.modules.setdefault("adaptive_charge", pkg)
 _const_spec.loader.exec_module(_const_mod)
 
 _align_path = os.path.join(
     os.path.dirname(__file__),
     "..",
     "custom_components",
-    "stormbreaker_charge",
+    "adaptive_charge",
     "alignment.py",
 )
 _align_spec = importlib.util.spec_from_file_location(
-    "stormbreaker_charge.alignment", _align_path
+    "adaptive_charge.alignment", _align_path
 )
 _align_mod = importlib.util.module_from_spec(_align_spec)
-sys.modules["stormbreaker_charge.alignment"] = _align_mod
+sys.modules["adaptive_charge.alignment"] = _align_mod
 _align_spec.loader.exec_module(_align_mod)
 
 AlignmentEngine = _align_mod.AlignmentEngine

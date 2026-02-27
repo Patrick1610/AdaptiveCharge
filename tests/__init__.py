@@ -1,1 +1,1 @@
-# Tests for Stormbreaker Surplus EV Charge
+# Tests for AdaptiveCharge

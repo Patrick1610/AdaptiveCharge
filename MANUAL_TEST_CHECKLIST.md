@@ -1,4 +1,4 @@
-# Manual Test Checklist — Stormbreaker Surplus EV Charge
+# Manual Test Checklist — AdaptiveCharge
 
 ## How to Use
 Run each scenario in a live Home Assistant instance with the integration configured.

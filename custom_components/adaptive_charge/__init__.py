@@ -1,4 +1,4 @@
-"""The Stormbreaker Surplus EV Charge integration."""
+"""The AdaptiveCharge integration."""
 from __future__ import annotations
 
 import logging
@@ -19,7 +19,7 @@ from .const import (
     SERVICE_FORCE_STOP,
     SERVICE_SET_DESIRED_RANGE,
 )
-from .coordinator import StormbreakerCoordinator
+from .coordinator import AdaptiveChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ SERVICE_FORCE_START_SCHEMA = vol.Schema(
 )
 
 
-def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> StormbreakerCoordinator | None:
+def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> AdaptiveChargeCoordinator | None:
     """Retrieve coordinator from service call data or default to first entry."""
     entry_id = call.data.get("entry_id")
     domain_data = hass.data.get(DOMAIN, {})
@@ -49,7 +49,7 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> StormbreakerCoor
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Stormbreaker Surplus EV Charge from a config entry."""
+    """Set up AdaptiveCharge from a config entry."""
     # Remove stale charging_enable switch entity (replaced by binary_sensor.charging_active)
     registry = er.async_get(hass)
     stale_unique_id = f"{entry.entry_id}_charging_enable"
@@ -58,7 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Removing stale entity %s", stale_entity_id)
         registry.async_remove(stale_entity_id)
 
-    coordinator = StormbreakerCoordinator(hass, entry)
+    coordinator = AdaptiveChargeCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await coordinator.async_config_entry_first_refresh()
@@ -120,7 +120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    coordinator: StormbreakerCoordinator = hass.data[DOMAIN].get(entry.entry_id)
+    coordinator: AdaptiveChargeCoordinator = hass.data[DOMAIN].get(entry.entry_id)
     if coordinator:
         await coordinator.async_shutdown()
 

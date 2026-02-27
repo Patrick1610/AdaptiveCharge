@@ -15,7 +15,7 @@ using them, they will continue to function. However, we recommend migrating to t
 | Available Charge Current Smoothed (A) | EMA Current (A) | Legacy smoothing replaced by EMA filter |
 | Available Charge Current Smoothed Floored (A) | Current Setting (A) | Legacy smoothing replaced by EMA filter |
 
-To re-enable a deprecated sensor, go to **Settings → Devices & Services → Stormbreaker Surplus EV Charge → Entities** and enable it manually.
+To re-enable a deprecated sensor, go to **Settings → Devices & Services → AdaptiveCharge → Entities** and enable it manually.
 
 ### Import Guard Changes
 

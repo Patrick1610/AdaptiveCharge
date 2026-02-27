@@ -1,4 +1,4 @@
-"""Coordinator for Stormbreaker Surplus EV Charge."""
+"""Coordinator for AdaptiveCharge."""
 from __future__ import annotations
 
 import asyncio
@@ -140,7 +140,7 @@ def _to_watts(value: float, entity_id: str | None, hass: HomeAssistant) -> float
     return value
 
 
-class StormbreakerCoordinator(DataUpdateCoordinator):
+class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     """Coordinator managing EV charge control logic."""
 
     def __init__(self, hass: HomeAssistant, entry) -> None:
@@ -304,7 +304,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     @callback
     def _async_night_off(self, _now) -> None:
         """Turn off charge_tonight at 05:00."""
-        _LOGGER.info("Stormbreaker: Night-Off — disabling charge_tonight at 05:00")
+        _LOGGER.info("AdaptiveCharge: Night-Off — disabling charge_tonight at 05:00")
         self._charge_tonight = False
         self._schedule_night_off()
 
@@ -510,7 +510,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             and self._cable_prev
             and not cable_connected
         ):
-            _LOGGER.info("Stormbreaker: charge_tonight auto-off — cable unplugged")
+            _LOGGER.info("AdaptiveCharge: charge_tonight auto-off — cable unplugged")
             self._charge_tonight = False
 
         # (b) solar_done transitions on → off (end of night charging plan)
@@ -519,7 +519,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             and self._prev_solar_done
             and not self._solar_done
         ):
-            _LOGGER.info("Stormbreaker: charge_tonight auto-off — solar_done ended")
+            _LOGGER.info("AdaptiveCharge: charge_tonight auto-off — solar_done ended")
             self._charge_tonight = False
 
         self._prev_solar_done = self._solar_done
@@ -754,7 +754,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         """
         if not self._charging_on:
             return
-        _LOGGER.info("Stormbreaker: controller disabled — running shutdown sequence")
+        _LOGGER.info("AdaptiveCharge: controller disabled — running shutdown sequence")
         self._cancel_pending()
         self._last_reason = "controller_disabled"
         await self._disable_charging()
@@ -943,7 +943,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
         if target_int >= 0:
             _LOGGER.debug(
-                "Stormbreaker: commit %dA (float=%.2f, reason=%s, confidence=%s)",
+                "AdaptiveCharge: commit %dA (float=%.2f, reason=%s, confidence=%s)",
                 target_int, target, reason, self._confidence,
             )
             await self._set_charge_current(target_int)
@@ -994,7 +994,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
 
     async def _action_start_force(self) -> None:
         max_a = int(self._max_current_limit)
-        _LOGGER.info("Stormbreaker: start_force at %dA", max_a)
+        _LOGGER.info("AdaptiveCharge: start_force at %dA", max_a)
         await self._set_charge_current(max_a)
         await asyncio.sleep(5)
         await self._enable_charging()
@@ -1009,7 +1009,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_commit_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
-        _LOGGER.info("Stormbreaker: stop_force")
+        _LOGGER.info("AdaptiveCharge: stop_force")
         await self._disable_charging()
         self._charging_on = False
         self._set_mode(MODE_STOPPED, "force_charge_stopped", "charge_now_switch")
@@ -1024,7 +1024,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_start_surplus(self, current_a: int) -> None:
-        _LOGGER.info("Stormbreaker: start_surplus at %dA", current_a)
+        _LOGGER.info("AdaptiveCharge: start_surplus at %dA", current_a)
         await self._set_charge_current(current_a)
         await asyncio.sleep(5)
         await self._enable_charging()
@@ -1039,7 +1039,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_commit_reason = "start_surplus"
 
     async def _action_stop_surplus(self) -> None:
-        _LOGGER.info("Stormbreaker: stop_surplus")
+        _LOGGER.info("AdaptiveCharge: stop_surplus")
         await self._disable_charging()
         self._charging_on = False
         source = "import_guard" if self._import_guard_active else "auto_rule"
@@ -1124,7 +1124,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     async def async_service_force_start(self) -> None:
         """Service: force start charging."""
         if not self._controller_enabled:
-            _LOGGER.warning("Stormbreaker: force_start ignored — controller disabled")
+            _LOGGER.warning("AdaptiveCharge: force_start ignored — controller disabled")
             return
         self._charge_now = True
         self._cancel_pending()
@@ -1135,7 +1135,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     async def async_service_force_stop(self) -> None:
         """Service: force stop charging."""
         if not self._controller_enabled:
-            _LOGGER.warning("Stormbreaker: force_stop ignored — controller disabled")
+            _LOGGER.warning("AdaptiveCharge: force_stop ignored — controller disabled")
             return
         self._charge_now = False
         self._cancel_pending()

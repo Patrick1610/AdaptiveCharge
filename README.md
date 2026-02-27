@@ -26,14 +26,14 @@ A Home Assistant custom integration that intelligently controls EV charging base
 1. Open **HACS** in Home Assistant.
 2. Go to **Integrations** → three-dot menu → **Custom repositories**.
 3. Add `https://github.com/Patrick1610/AdaptiveCharge` with category **Integration**.
-4. Click **Download** on the _Stormbreaker Surplus EV Charge_ card.
+4. Click **Download** on the _AdaptiveCharge_ card.
 5. Restart Home Assistant.
 
 ---
 
 ## Configuration
 
-Navigate to **Settings → Devices & Services → Add Integration** and search for _Stormbreaker Surplus EV Charge_.
+Navigate to **Settings → Devices & Services → Add Integration** and search for _AdaptiveCharge_.
 
 ### Step 1 – Net Power Mode
 
@@ -323,11 +323,11 @@ When the cable sensor transitions off → on:
 
 | Service | Description |
 |---------|-------------|
-| `stormbreaker_charge.force_start` | Enable Charge Now and start immediately |
-| `stormbreaker_charge.force_stop` | Disable Charge Now and stop |
-| `stormbreaker_charge.set_desired_range` | Set desired range (km) |
-| `stormbreaker_charge.enable_tonight` | Turn on Charge Tonight |
-| `stormbreaker_charge.disable_tonight` | Turn off Charge Tonight |
+| `adaptive_charge.force_start` | Enable Charge Now and start immediately |
+| `adaptive_charge.force_stop` | Disable Charge Now and stop |
+| `adaptive_charge.set_desired_range` | Set desired range (km) |
+| `adaptive_charge.enable_tonight` | Turn on Charge Tonight |
+| `adaptive_charge.disable_tonight` | Turn off Charge Tonight |
 
 ---
 
@@ -335,7 +335,7 @@ When the cable sensor transitions off → on:
 
 If you use [Tessie](https://tessie.com/) or the Tesla integration, map entities like this:
 
-| Stormbreaker field | Tesla / Tessie entity |
+| AdaptiveCharge field | Tesla / Tessie entity |
 |-------------------|-----------------------|
 | EV Power Sensor | `sensor.my_car_charger_power` |
 | Voltage Sensor | `sensor.my_car_charger_voltage` |

@@ -1,4 +1,4 @@
-"""Unit tests for Stormbreaker Surplus EV Charge coordinator logic."""
+"""Unit tests for AdaptiveCharge coordinator logic."""
 from __future__ import annotations
 
 import asyncio
