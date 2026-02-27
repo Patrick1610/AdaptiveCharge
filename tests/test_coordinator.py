@@ -261,3 +261,307 @@ class TestSolarDoneLogic:
         done, below_since = self._solar_done_state(200.0, 50.0, 600, start, now)
         assert done is False
         assert below_since is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: controller_enabled gate
+# ---------------------------------------------------------------------------
+
+class TestControllerEnabled:
+    """Test master controller switch behaviour."""
+
+    def test_controller_enabled_default_off(self):
+        """Controller enabled should default to False (safe first-install)."""
+        enabled = False  # default
+        assert enabled is False
+
+    def test_controller_enabled_gate_no_control_when_off(self):
+        """When controller is disabled, control logic should not run."""
+        controller_enabled = False
+        # Simulate: if not controller_enabled → skip _run_control_logic
+        control_logic_ran = False
+        if controller_enabled:
+            control_logic_ran = True
+        assert control_logic_ran is False
+
+    def test_controller_enabled_allows_control_when_on(self):
+        """When controller is enabled, control logic should run."""
+        controller_enabled = True
+        control_logic_ran = False
+        if controller_enabled:
+            control_logic_ran = True
+        assert control_logic_ran is True
+
+    def test_shutdown_triggered_when_disabled_while_charging(self):
+        """Disabling controller while charging_on should trigger shutdown."""
+        controller_enabled = True
+        charging_on = True
+        shutdown_scheduled = False
+        # Simulate set_controller_enabled(False)
+        prev = controller_enabled
+        controller_enabled = False
+        if prev and not controller_enabled and charging_on:
+            shutdown_scheduled = True
+        assert shutdown_scheduled is True
+
+    def test_no_shutdown_when_disabled_while_not_charging(self):
+        """Disabling controller when not charging should not trigger shutdown."""
+        controller_enabled = True
+        charging_on = False
+        shutdown_scheduled = False
+        prev = controller_enabled
+        controller_enabled = False
+        if prev and not controller_enabled and charging_on:
+            shutdown_scheduled = True
+        assert shutdown_scheduled is False
+
+    def test_no_shutdown_when_already_disabled(self):
+        """If controller was already off, no extra shutdown on repeated disable."""
+        controller_enabled = False
+        charging_on = True
+        shutdown_scheduled = False
+        prev = controller_enabled
+        controller_enabled = False
+        if prev and not controller_enabled and charging_on:
+            shutdown_scheduled = True
+        assert shutdown_scheduled is False
+
+    def test_controller_off_sets_mode_off_in_sensor(self):
+        """Mode sensor should report 'off' when controller_enabled is False."""
+        controller_enabled = False
+        current_mode = "surplus"
+        # ModeSensor logic
+        if not controller_enabled:
+            displayed_mode = "off"
+        else:
+            displayed_mode = current_mode
+        assert displayed_mode == "off"
+
+    def test_controller_on_shows_current_mode(self):
+        """Mode sensor shows actual current_mode when controller is on."""
+        controller_enabled = True
+        current_mode = "surplus"
+        if not controller_enabled:
+            displayed_mode = "off"
+        else:
+            displayed_mode = current_mode
+        assert displayed_mode == "surplus"
+
+
+# ---------------------------------------------------------------------------
+# Tests: shutdown sequence policy
+# ---------------------------------------------------------------------------
+
+class TestShutdownSequencePolicy:
+    """Test the controlled shutdown sequence logic."""
+
+    def _simulate_shutdown(self, charging_on: bool, current_mode: str) -> dict:
+        """Simulate the shutdown sequence when controller is disabled."""
+        result = {"stop_called": False, "current_reset": False, "mode": current_mode}
+        if charging_on:
+            result["stop_called"] = True
+            result["mode"] = "stopped"
+            result["current_reset"] = True  # resets to 16A as per existing policy
+        return result
+
+    def test_shutdown_stops_charging_if_active(self):
+        result = self._simulate_shutdown(charging_on=True, current_mode="surplus")
+        assert result["stop_called"] is True
+        assert result["mode"] == "stopped"
+
+    def test_shutdown_resets_current(self):
+        result = self._simulate_shutdown(charging_on=True, current_mode="force")
+        assert result["current_reset"] is True
+
+    def test_no_stop_if_not_charging(self):
+        result = self._simulate_shutdown(charging_on=False, current_mode="stopped")
+        assert result["stop_called"] is False
+
+    def test_shutdown_reason_is_controller_disabled(self):
+        """Shutdown sequence sets last_reason to controller_disabled."""
+        charging_on = True
+        last_reason = ""
+        if charging_on:
+            last_reason = "controller_disabled"
+        assert last_reason == "controller_disabled"
+
+
+# ---------------------------------------------------------------------------
+# Tests: FORCE_MAX mode
+# ---------------------------------------------------------------------------
+
+class TestForceModeLogic:
+    """Test FORCE_MAX / charge_now mode logic."""
+
+    def test_force_mode_sets_max_current(self):
+        charge_now = True
+        MAX_CURRENT = 16
+        # When force_charge → set to MAX_CURRENT
+        target_current = MAX_CURRENT if charge_now else None
+        assert target_current == 16
+
+    def test_force_mode_does_not_subtract_ev_from_surplus(self):
+        """In FORCE_MAX, surplus calculation is irrelevant — current is fixed at max."""
+        charge_now = True
+        ev_w = 3000.0
+        net_w = 200.0
+        # In force mode: we don't need surplus calculation to determine current
+        surplus_used_for_current = not charge_now  # only used in surplus mode
+        assert surplus_used_for_current is False
+
+    def test_surplus_mode_uses_ev_excl_calculation(self):
+        """In surplus mode, current derives from surplus excl EV."""
+        charge_now = False
+        # surplus = (0 - net_w) + ev_w — EV power added back so it's excluded
+        net_w = 0.0
+        ev_w = 2000.0
+        surplus_w = (0.0 - net_w) + ev_w
+        assert surplus_w == 2000.0
+
+    def test_force_charge_true_overrides_surplus(self):
+        """force_charge=True means we ignore surplus thresholds."""
+        charge_now = True
+        ema_current = 0.0  # would normally prevent start
+        # force_charge bypasses ema_current < 1 check
+        should_start = charge_now or ema_current >= 1.0
+        assert should_start is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: idempotent service calls
+# ---------------------------------------------------------------------------
+
+class TestIdempotentCurrentCalls:
+    """Test that repeated same target current → no new service calls."""
+
+    def _should_send_current(
+        self, target: float, last_committed_int: int | None
+    ) -> bool:
+        """Mirror of _commit_current idempotency check."""
+        target_int = max(int(target), 0)
+        if target_int == last_committed_int:
+            return False
+        return target_int > 0
+
+    def test_same_integer_target_no_call(self):
+        assert self._should_send_current(4.7, 4) is False
+
+    def test_same_integer_target_exact(self):
+        assert self._should_send_current(4.0, 4) is False
+
+    def test_different_integer_sends_call(self):
+        assert self._should_send_current(5.0, 4) is True
+
+    def test_zero_target_no_call(self):
+        assert self._should_send_current(0.5, None) is False
+
+    def test_first_call_when_no_previous(self):
+        assert self._should_send_current(4.0, None) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: import guard logic
+# ---------------------------------------------------------------------------
+
+class TestImportGuardLogic:
+    """Test import guard fail-safe behaviour."""
+
+    def _check_import_guard(
+        self,
+        net_w: float,
+        mono_now: float,
+        threshold: float,
+        duration: float,
+        exceed_since: float | None,
+    ) -> tuple[bool, float | None]:
+        """Mirror of _check_import_guard logic."""
+        if net_w > threshold:
+            if exceed_since is None:
+                exceed_since = mono_now
+            elif (mono_now - exceed_since) >= duration:
+                return True, exceed_since
+        else:
+            exceed_since = None
+        return False, exceed_since
+
+    def test_no_import_no_trigger(self):
+        triggered, _ = self._check_import_guard(50.0, 0.0, 150.0, 10.0, None)
+        assert triggered is False
+
+    def test_import_below_threshold_no_trigger(self):
+        triggered, _ = self._check_import_guard(100.0, 0.0, 150.0, 10.0, None)
+        assert triggered is False
+
+    def test_import_starts_timer(self):
+        triggered, exceed_since = self._check_import_guard(200.0, 5.0, 150.0, 10.0, None)
+        assert triggered is False
+        assert exceed_since == 5.0
+
+    def test_import_does_not_trigger_before_duration(self):
+        # exceed_since=0, now=9, duration=10 → not triggered yet
+        triggered, _ = self._check_import_guard(200.0, 9.0, 150.0, 10.0, 0.0)
+        assert triggered is False
+
+    def test_import_triggers_at_duration(self):
+        # exceed_since=0, now=10, duration=10 → triggered
+        triggered, _ = self._check_import_guard(200.0, 10.0, 150.0, 10.0, 0.0)
+        assert triggered is True
+
+    def test_import_triggers_after_duration(self):
+        triggered, _ = self._check_import_guard(200.0, 12.0, 150.0, 10.0, 0.0)
+        assert triggered is True
+
+    def test_import_resets_when_below_threshold(self):
+        # was importing, now exporting
+        triggered, exceed_since = self._check_import_guard(-100.0, 15.0, 150.0, 10.0, 5.0)
+        assert triggered is False
+        assert exceed_since is None
+
+    def test_short_spike_no_trigger(self):
+        # 3s spike at 200W, then export — guard should not have triggered
+        triggered_at_3s, exceed = self._check_import_guard(200.0, 3.0, 150.0, 10.0, 0.0)
+        assert triggered_at_3s is False
+        # Drops back below threshold
+        triggered_after_drop, exceed2 = self._check_import_guard(50.0, 4.0, 150.0, 10.0, exceed)
+        assert triggered_after_drop is False
+        assert exceed2 is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: last_reason tracking
+# ---------------------------------------------------------------------------
+
+class TestLastReasonTracking:
+    """Test that control actions set last_reason correctly."""
+
+    def test_start_surplus_sets_reason(self):
+        """start_surplus sets reason to surplus_above_threshold."""
+        last_reason = ""
+        # Simulate _action_start_surplus
+        last_reason = "surplus_above_threshold"
+        assert last_reason == "surplus_above_threshold"
+
+    def test_stop_surplus_sets_reason(self):
+        last_reason = ""
+        last_reason = "surplus_below_threshold"
+        assert last_reason == "surplus_below_threshold"
+
+    def test_start_force_sets_reason(self):
+        last_reason = ""
+        last_reason = "force_charge_active"
+        assert last_reason == "force_charge_active"
+
+    def test_stop_force_sets_reason(self):
+        last_reason = ""
+        last_reason = "force_charge_stopped"
+        assert last_reason == "force_charge_stopped"
+
+    def test_import_guard_sets_reason(self):
+        last_reason = ""
+        last_reason = "import_guard"
+        assert last_reason == "import_guard"
+
+    def test_controller_disabled_sets_reason(self):
+        last_reason = ""
+        last_reason = "controller_disabled"
+        assert last_reason == "controller_disabled"

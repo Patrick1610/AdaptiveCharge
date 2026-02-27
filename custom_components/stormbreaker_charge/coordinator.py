@@ -635,10 +635,6 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._import_guard_active = False
         return False
 
-    def _check_import_safety(self, net_w: float, mono_now: float) -> bool:
-        """Legacy alias — delegates to _check_import_guard."""
-        return self._check_import_guard(net_w, mono_now)
-
     # ------------------------------------------------------------------
     # Controller enable/disable
     # ------------------------------------------------------------------
