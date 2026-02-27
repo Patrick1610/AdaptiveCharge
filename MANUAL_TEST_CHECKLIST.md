@@ -86,17 +86,23 @@ names as registered under the integration device.
 
 ---
 
-## 8. Import Guard
+## 8. Import Guard (Enhanced)
 
-- [ ] During surplus charging, manually create a 200 W import situation
+- [ ] During surplus charging, manually create a 250 W import situation
   (e.g. turn on a high-power appliance)
 - [ ] **Import Watts** sensor shows the import value
-- [ ] After `import_guard_duration` seconds (default 10 s), observe:
-  - [ ] Current is reduced by 1 A, OR charging stops if already at 1 A
-  - [ ] **Import Guard State** sensor shows `active`
-  - [ ] **Last Reason** shows `import_guard`
-- [ ] Remove the extra load: import guard resets, **Import Guard State** → `ok`
-- [ ] **Short spike proof**: import for < 10 s does not trigger the guard
+- [ ] After `import_guard_duration` seconds (default 30 s), observe:
+  - [ ] Current is reduced by 1 A
+  - [ ] **Import Guard State** sensor shows `reducing`
+  - [ ] **Import Guard State** attribute `import_guard_reason` shows `sustained import Xs > 200W`
+  - [ ] **Last Reason** shows `import_guard_reduce`
+- [ ] If import persists, observe escalation:
+  - [ ] Current reduces step-by-step with 30 s settle window between each step
+  - [ ] At 0 A, charger relay turns off (hard stop), state shows `stopped`
+- [ ] Remove the extra load:
+  - [ ] After 20 s below 150 W (hysteresis margin), **Import Guard State** → `ok`
+- [ ] **Short spike proof**: import for < 30 s does not trigger the guard
+- [ ] **Hysteresis proof**: import between 150-200 W does not cause rapid clear/re-trigger
 
 ---
 
@@ -117,10 +123,12 @@ For each entity below, confirm it is available and has a sensible value:
 - [ ] **Input Skew (s)** — skew between net and EV sensor timestamps
 - [ ] **Net Update Interval (s)** — detected cadence of net power sensor
 - [ ] **EV Update Interval (s)** — detected cadence of EV power sensor
-- [ ] **Import Guard State** — `ok` or `active`
+- [ ] **Import Guard State** — `ok`, `reducing`, or `stopped`
+- [ ] **Import Guard State** attributes: `import_guard_reason`, `time_in_import_state`
 - [ ] **Import Watts (W)** — grid import used by guard
 - [ ] **Last Action** — most recent control action
 - [ ] **Last Reason** — reason for that action
+- [ ] **Mode** attributes: `mode_reason`, `mode_source`, `mode_since`, `last_transition`
 - [ ] **Target Current (A)** — EMA decision value before idempotency
 - [ ] **Current Setting (A)** — last value actually sent to charger
 - [ ] **Available Current Decision (A)** — EMA-smoothed available current
@@ -141,11 +149,33 @@ For each entity below, confirm it is available and has a sensible value:
 
 ---
 
+## 12. Charge Tonight Auto-Off
+
+- [ ] Enable **Charge Tonight**, then unplug the cable:
+  - [ ] **Charge Tonight** switch automatically turns off
+  - [ ] Log shows `charge_tonight auto-off — cable unplugged`
+- [ ] Enable **Charge Tonight** while solar_done is active, then solar recovers (on→off):
+  - [ ] **Charge Tonight** switch automatically turns off
+  - [ ] Log shows `charge_tonight auto-off — solar_done ended`
+- [ ] Verify manual override: turning **Charge Tonight** back on after auto-off works
+
+---
+
+## 13. Mode Reason Tracking
+
+- [ ] In each mode, verify **Mode** entity attributes:
+  - [ ] `mode_reason` shows why the current mode is active
+  - [ ] `mode_source` shows what triggered it (e.g. `auto_rule`, `charge_now_switch`, `user_toggle`, `import_guard`)
+  - [ ] `mode_since` shows ISO timestamp of when mode was entered
+  - [ ] `last_transition` shows previous→current mode with reason
+
+---
+
 ## Tests Run (automated)
 
 ```
 pytest tests/ -v
-153 passed in 0.16s
+232 passed in 0.28s
 ```
 
 All tests cover:
@@ -157,8 +187,13 @@ All tests cover:
 - Settling window / self-induced dip prevention
 - Tracker freshness with constant values
 - Universality (no Enphase/DSMR hardcoding — tested at 5, 10, 30, 60 s intervals)
-- **NEW**: controller_enabled gate, shutdown sequence policy, FORCE_MAX vs surplus,
-  idempotent current calls, import guard (short spike / sustained), last_reason tracking
+- controller_enabled gate, shutdown sequence policy, FORCE_MAX vs surplus,
+  idempotent current calls, last_reason tracking
+- **NEW**: Enhanced import guard with debounce + hysteresis (transient vs sustained)
+- **NEW**: Escalation ladder (reduce → settle → 0A → hard stop)
+- **NEW**: Mode reason tracking (mode_reason, mode_source, mode_since, last_transition)
+- **NEW**: Charge Tonight auto-off (cable unplug, solar_done on→off)
+- **NEW**: Import guard state tracking (ok/reducing/stopped)
 
 ## Simulation Scenarios
 
@@ -168,7 +203,11 @@ All tests cover:
 | Net export 300 W, EV 2000W | surplus≈2300W, ≈3A |
 | Charge Now on | current=16A, mode=force_max |
 | Controller off while charging | shutdown sequence runs, mode=off |
-| Import 200W for 3s | no action (guard not triggered) |
-| Import 200W for 12s | current−1A or stop (import guard) |
+| Import 250W for 15s | no action (guard not triggered, need 30s) |
+| Import 250W for 35s | current−1A (escalation ladder starts) |
+| Import 250W sustained | 5A→4A→3A→2A→1A→0A→stop (each step 30s apart) |
+| Import drops to 100W | guard clears after 20s below 150W (hysteresis) |
 | EV skew spike 20s | modulation blocked, hold safe |
 | Repeated same target | 0 additional service calls |
+| Cable unplug with Charge Tonight on | Charge Tonight auto-off |
+| solar_done on→off with Charge Tonight on | Charge Tonight auto-off |

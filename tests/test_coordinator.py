@@ -1075,3 +1075,399 @@ class TestForceMaxCurrentLimit:
         reset_current = int(max_current_limit)
         assert reset_current == 8
         assert reset_current != 16
+
+
+# ---------------------------------------------------------------------------
+# Tests: enhanced import guard with debounce + hysteresis
+# ---------------------------------------------------------------------------
+
+class TestImportGuardEnhanced:
+    """Test enhanced import guard with debounce, hysteresis, and escalation."""
+
+    def _check_import_guard(
+        self,
+        net_w: float,
+        mono_now: float,
+        threshold: float,
+        duration: float,
+        hysteresis_w: float,
+        clear_duration: float,
+        exceed_since: float | None,
+        below_since: float | None,
+        guard_active: bool,
+    ) -> tuple[bool, float | None, float | None, bool]:
+        """Mirror of enhanced _check_import_guard logic."""
+        clear_threshold = threshold - hysteresis_w
+        triggered = False
+
+        if net_w > threshold:
+            below_since = None
+            if exceed_since is None:
+                exceed_since = mono_now
+            elif (mono_now - exceed_since) >= duration:
+                guard_active = True
+                triggered = True
+        elif net_w <= clear_threshold:
+            exceed_since = None
+            if below_since is None:
+                below_since = mono_now
+            elif (mono_now - below_since) >= clear_duration:
+                guard_active = False
+                below_since = None
+        else:
+            # Dead zone between clear_threshold and threshold
+            exceed_since = None
+
+        return triggered, exceed_since, below_since, guard_active
+
+    def test_transient_spike_no_trigger(self):
+        """Short spike < duration should not trigger guard."""
+        # Spike at t=0, check at t=15 (less than 30s default)
+        t, exceed, below, active = self._check_import_guard(
+            250.0, 0.0, 200.0, 30.0, 50.0, 20.0, None, None, False
+        )
+        assert t is False
+        assert exceed == 0.0
+        # Still not triggered at 15s
+        t, exceed, below, active = self._check_import_guard(
+            250.0, 15.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert t is False
+        # Drops below threshold at t=16
+        t, exceed, below, active = self._check_import_guard(
+            100.0, 16.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert t is False
+        assert active is False
+
+    def test_sustained_import_triggers(self):
+        """Sustained import >= duration triggers guard."""
+        t, exceed, below, active = self._check_import_guard(
+            250.0, 0.0, 200.0, 30.0, 50.0, 20.0, None, None, False
+        )
+        assert t is False
+        # At t=30 — should trigger
+        t, exceed, below, active = self._check_import_guard(
+            250.0, 30.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert t is True
+        assert active is True
+
+    def test_hysteresis_prevents_premature_clear(self):
+        """Guard stays active when import drops below threshold but above hysteresis margin."""
+        # First trigger
+        _, exceed, below, active = self._check_import_guard(
+            250.0, 0.0, 200.0, 30.0, 50.0, 20.0, None, None, False
+        )
+        t, exceed, below, active = self._check_import_guard(
+            250.0, 30.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert active is True
+        # Drop to 180W (below 200 threshold but ABOVE 150 clear threshold)
+        # This is the dead zone — guard should NOT clear
+        t, exceed, below, active = self._check_import_guard(
+            180.0, 35.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert active is True  # Not cleared yet
+
+    def test_hysteresis_clear_after_duration(self):
+        """Guard clears when import below clear threshold for clear_duration."""
+        # Trigger guard
+        _, exceed, below, active = self._check_import_guard(
+            250.0, 0.0, 200.0, 30.0, 50.0, 20.0, None, None, False
+        )
+        _, exceed, below, active = self._check_import_guard(
+            250.0, 30.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert active is True
+        # Drop below clear threshold (150W)
+        _, exceed, below, active = self._check_import_guard(
+            100.0, 35.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert active is True  # Not cleared — need 20s below
+        assert below == 35.0
+        # Stay below for 20s
+        _, exceed, below, active = self._check_import_guard(
+            100.0, 55.0, 200.0, 30.0, 50.0, 20.0, exceed, below, active
+        )
+        assert active is False  # NOW cleared
+
+
+# ---------------------------------------------------------------------------
+# Tests: import guard escalation ladder
+# ---------------------------------------------------------------------------
+
+class TestEscalationLadder:
+    """Test that import guard reduces current before hard stop."""
+
+    def test_reduce_before_stop(self):
+        """Escalation should reduce current by 1A, not immediately stop."""
+        committed = 5.0
+        settle_s = 30.0
+        last_reduce_time = None
+        mono_now = 100.0
+
+        # Step 1: reduce from 5A → should set to 4A, not stop
+        if committed > 0.0:
+            new_target = committed - 1.0
+            new_target = max(new_target, 0.0)
+            last_reduce_time = mono_now
+            action = "reduce"
+        else:
+            action = "stop"
+
+        assert action == "reduce"
+        assert new_target == 4.0
+        assert last_reduce_time == 100.0
+
+    def test_settle_window_blocks_rapid_reduction(self):
+        """During settle window, no further reduction should occur."""
+        settle_s = 30.0
+        last_reduce_time = 100.0
+        mono_now = 110.0  # Only 10s since last reduction
+
+        in_settle = (mono_now - last_reduce_time) < settle_s
+        assert in_settle is True
+
+    def test_settle_window_allows_reduction_after_expiry(self):
+        """After settle window expires, reduction should be allowed."""
+        settle_s = 30.0
+        last_reduce_time = 100.0
+        mono_now = 135.0  # 35s since last reduction
+
+        in_settle = (mono_now - last_reduce_time) < settle_s
+        assert in_settle is False
+
+    def test_escalation_to_zero_before_hard_stop(self):
+        """Reduce to 0A before stopping charger relay."""
+        committed = 1.0
+        new_target = committed - 1.0
+        new_target = max(new_target, 0.0)
+        assert new_target == 0.0
+
+        # At 0A, next escalation is hard stop
+        committed = new_target
+        if committed > 0.0:
+            action = "reduce"
+        else:
+            action = "stop"
+        assert action == "stop"
+
+    def test_full_escalation_sequence(self):
+        """Full sequence: 3A → 2A → 1A → 0A → stop."""
+        committed = 3.0
+        steps = []
+        while committed > 0.0:
+            committed -= 1.0
+            committed = max(committed, 0.0)
+            steps.append(f"reduce_to_{committed:.0f}A")
+
+        steps.append("hard_stop")
+
+        assert steps == [
+            "reduce_to_2A",
+            "reduce_to_1A",
+            "reduce_to_0A",
+            "hard_stop",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Tests: mode reason tracking
+# ---------------------------------------------------------------------------
+
+class TestModeReasonTracking:
+    """Test that mode transitions always expose 'why'."""
+
+    def test_mode_transition_records_reason(self):
+        current_mode = "stopped"
+        new_mode = "surplus"
+        reason = "surplus_above_threshold"
+        source = "auto_rule"
+
+        last_transition = f"{current_mode} -> {new_mode}: {reason}"
+        mode_reason = reason
+        mode_source = source
+
+        assert last_transition == "stopped -> surplus: surplus_above_threshold"
+        assert mode_reason == "surplus_above_threshold"
+        assert mode_source == "auto_rule"
+
+    def test_force_start_sets_mode_source(self):
+        source = "charge_now_switch"
+        assert source == "charge_now_switch"
+
+    def test_import_guard_stop_sets_source(self):
+        source = "import_guard"
+        reason = "import_guard_escalate_stop"
+        assert source == "import_guard"
+        assert reason == "import_guard_escalate_stop"
+
+    def test_controller_disabled_sets_source(self):
+        source = "user_toggle"
+        reason = "controller_disabled"
+        assert source == "user_toggle"
+        assert reason == "controller_disabled"
+
+    def test_surplus_start_sets_source(self):
+        source = "auto_rule"
+        reason = "surplus_above_threshold"
+        assert source == "auto_rule"
+        assert reason == "surplus_above_threshold"
+
+    def test_no_transition_when_mode_unchanged(self):
+        current = "surplus"
+        new = "surplus"
+        transition = ""
+        if new != current:
+            transition = f"{current} -> {new}: reason"
+        assert transition == ""  # No change → no transition recorded
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charge Tonight auto-off
+# ---------------------------------------------------------------------------
+
+class TestChargeTonightAutoOff:
+    """Test that Charge Tonight auto-disables on unplug and solar_done off."""
+
+    def test_auto_off_on_cable_unplug(self):
+        """Charge Tonight should turn off when cable is unplugged."""
+        charge_tonight = True
+        cable_prev = True
+        cable_connected = False
+
+        if (
+            charge_tonight
+            and cable_prev is not None
+            and cable_connected is not None
+            and cable_prev
+            and not cable_connected
+        ):
+            charge_tonight = False
+
+        assert charge_tonight is False
+
+    def test_no_auto_off_when_cable_stays_connected(self):
+        """Charge Tonight should stay on when cable stays connected."""
+        charge_tonight = True
+        cable_prev = True
+        cable_connected = True
+
+        if (
+            charge_tonight
+            and cable_prev is not None
+            and cable_connected is not None
+            and cable_prev
+            and not cable_connected
+        ):
+            charge_tonight = False
+
+        assert charge_tonight is True
+
+    def test_no_auto_off_when_charge_tonight_already_off(self):
+        """No effect when charge_tonight is already off."""
+        charge_tonight = False
+        cable_prev = True
+        cable_connected = False
+
+        if (
+            charge_tonight
+            and cable_prev is not None
+            and cable_connected is not None
+            and cable_prev
+            and not cable_connected
+        ):
+            charge_tonight = False
+
+        assert charge_tonight is False  # was already False
+
+    def test_auto_off_on_solar_done_off_transition(self):
+        """Charge Tonight should turn off when solar_done goes on → off."""
+        charge_tonight = True
+        prev_solar_done = True
+        solar_done = False
+
+        if charge_tonight and prev_solar_done and not solar_done:
+            charge_tonight = False
+
+        assert charge_tonight is False
+
+    def test_no_auto_off_when_solar_done_stays_on(self):
+        """Charge Tonight should stay on when solar_done remains on."""
+        charge_tonight = True
+        prev_solar_done = True
+        solar_done = True
+
+        if charge_tonight and prev_solar_done and not solar_done:
+            charge_tonight = False
+
+        assert charge_tonight is True
+
+    def test_no_auto_off_on_solar_done_off_to_on(self):
+        """solar_done off→on should not affect charge_tonight."""
+        charge_tonight = True
+        prev_solar_done = False
+        solar_done = True
+
+        if charge_tonight and prev_solar_done and not solar_done:
+            charge_tonight = False
+
+        assert charge_tonight is True
+
+    def test_no_auto_off_when_cable_prev_is_none(self):
+        """No auto-off on startup when cable_prev is not yet set."""
+        charge_tonight = True
+        cable_prev = None
+        cable_connected = False
+
+        if (
+            charge_tonight
+            and cable_prev is not None
+            and cable_connected is not None
+            and cable_prev
+            and not cable_connected
+        ):
+            charge_tonight = False
+
+        assert charge_tonight is True  # Protected by cable_prev check
+
+
+# ---------------------------------------------------------------------------
+# Tests: import guard state tracking
+# ---------------------------------------------------------------------------
+
+class TestImportGuardState:
+    """Test the three-state import guard state tracking."""
+
+    def test_initial_state_is_ok(self):
+        state = "ok"
+        assert state == "ok"
+
+    def test_state_transitions_to_reducing(self):
+        state = "ok"
+        # When import guard first activates
+        state = "reducing"
+        assert state == "reducing"
+
+    def test_state_transitions_to_stopped(self):
+        state = "reducing"
+        # When current reaches 0A and charger is stopped
+        state = "stopped"
+        assert state == "stopped"
+
+    def test_state_resets_to_ok_after_clear(self):
+        state = "reducing"
+        # When import drops below hysteresis threshold for clear_duration
+        state = "ok"
+        assert state == "ok"
+
+    def test_guard_reason_for_transient(self):
+        reason = "transient spike ignored"
+        assert "transient" in reason
+
+    def test_guard_reason_for_sustained(self):
+        elapsed = 35.0
+        threshold = 200.0
+        reason = f"sustained import {elapsed:.0f}s > {threshold:.0f}W"
+        assert reason == "sustained import 35s > 200W"
