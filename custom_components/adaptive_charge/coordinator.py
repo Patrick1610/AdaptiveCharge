@@ -188,6 +188,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
+        self._charge_buffer: float = 0.0
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -207,6 +208,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._pending_modulate_task: asyncio.Task | None = None
         self._pending_plugin_task: asyncio.Task | None = None
         self._force_charge_prev: bool = False
+        self._force_source: str = ""
         self._cable_prev: bool | None = None
 
         # Timestamps for diagnostics
@@ -307,6 +309,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         _LOGGER.info("AdaptiveCharge: Night-Off — disabling charge_tonight at 05:00")
         self._charge_tonight = False
         self._schedule_night_off()
+        self.hass.async_create_task(
+            self.async_request_refresh(), eager_start=False
+        )
 
     async def async_shutdown(self) -> None:
         """Cancel subscriptions."""
@@ -499,7 +504,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 self._solar_below_threshold_since = None
                 self._solar_done = False
         else:
-            self._solar_done = False
+            # No solar sensor configured — assume solar is always "done"
+            # so that charge_tonight can function without a solar sensor.
+            self._solar_done = True
 
         # --- Charge Tonight auto-off triggers ---
         # (a) EV unplugged: cable was connected, now disconnected
@@ -525,9 +532,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._prev_solar_done = self._solar_done
 
         # --- Force charge ---
+        effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         need = (
             current_range is not None
-            and current_range < self._desired_range
+            and current_range < effective_range
         )
         tonight_condition = (
             self._charge_tonight
@@ -537,6 +545,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and self._solar_done
         )
         force_charge = self._charge_now or tonight_condition
+        if force_charge:
+            self._force_source = "charge_now_switch" if self._charge_now else "charge_tonight"
 
         # --- Cable plug-in detection (only when controller enabled) ---
         # Skip when _cable_prev is None (first read after startup) to avoid
@@ -573,6 +583,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
         self._target_current = min(max(ema_current_a, 0.0), capped_limit)
 
+        # During force charge, charger power is NOT available surplus current
+        if force_charge:
+            display_ema = 0.0
+            display_available = 0.0
+        else:
+            display_ema = round(ema_current_a, 2)
+            display_available = round(ema_current_a, 2)
+
         data: dict[str, Any] = {
             "net_w": computed_net_w,
             "ev_w": ev_w,
@@ -582,14 +600,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "raw_floored": raw_floored,
             "smoothed_a": smoothed_a,
             "smoothed_floored": smoothed_floored,
-            "ema_current_a": round(ema_current_a, 2),
+            "ema_current_a": display_ema,
             "solar_w": solar_w,
             "solar_done": self._solar_done,
             "force_charge": force_charge,
+            "force_source": self._force_source if force_charge else "",
             "presence": presence,
             "cable_connected": cable_connected,
             "current_range": current_range,
             "desired_range": self._desired_range,
+            "effective_range": effective_range,
+            "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
@@ -603,7 +624,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "last_reason": self._last_reason,
             "target_current": round(self._target_current, 2),
             "current_setting": self._last_committed_int,
-            "available_current": round(ema_current_a, 2),
+            "available_current": display_available,
             "charging_on": self._charging_on,
             "sample_count": len(self._samples),
             "last_updated": now.isoformat(),
@@ -994,12 +1015,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     async def _action_start_force(self) -> None:
         max_a = int(self._max_current_limit)
-        _LOGGER.info("AdaptiveCharge: start_force at %dA", max_a)
+        source = self._force_source or "charge_now_switch"
+        _LOGGER.info("AdaptiveCharge: start_force at %dA (source=%s)", max_a, source)
         await self._set_charge_current(max_a)
         await asyncio.sleep(5)
         await self._enable_charging()
         self._charging_on = True
-        self._set_mode(MODE_FORCE, "force_charge_active", "charge_now_switch")
+        self._set_mode(MODE_FORCE, "force_charge_active", source)
         self._last_action = "start_force"
         self._last_reason = "force_charge_active"
         self._last_action_ts = time.monotonic()
@@ -1009,10 +1031,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_commit_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
-        _LOGGER.info("AdaptiveCharge: stop_force")
+        source = self._force_source or "charge_now_switch"
+        _LOGGER.info("AdaptiveCharge: stop_force (source=%s)", source)
         await self._disable_charging()
         self._charging_on = False
-        self._set_mode(MODE_STOPPED, "force_charge_stopped", "charge_now_switch")
+        self._set_mode(MODE_STOPPED, "force_charge_stopped", source)
         self._last_action = "stop_force"
         self._last_reason = "force_charge_stopped"
         self._last_action_ts = time.monotonic()
@@ -1174,6 +1197,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""
         self._max_current_limit = value
+
+    def set_charge_buffer(self, value: float) -> None:
+        """Set the charge buffer percentage (0-25%)."""
+        self._charge_buffer = value
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).

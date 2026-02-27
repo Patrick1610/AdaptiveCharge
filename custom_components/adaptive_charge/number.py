@@ -11,7 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DOMAIN
+from .const import DEFAULT_CHARGE_BUFFER, DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ async def async_setup_entry(
         [
             DesiredRangeNumber(coordinator, entry),
             MaxCurrentLimitNumber(coordinator, entry),
+            ChargeBufferNumber(coordinator, entry),
         ]
     )
 
@@ -115,4 +116,42 @@ class MaxCurrentLimitNumber(RestoreEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         self._coordinator.set_max_current_limit(value)
+        self.async_write_ha_state()
+
+
+class ChargeBufferNumber(RestoreEntity, NumberEntity):
+    """Number entity for the charge buffer percentage."""
+
+    _attr_name = "Charge Buffer (%)"
+    _attr_has_entity_name = True
+    _attr_native_min_value = 0
+    _attr_native_max_value = 25
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "%"
+    _attr_mode = NumberMode.BOX
+
+    def __init__(
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
+    ) -> None:
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_charge_buffer_pct"
+        self._attr_device_info = _device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore previous state."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None:
+            try:
+                self._coordinator.set_charge_buffer(float(state.state))
+            except (ValueError, TypeError):
+                self._coordinator.set_charge_buffer(DEFAULT_CHARGE_BUFFER)
+
+    @property
+    def native_value(self) -> float:
+        return self._coordinator._charge_buffer
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._coordinator.set_charge_buffer(value)
         self.async_write_ha_state()

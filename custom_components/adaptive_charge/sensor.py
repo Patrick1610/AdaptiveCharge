@@ -32,31 +32,18 @@ async def async_setup_entry(
     async_add_entities(
         [
             SurplusExclEvSensor(coordinator, entry),
-            AvailableCurrentRawSensor(coordinator, entry),
-            AvailableCurrentRawFlooredSensor(coordinator, entry),
-            AvailableCurrentSmoothedSensor(coordinator, entry),
-            AvailableCurrentSmoothedFlooredSensor(coordinator, entry),
-            EMACurrentSensor(coordinator, entry),
-            ComputedNetWSensor(coordinator, entry),
-            ComputedEvWSensor(coordinator, entry),
-            VoltageUsedSensor(coordinator, entry),
-            SolarDoneStatusSensor(coordinator, entry),
-            AlignmentDiagnosticSensor(coordinator, entry),
             # Mode state machine
             ModeSensor(coordinator, entry),
-            # Alignment / skew sensors
+            # Alignment / skew
             InputSkewSensor(coordinator, entry),
-            NetUpdateIntervalSensor(coordinator, entry),
-            EvUpdateIntervalSensor(coordinator, entry),
             # Import guard
             ImportGuardStateSensor(coordinator, entry),
-            ImportWattsSensor(coordinator, entry),
             # Diagnostics
             LastActionSensor(coordinator, entry),
             LastReasonSensor(coordinator, entry),
-            TargetCurrentSensor(coordinator, entry),
             CurrentSettingSensor(coordinator, entry),
             AvailableCurrentDecisionSensor(coordinator, entry),
+            AlignmentDiagnosticSensor(coordinator, entry),
         ]
     )
 
@@ -115,190 +102,18 @@ class SurplusExclEvSensor(_BaseAdaptiveChargeSensor):
             return None
         return round(self.coordinator.data.get("surplus_w", 0.0), 1)
 
-
-class AvailableCurrentRawSensor(_BaseAdaptiveChargeSensor):
-    """Available charge current raw (A). Deprecated: use EMA Current or Available Current Decision."""
-
-    _attr_name = "Available Current Raw (A)"
-    _attr_device_class = SensorDeviceClass.CURRENT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_available_current_excl_ev_a_raw"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return round(self.coordinator.data.get("raw_current_a", 0.0), 2)
-
-
-class AvailableCurrentRawFlooredSensor(_BaseAdaptiveChargeSensor):
-    """Available charge current raw floored (A). Deprecated: use Current Setting."""
-
-    _attr_name = "Available Charge Current Raw Floored (A)"
-    _attr_device_class = SensorDeviceClass.CURRENT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_available_current_raw_floored_a"
-
-    @property
-    def native_value(self) -> int | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("raw_floored", 0)
-
-
-class AvailableCurrentSmoothedSensor(_BaseAdaptiveChargeSensor):
-    """Available charge current smoothed (A). Deprecated: use EMA Current."""
-
-    _attr_name = "Available Charge Current Smoothed (A)"
-    _attr_device_class = SensorDeviceClass.CURRENT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_available_current_smoothed_a"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return round(self.coordinator.data.get("smoothed_a", 0.0), 2)
-
-
-class AvailableCurrentSmoothedFlooredSensor(_BaseAdaptiveChargeSensor):
-    """Available charge current smoothed and floored (A). Deprecated: use Current Setting."""
-
-    _attr_name = "Available Charge Current Smoothed Floored (A)"
-    _attr_device_class = SensorDeviceClass.CURRENT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_available_current_smoothed_floored_a"
-
-    @property
-    def native_value(self) -> int | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("smoothed_floored", 0)
-
-
-class ComputedNetWSensor(_BaseAdaptiveChargeSensor):
-    """Computed net power (W) used internally."""
-
-    _attr_name = "Computed Net Power (W)"
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_computed_net_w"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return round(self.coordinator.data.get("net_w", 0.0), 1)
-
-
-class ComputedEvWSensor(_BaseAdaptiveChargeSensor):
-    """Computed EV power (W) used internally."""
-
-    _attr_name = "Computed EV Power (W)"
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_computed_ev_w"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return round(self.coordinator.data.get("ev_w", 0.0), 1)
-
-
-class VoltageUsedSensor(_BaseAdaptiveChargeSensor):
-    """Voltage used for current calculation (V)."""
-
-    _attr_name = "Voltage Used (V)"
-    _attr_device_class = SensorDeviceClass.VOLTAGE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_voltage_used_v"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return round(self.coordinator.data.get("voltage", 230.0), 1)
-
-
-class SolarDoneStatusSensor(_BaseAdaptiveChargeSensor):
-    """Solar done status (on/off as string)."""
-
-    _attr_name = "Solar Done Status"
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_solar_done_status"
-
-    @property
-    def native_value(self) -> str | None:
-        if self.coordinator.data is None:
-            return None
-        return "on" if self.coordinator.data.get("solar_done") else "off"
-
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
         base = super().extra_state_attributes
         return {
             **base,
-            "solar_w": data.get("solar_w"),
+            "net_w": data.get("net_w"),
+            "ev_w": data.get("ev_w"),
+            "voltage": data.get("voltage"),
+            "raw_current_a": data.get("raw_current_a"),
+            "force_charge": data.get("force_charge"),
         }
-
-
-class EMACurrentSensor(_BaseAdaptiveChargeSensor):
-    """EMA-filtered charge current used for control decisions (A)."""
-
-    _attr_name = "EMA Current (A)"
-    _attr_device_class = SensorDeviceClass.CURRENT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_ema_current_a"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("ema_current_a", 0.0)
 
 
 class AlignmentDiagnosticSensor(_BaseAdaptiveChargeSensor):
@@ -376,11 +191,13 @@ class ModeSensor(_BaseAdaptiveChargeSensor):
             "mode_source": data.get("mode_source", ""),
             "mode_since": data.get("mode_since", ""),
             "last_transition": data.get("last_transition", ""),
+            "solar_done": data.get("solar_done"),
+            "solar_w": data.get("solar_w"),
         }
 
 
 # ---------------------------------------------------------------------------
-# Measurement alignment / skew sensors
+# Measurement alignment / skew sensor
 # ---------------------------------------------------------------------------
 
 class InputSkewSensor(_BaseAdaptiveChargeSensor):
@@ -413,48 +230,8 @@ class InputSkewSensor(_BaseAdaptiveChargeSensor):
         }
 
 
-class NetUpdateIntervalSensor(_BaseAdaptiveChargeSensor):
-    """Estimated update interval of the net power sensor (seconds)."""
-
-    _attr_name = "Net Update Interval (s)"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "s"
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_net_update_interval_seconds"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        val = self.coordinator.data.get("net_update_interval_s")
-        return round(val, 2) if val is not None else None
-
-
-class EvUpdateIntervalSensor(_BaseAdaptiveChargeSensor):
-    """Estimated update interval of the EV power sensor (seconds)."""
-
-    _attr_name = "EV Update Interval (s)"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "s"
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_ev_update_interval_seconds"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        val = self.coordinator.data.get("ev_update_interval_s")
-        return round(val, 2) if val is not None else None
-
-
 # ---------------------------------------------------------------------------
-# Import guard sensors
+# Import guard sensor
 # ---------------------------------------------------------------------------
 
 class ImportGuardStateSensor(_BaseAdaptiveChargeSensor):
@@ -483,26 +260,6 @@ class ImportGuardStateSensor(_BaseAdaptiveChargeSensor):
             "time_in_import_state": data.get("time_in_import_state", 0.0),
             "import_watts": data.get("import_watts", 0.0),
         }
-
-
-class ImportWattsSensor(_BaseAdaptiveChargeSensor):
-    """Grid import power used by the import guard (W, 0 when exporting)."""
-
-    _attr_name = "Import Watts (W)"
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_entity_registry_enabled_default = True
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_import_watts"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return round(self.coordinator.data.get("import_watts", 0.0), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -552,26 +309,6 @@ class LastReasonSensor(_BaseAdaptiveChargeSensor):
         return self.coordinator.data.get("last_reason") or "none"
 
 
-class TargetCurrentSensor(_BaseAdaptiveChargeSensor):
-    """Decision-level target current (A) before idempotency/rate limiting."""
-
-    _attr_name = "Target Current (A)"
-    _attr_device_class = SensorDeviceClass.CURRENT
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_entity_registry_enabled_default = True
-
-    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_target_current"
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("target_current", 0.0)
-
-
 class CurrentSettingSensor(_BaseAdaptiveChargeSensor):
     """Last current value actually sent to the charger (A)."""
 
@@ -610,3 +347,13 @@ class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):
         if self.coordinator.data is None:
             return None
         return self.coordinator.data.get("available_current", 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "target_current": data.get("target_current"),
+            "force_charge": data.get("force_charge"),
+        }

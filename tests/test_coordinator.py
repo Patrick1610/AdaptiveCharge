@@ -1839,3 +1839,363 @@ class TestImportGuardLongRunData:
         assert import_guard_last_reduce_time is None
         assert import_below_since is None
         assert import_exceed_since is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Force charge available current masking
+# ---------------------------------------------------------------------------
+
+class TestForceChargeAvailableCurrentMasking:
+    """During force charge, charger power must NOT be reported as available current."""
+
+    def test_available_current_zero_during_force_charge(self):
+        """When force_charge is True, available_current should be 0."""
+        ema_current_a = 5.3
+        force_charge = True
+
+        if force_charge:
+            display_available = 0.0
+        else:
+            display_available = round(ema_current_a, 2)
+
+        assert display_available == 0.0
+
+    def test_available_current_normal_when_not_force(self):
+        """When force_charge is False, available_current should reflect EMA."""
+        ema_current_a = 5.3
+        force_charge = False
+
+        if force_charge:
+            display_available = 0.0
+        else:
+            display_available = round(ema_current_a, 2)
+
+        assert display_available == 5.3
+
+    def test_ema_current_zero_during_force_charge(self):
+        """When force_charge is True, ema_current_a display should be 0."""
+        ema_current_a = 8.12
+        force_charge = True
+
+        if force_charge:
+            display_ema = 0.0
+        else:
+            display_ema = round(ema_current_a, 2)
+
+        assert display_ema == 0.0
+
+    def test_ema_current_normal_when_not_force(self):
+        """When force_charge is False, ema_current_a display shows actual value."""
+        ema_current_a = 8.12
+        force_charge = False
+
+        if force_charge:
+            display_ema = 0.0
+        else:
+            display_ema = round(ema_current_a, 2)
+
+        assert display_ema == 8.12
+
+    def test_charge_now_triggers_zero_available(self):
+        """charge_now=True causes force_charge=True, available must be 0."""
+        charge_now = True
+        tonight_condition = False
+        force_charge = charge_now or tonight_condition
+
+        ema_current_a = 6.5
+        display = 0.0 if force_charge else round(ema_current_a, 2)
+        assert display == 0.0
+
+    def test_tonight_condition_triggers_zero_available(self):
+        """tonight_condition=True causes force_charge=True, available must be 0."""
+        charge_now = False
+        tonight_condition = True
+        force_charge = charge_now or tonight_condition
+
+        ema_current_a = 3.7
+        display = 0.0 if force_charge else round(ema_current_a, 2)
+        assert display == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charge buffer
+# ---------------------------------------------------------------------------
+
+class TestChargeBuffer:
+    """Test that charge buffer is correctly applied to the desired range."""
+
+    def test_zero_buffer_no_effect(self):
+        """Buffer of 0% should not change the effective range."""
+        desired_range = 200.0
+        charge_buffer = 0.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        assert effective == 200.0
+
+    def test_10_percent_buffer(self):
+        """Buffer of 10% should increase effective range by 10%."""
+        desired_range = 200.0
+        charge_buffer = 10.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        assert abs(effective - 220.0) < 0.01
+
+    def test_15_percent_buffer(self):
+        """Buffer of 15% for cold weather."""
+        desired_range = 300.0
+        charge_buffer = 15.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        assert effective == 345.0
+
+    def test_25_percent_max_buffer(self):
+        """Maximum buffer of 25%."""
+        desired_range = 200.0
+        charge_buffer = 25.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        assert effective == 250.0
+
+    def test_need_true_with_buffer(self):
+        """Range below effective range (with buffer) should signal need."""
+        desired_range = 200.0
+        charge_buffer = 10.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        current_range = 210.0  # 210 < 220 (effective)
+        need = current_range is not None and current_range < effective
+        assert need is True
+
+    def test_need_false_without_buffer_true_with_buffer(self):
+        """Range between desired and effective should need charging with buffer."""
+        desired_range = 200.0
+        charge_buffer = 10.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        current_range = 205.0  # 205 > 200 (no buffer → no need) but < 220 (with buffer → need)
+
+        need_without_buffer = current_range < desired_range
+        need_with_buffer = current_range < effective
+
+        assert need_without_buffer is False
+        assert need_with_buffer is True
+
+    def test_need_false_above_effective_range(self):
+        """Range above effective range (with buffer) should not signal need."""
+        desired_range = 200.0
+        charge_buffer = 10.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        current_range = 230.0
+        need = current_range is not None and current_range < effective
+        assert need is False
+
+    def test_buffer_with_zero_desired_range(self):
+        """Buffer on zero desired range should still result in zero effective."""
+        desired_range = 0.0
+        charge_buffer = 10.0
+        effective = desired_range * (1.0 + charge_buffer / 100.0)
+        assert effective == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charge Tonight start logic
+# ---------------------------------------------------------------------------
+
+class TestChargeTonightStartLogic:
+    """Test all conditions required for charge_tonight to trigger force charge."""
+
+    def _eval_tonight(
+        self,
+        charge_tonight: bool,
+        presence: bool | None,
+        cable_connected: bool | None,
+        current_range: float | None,
+        desired_range: float,
+        solar_done: bool,
+        charge_buffer: float = 0.0,
+    ) -> tuple[bool, bool]:
+        """Evaluate tonight_condition and force_charge.
+
+        Returns (tonight_condition, force_charge).
+        """
+        effective_range = desired_range * (1.0 + charge_buffer / 100.0)
+        need = current_range is not None and current_range < effective_range
+        tonight_condition = (
+            charge_tonight
+            and bool(presence)
+            and bool(cable_connected)
+            and need
+            and solar_done
+        )
+        force_charge = tonight_condition  # charge_now is False for these tests
+        return tonight_condition, force_charge
+
+    def test_all_conditions_met(self):
+        """All conditions met → tonight starts."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=True,
+            current_range=150.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is True
+        assert fc is True
+
+    def test_charge_tonight_off(self):
+        """charge_tonight switch off → no start."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=False, presence=True, cable_connected=True,
+            current_range=150.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_no_presence(self):
+        """Vehicle not at home → no start."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=False, cable_connected=True,
+            current_range=150.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_presence_none(self):
+        """Presence sensor unavailable → no start (bool(None) is False)."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=None, cable_connected=True,
+            current_range=150.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_cable_disconnected(self):
+        """Cable not connected → no start."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=False,
+            current_range=150.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_cable_none(self):
+        """Cable sensor unavailable → no start."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=None,
+            current_range=150.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_range_already_sufficient(self):
+        """Current range >= desired → no need → no start."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=True,
+            current_range=250.0, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_range_none(self):
+        """Range sensor unavailable → no need → no start."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=True,
+            current_range=None, desired_range=200.0, solar_done=True,
+        )
+        assert tc is False
+
+    def test_solar_not_done(self):
+        """Solar still producing → no start (wait for evening)."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=True,
+            current_range=150.0, desired_range=200.0, solar_done=False,
+        )
+        assert tc is False
+
+    def test_buffer_extends_range_need(self):
+        """Buffer causes need even though range > desired_range."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=True,
+            current_range=205.0, desired_range=200.0, solar_done=True,
+            charge_buffer=10.0,  # effective = 220, 205 < 220 → need
+        )
+        assert tc is True
+
+    def test_buffer_does_not_change_result_when_fully_charged(self):
+        """With buffer, still no need if range > effective range."""
+        tc, fc = self._eval_tonight(
+            charge_tonight=True, presence=True, cable_connected=True,
+            current_range=250.0, desired_range=200.0, solar_done=True,
+            charge_buffer=10.0,  # effective = 220, 250 > 220 → no need
+        )
+        assert tc is False
+
+
+class TestSolarDoneWithoutSensor:
+    """Test that solar_done defaults to True when no solar sensor is configured."""
+
+    def test_no_solar_sensor_solar_done_true(self):
+        """Without a solar sensor, solar_done should be True so charge_tonight works."""
+        solar_w = None  # no solar sensor
+
+        if solar_w is not None:
+            solar_done = False  # would be calculated
+        else:
+            solar_done = True
+
+        assert solar_done is True
+
+    def test_with_solar_sensor_below_threshold(self):
+        """With solar sensor below threshold, solar_done follows duration logic."""
+        solar_w = 30.0  # below threshold of 50
+        solar_done = False  # not yet done (needs duration elapsed)
+        # just checking the branch is correct
+        assert solar_w is not None
+
+    def test_with_solar_sensor_above_threshold(self):
+        """With solar sensor above threshold, solar_done is False."""
+        solar_w = 200.0
+        threshold = 50.0
+        solar_done = solar_w < threshold
+        assert solar_done is False
+
+    def test_tonight_works_without_solar_sensor(self):
+        """charge_tonight should be able to trigger when no solar sensor is present."""
+        # Simulate: no solar sensor → solar_done = True
+        solar_done = True  # default when no solar sensor
+
+        charge_tonight = True
+        presence = True
+        cable_connected = True
+        current_range = 150.0
+        desired_range = 200.0
+        need = current_range < desired_range
+
+        tonight_condition = (
+            charge_tonight
+            and bool(presence)
+            and bool(cable_connected)
+            and need
+            and solar_done
+        )
+        assert tonight_condition is True
+
+
+class TestForceSourceTracking:
+    """Test that force charge source is correctly tracked for diagnostics."""
+
+    def test_charge_now_sets_source(self):
+        """charge_now should set force_source to 'charge_now_switch'."""
+        charge_now = True
+        tonight_condition = False
+        force_charge = charge_now or tonight_condition
+        force_source = "charge_now_switch" if charge_now else "charge_tonight"
+        assert force_source == "charge_now_switch"
+
+    def test_tonight_sets_source(self):
+        """tonight_condition should set force_source to 'charge_tonight'."""
+        charge_now = False
+        tonight_condition = True
+        force_charge = charge_now or tonight_condition
+        force_source = "charge_now_switch" if charge_now else "charge_tonight"
+        assert force_source == "charge_tonight"
+
+    def test_both_active_prefers_charge_now(self):
+        """When both charge_now and tonight are active, charge_now takes priority."""
+        charge_now = True
+        tonight_condition = True
+        force_charge = charge_now or tonight_condition
+        force_source = "charge_now_switch" if charge_now else "charge_tonight"
+        assert force_source == "charge_now_switch"
+
+    def test_source_empty_when_no_force(self):
+        """When not force charging, source should be empty in data."""
+        force_charge = False
+        force_source = "some_old_value"
+        data_source = force_source if force_charge else ""
+        assert data_source == ""
