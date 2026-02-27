@@ -1,0 +1,45 @@
+force_start:
+  name: Force Start Charging
+  description: Set charge_now to on and start charging immediately.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID (optional if only one integration instance).
+      required: false
+      selector:
+        text:
+
+force_stop:
+  name: Force Stop Charging
+  description: Turn off charge_now and stop charging.
+  fields: {}
+
+set_desired_range:
+  name: Set Desired Range
+  description: Set the target range in km for charge_tonight.
+  fields:
+    range_km:
+      name: Range (km)
+      description: Target range in km.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1000
+          unit_of_measurement: km
+    entry_id:
+      name: Entry ID
+      description: Config entry ID (optional if only one integration instance).
+      required: false
+      selector:
+        text:
+
+enable_tonight:
+  name: Enable Charge Tonight
+  description: Turn on charge_tonight switch.
+  fields: {}
+
+disable_tonight:
+  name: Disable Charge Tonight
+  description: Turn off charge_tonight switch.
+  fields: {}
