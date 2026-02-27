@@ -362,6 +362,18 @@ class ModeSensor(_BaseStormbreakerSensor):
             return "off"
         return data.get("current_mode", "stopped")
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "mode_reason": data.get("mode_reason", ""),
+            "mode_source": data.get("mode_source", ""),
+            "mode_since": data.get("mode_since", ""),
+            "last_transition": data.get("last_transition", ""),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Measurement alignment / skew sensors
@@ -442,7 +454,7 @@ class EvUpdateIntervalSensor(_BaseStormbreakerSensor):
 # ---------------------------------------------------------------------------
 
 class ImportGuardStateSensor(_BaseStormbreakerSensor):
-    """Import guard state: 'ok' or 'active'."""
+    """Import guard state: 'ok', 'reducing', or 'stopped'."""
 
     _attr_name = "Import Guard State"
     _attr_entity_registry_enabled_default = True
@@ -455,7 +467,18 @@ class ImportGuardStateSensor(_BaseStormbreakerSensor):
     def native_value(self) -> str | None:
         if self.coordinator.data is None:
             return None
-        return "active" if self.coordinator.data.get("import_guard_active") else "ok"
+        return self.coordinator.data.get("import_guard_state", "ok")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "import_guard_reason": data.get("import_guard_reason", ""),
+            "time_in_import_state": data.get("time_in_import_state", 0.0),
+            "import_watts": data.get("import_watts", 0.0),
+        }
 
 
 class ImportWattsSensor(_BaseStormbreakerSensor):
