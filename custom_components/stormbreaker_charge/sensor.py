@@ -67,7 +67,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
         name="Stormbreaker Surplus EV Charge",
         manufacturer="Stormbreaker Surplus",
         model="EV Charge Controller",
-        sw_version="1.1.0",
+        sw_version="2.0.0",
     )
 
 
@@ -117,12 +117,13 @@ class SurplusExclEvSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
-    """Available charge current raw (A)."""
+    """Available charge current raw (A). Deprecated: use EMA Current or Available Current Decision."""
 
     _attr_name = "Available Current Raw (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -136,12 +137,13 @@ class AvailableCurrentRawSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
-    """Available charge current raw floored (A)."""
+    """Available charge current raw floored (A). Deprecated: use Current Setting."""
 
     _attr_name = "Available Charge Current Raw Floored (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -155,12 +157,13 @@ class AvailableCurrentRawFlooredSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
-    """Available charge current smoothed (A)."""
+    """Available charge current smoothed (A). Deprecated: use EMA Current."""
 
     _attr_name = "Available Charge Current Smoothed (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -174,12 +177,13 @@ class AvailableCurrentSmoothedSensor(_BaseStormbreakerSensor):
 
 
 class AvailableCurrentSmoothedFlooredSensor(_BaseStormbreakerSensor):
-    """Available charge current smoothed and floored (A)."""
+    """Available charge current smoothed and floored (A). Deprecated: use Current Setting."""
 
     _attr_name = "Available Charge Current Smoothed Floored (A)"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: StormbreakerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -362,6 +366,18 @@ class ModeSensor(_BaseStormbreakerSensor):
             return "off"
         return data.get("current_mode", "stopped")
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "mode_reason": data.get("mode_reason", ""),
+            "mode_source": data.get("mode_source", ""),
+            "mode_since": data.get("mode_since", ""),
+            "last_transition": data.get("last_transition", ""),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Measurement alignment / skew sensors
@@ -442,7 +458,7 @@ class EvUpdateIntervalSensor(_BaseStormbreakerSensor):
 # ---------------------------------------------------------------------------
 
 class ImportGuardStateSensor(_BaseStormbreakerSensor):
-    """Import guard state: 'ok' or 'active'."""
+    """Import guard state: 'ok', 'reducing', or 'stopped'."""
 
     _attr_name = "Import Guard State"
     _attr_entity_registry_enabled_default = True
@@ -455,7 +471,18 @@ class ImportGuardStateSensor(_BaseStormbreakerSensor):
     def native_value(self) -> str | None:
         if self.coordinator.data is None:
             return None
-        return "active" if self.coordinator.data.get("import_guard_active") else "ok"
+        return self.coordinator.data.get("import_guard_state", "ok")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "import_guard_reason": data.get("import_guard_reason", ""),
+            "time_in_import_state": data.get("time_in_import_state", 0.0),
+            "import_watts": data.get("import_watts", 0.0),
+        }
 
 
 class ImportWattsSensor(_BaseStormbreakerSensor):

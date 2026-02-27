@@ -32,7 +32,10 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_IMPORT_GUARD_CLEAR_DURATION_S,
     CONF_IMPORT_GUARD_DURATION,
+    CONF_IMPORT_GUARD_HYSTERESIS_W,
+    CONF_IMPORT_GUARD_SETTLE_S,
     CONF_IMPORT_GUARD_THRESHOLD,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
@@ -59,7 +62,10 @@ from .const import (
     DEFAULT_EV_STEP_THRESHOLD_W,
     DEFAULT_HYSTERESIS_DOWN,
     DEFAULT_HYSTERESIS_UP,
+    DEFAULT_IMPORT_GUARD_CLEAR_DURATION_S,
     DEFAULT_IMPORT_GUARD_DURATION_S,
+    DEFAULT_IMPORT_GUARD_HYSTERESIS_W,
+    DEFAULT_IMPORT_GUARD_SETTLE_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
     DEFAULT_IMPORT_SAFETY_DURATION_S,
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
@@ -77,6 +83,9 @@ from .const import (
     DEFAULT_START_DELAY,
     DEFAULT_STOP_DELAY,
     DOMAIN,
+    IMPORT_GUARD_OK,
+    IMPORT_GUARD_REDUCING,
+    IMPORT_GUARD_STOPPED,
     MODE_CONSUMPTION_PRODUCTION,
     MODE_FORCE,
     MODE_NET_ONLY,
@@ -166,6 +175,15 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._import_guard_duration: float = float(
             options.get(CONF_IMPORT_GUARD_DURATION, DEFAULT_IMPORT_GUARD_DURATION_S)
         )
+        self._import_guard_hysteresis: float = float(
+            options.get(CONF_IMPORT_GUARD_HYSTERESIS_W, DEFAULT_IMPORT_GUARD_HYSTERESIS_W)
+        )
+        self._import_guard_clear_duration: float = float(
+            options.get(CONF_IMPORT_GUARD_CLEAR_DURATION_S, DEFAULT_IMPORT_GUARD_CLEAR_DURATION_S)
+        )
+        self._import_guard_settle: float = float(
+            options.get(CONF_IMPORT_GUARD_SETTLE_S, DEFAULT_IMPORT_GUARD_SETTLE_S)
+        )
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -224,13 +242,25 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._confidence: str = CONFIDENCE_LOW
         self._last_commit_reason: str = ""
 
-        # Import guard state
+        # Import guard state (enhanced with hysteresis + escalation)
         self._import_exceed_since: float | None = None
         self._import_guard_active: bool = False
+        self._import_guard_state: str = IMPORT_GUARD_OK
+        self._import_guard_reason: str = ""
+        self._import_guard_state_since: float | None = None
+        self._import_below_since: float | None = None
+        self._import_guard_last_reduce_time: float | None = None
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
         self._prev_net_w: float | None = None
+        self._prev_solar_done: bool = False
+
+        # Mode tracking (reason / source / timestamps)
+        self._mode_reason: str = "initializing"
+        self._mode_source: str = "startup"
+        self._mode_since: str = datetime.now().isoformat()
+        self._last_transition: str = ""
 
         # Unsub for interval tracker and night-off timer
         self._unsub_interval = None
@@ -471,6 +501,29 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         else:
             self._solar_done = False
 
+        # --- Charge Tonight auto-off triggers ---
+        # (a) EV unplugged: cable was connected, now disconnected
+        if (
+            self._charge_tonight
+            and self._cable_prev is not None
+            and cable_connected is not None
+            and self._cable_prev
+            and not cable_connected
+        ):
+            _LOGGER.info("Stormbreaker: charge_tonight auto-off — cable unplugged")
+            self._charge_tonight = False
+
+        # (b) solar_done transitions on → off (end of night charging plan)
+        if (
+            self._charge_tonight
+            and self._prev_solar_done
+            and not self._solar_done
+        ):
+            _LOGGER.info("Stormbreaker: charge_tonight auto-off — solar_done ended")
+            self._charge_tonight = False
+
+        self._prev_solar_done = self._solar_done
+
         # --- Force charge ---
         need = (
             current_range is not None
@@ -556,7 +609,19 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "last_updated": now.isoformat(),
             # --- Import guard ---
             "import_guard_active": self._import_guard_active,
+            "import_guard_state": self._import_guard_state,
+            "import_guard_reason": self._import_guard_reason,
             "import_watts": max(computed_net_w, 0.0),
+            "time_in_import_state": (
+                round(time.monotonic() - self._import_guard_state_since, 1)
+                if self._import_guard_state_since is not None
+                else 0.0
+            ),
+            # --- Mode tracking ---
+            "mode_reason": self._mode_reason,
+            "mode_source": self._mode_source,
+            "mode_since": self._mode_since,
+            "last_transition": self._last_transition,
             # --- Timestamps ---
             "last_action_ts": self._last_action_ts,
             "last_current_set_ts": self._last_current_set_ts,
@@ -631,19 +696,49 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
 
     def _check_import_guard(self, net_w: float, mono_now: float) -> bool:
-        """Return True if grid import has exceeded threshold for long enough."""
+        """Return True if grid import has exceeded threshold for long enough.
+
+        Uses debounce (require sustained import for N seconds) and hysteresis
+        (require import < threshold - margin for M seconds before clearing).
+        """
         threshold = self._import_guard_threshold
         duration = self._import_guard_duration
+        clear_threshold = threshold - self._import_guard_hysteresis
 
         if net_w > threshold:
+            # Import above threshold — start or continue debounce timer
+            self._import_below_since = None  # reset clear timer
             if self._import_exceed_since is None:
                 self._import_exceed_since = mono_now
+                self._import_guard_reason = "transient spike ignored"
             elif (mono_now - self._import_exceed_since) >= duration:
                 self._import_guard_active = True
+                elapsed = mono_now - self._import_exceed_since
+                self._import_guard_reason = (
+                    f"sustained import {elapsed:.0f}s > {threshold:.0f}W"
+                )
+                if self._import_guard_state == IMPORT_GUARD_OK:
+                    self._import_guard_state_since = mono_now
+                if self._import_guard_state == IMPORT_GUARD_OK:
+                    self._import_guard_state = IMPORT_GUARD_REDUCING
                 return True
-        else:
+        elif net_w <= clear_threshold:
+            # Import below hysteresis threshold — start clear timer
             self._import_exceed_since = None
-            self._import_guard_active = False
+            if self._import_below_since is None:
+                self._import_below_since = mono_now
+            elif (mono_now - self._import_below_since) >= self._import_guard_clear_duration:
+                self._import_guard_active = False
+                self._import_guard_state = IMPORT_GUARD_OK
+                self._import_guard_reason = ""
+                self._import_guard_state_since = mono_now
+                self._import_below_since = None
+                self._import_guard_last_reduce_time = None
+        else:
+            # Between clear_threshold and threshold — hold current state (dead zone)
+            self._import_exceed_since = None
+            # Don't reset _import_below_since — allow clearing to continue
+            # if it was already below the clear threshold
         return False
 
     # ------------------------------------------------------------------
@@ -664,7 +759,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._last_reason = "controller_disabled"
         await self._disable_charging()
         self._charging_on = False
-        self._current_mode = MODE_STOPPED
+        self._set_mode(MODE_STOPPED, "controller_disabled", "user_toggle")
         self._last_action = "controller_disabled_stop"
         self._last_action_ts = time.monotonic()
         self._last_off_time = time.monotonic()
@@ -712,24 +807,41 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         if force_charge:
             return
 
-        # --- Import safety: immediate reduction ---
+        # --- Import safety: escalation ladder ---
+        # Step 1: Reduce current by 1A (soft mitigation)
+        # Step 2: Hold / settle window to observe net import improvement
+        # Step 3: Reduce to 0A (minimum current, charger stays on)
+        # Step 4: Only then hard stop / charger off (hard mitigation)
         if import_safety and self._charging_on and self._current_mode == MODE_SURPLUS:
-            # When committed_current is None the charger state is inconsistent;
-            # treat as 0 so the logic correctly triggers a stop.
-            new_target = (self._committed_current or 0.0) - 1.0
-            if new_target < 1.0:
+            # Respect settle window after last reduction
+            if (
+                self._import_guard_last_reduce_time is not None
+                and (mono_now - self._import_guard_last_reduce_time) < self._import_guard_settle
+            ):
+                return  # Still in settle window — observe before next action
+
+            current = self._committed_current or 0.0
+            if current > 0.0:
+                # Escalation: reduce by 1A (soft mitigation)
+                new_target = current - 1.0
+                new_target = max(new_target, 0.0)
+                self._import_guard_last_reduce_time = mono_now
+                self._import_guard_state = IMPORT_GUARD_REDUCING
+                await self._commit_current(
+                    new_target, mono_now, reason="import_guard_reduce"
+                )
+                self._last_reason = "import_guard_reduce"
+            else:
+                # Already at 0A — escalate to hard stop after settle window
                 self._cancel_pending()
                 self._pending_task = self.hass.async_create_task(
                     self._debounced(0, self._action_stop_surplus),
                     eager_start=False,
                 )
-                self._last_commit_reason = "import_safety_stop"
-                self._last_reason = "import_guard"
+                self._import_guard_state = IMPORT_GUARD_STOPPED
+                self._last_commit_reason = "import_guard_escalate_stop"
+                self._last_reason = "import_guard_escalate_stop"
                 self._last_action_ts = time.monotonic()
-            else:
-                await self._commit_current(
-                    new_target, mono_now, reason="import_guard_reduce"
-                )
             return
 
         # --- Start surplus charging ---
@@ -829,7 +941,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         if target_int == self._last_committed_int:
             return
 
-        if target_int > 0:
+        if target_int >= 0:
             _LOGGER.debug(
                 "Stormbreaker: commit %dA (float=%.2f, reason=%s, confidence=%s)",
                 target_int, target, reason, self._confidence,
@@ -852,6 +964,16 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             self._alignment.start_settling(
                 mono_now, DEFAULT_SETTLING_DURATION_S
             )
+
+    def _set_mode(self, new_mode: str, reason: str, source: str) -> None:
+        """Update the mode state machine with tracking metadata."""
+        prev = self._current_mode
+        if new_mode != prev:
+            self._last_transition = f"{prev} -> {new_mode}: {reason}"
+        self._current_mode = new_mode
+        self._mode_reason = reason
+        self._mode_source = source
+        self._mode_since = datetime.now().isoformat()
 
     def _cancel_pending(self) -> None:
         if self._pending_task and not self._pending_task.done():
@@ -877,7 +999,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         await asyncio.sleep(5)
         await self._enable_charging()
         self._charging_on = True
-        self._current_mode = MODE_FORCE
+        self._set_mode(MODE_FORCE, "force_charge_active", "charge_now_switch")
         self._last_action = "start_force"
         self._last_reason = "force_charge_active"
         self._last_action_ts = time.monotonic()
@@ -890,7 +1012,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Stormbreaker: stop_force")
         await self._disable_charging()
         self._charging_on = False
-        self._current_mode = MODE_STOPPED
+        self._set_mode(MODE_STOPPED, "force_charge_stopped", "charge_now_switch")
         self._last_action = "stop_force"
         self._last_reason = "force_charge_stopped"
         self._last_action_ts = time.monotonic()
@@ -907,7 +1029,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         await asyncio.sleep(5)
         await self._enable_charging()
         self._charging_on = True
-        self._current_mode = MODE_SURPLUS
+        self._set_mode(MODE_SURPLUS, "surplus_above_threshold", "auto_rule")
         self._last_action = f"start_surplus_{current_a}A"
         self._last_reason = "surplus_above_threshold"
         self._last_action_ts = time.monotonic()
@@ -920,15 +1042,21 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Stormbreaker: stop_surplus")
         await self._disable_charging()
         self._charging_on = False
-        self._current_mode = MODE_STOPPED
+        source = "import_guard" if self._import_guard_active else "auto_rule"
+        reason = "import_guard_escalate_stop" if self._import_guard_active else "surplus_below_threshold"
+        self._set_mode(MODE_STOPPED, reason, source)
         self._last_action = "stop_surplus"
-        self._last_reason = "surplus_below_threshold"
+        self._last_reason = reason
         self._last_action_ts = time.monotonic()
         self._last_off_time = time.monotonic()
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_surplus"
         self._import_guard_active = False
+        self._import_guard_state = IMPORT_GUARD_OK
+        self._import_guard_last_reduce_time = None
+        self._import_below_since = None
+        self._import_exceed_since = None
         await asyncio.sleep(10)
         await self._set_charge_current(int(self._max_current_limit))
 
