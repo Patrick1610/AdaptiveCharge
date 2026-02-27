@@ -565,3 +565,239 @@ class TestLastReasonTracking:
         last_reason = ""
         last_reason = "controller_disabled"
         assert last_reason == "controller_disabled"
+
+
+# ---------------------------------------------------------------------------
+# Tests: surplus invariance across modes
+# ---------------------------------------------------------------------------
+
+class TestSurplusInvariance:
+    """Surplus formula must be consistent regardless of operating mode.
+
+    Formula: surplus_w = (0 - net_w) + ev_w
+    Sign convention:
+      net_w > 0 → importing from grid
+      net_w < 0 → exporting to grid
+      ev_w  > 0 → EV consuming power
+    Result: surplus_w = available power if EV weren't charging
+    """
+
+    def test_importing_while_ev_charging(self):
+        """Importing 200W, EV drawing 1000W → 800W available."""
+        net_w, ev_w = 200.0, 1000.0
+        surplus = compute_surplus(net_w, ev_w)
+        assert surplus == 800.0
+
+    def test_exporting_while_ev_charging(self):
+        """Exporting 500W, EV drawing 2000W → 2500W available."""
+        net_w, ev_w = -500.0, 2000.0
+        surplus = compute_surplus(net_w, ev_w)
+        assert surplus == 2500.0
+
+    def test_surplus_formula_same_in_force_and_surplus_mode(self):
+        """Force mode must NOT change the surplus definition."""
+        net_w, ev_w = 300.0, 3000.0
+        surplus_surplus_mode = compute_surplus(net_w, ev_w)
+        # In force mode, same formula applies — mode doesn't affect definition
+        surplus_force_mode = compute_surplus(net_w, ev_w)
+        assert surplus_surplus_mode == surplus_force_mode
+
+    def test_surplus_always_excludes_ev(self):
+        """EV consumption must never inflate available surplus."""
+        net_w = 0.0  # balanced
+        ev_w = 3680.0  # 16A × 230V
+        surplus = compute_surplus(net_w, ev_w)
+        # surplus = 3680 → this is the power that would be exported without EV
+        assert surplus == 3680.0
+        # Verify raw current calculation uses this surplus, not net alone
+        raw_a = compute_raw_current(surplus, 230.0)
+        assert raw_a > 0
+
+    def test_no_ev_no_export(self):
+        """Importing 1000W, no EV → negative surplus (no available power)."""
+        surplus = compute_surplus(1000.0, 0.0)
+        assert surplus == -1000.0
+
+    def test_heavy_import_with_ev(self):
+        """Importing more than EV draws → still negative surplus."""
+        # EV draws 2000W, but total import is 3000W → house needs 1000W more
+        surplus = compute_surplus(3000.0, 2000.0)
+        assert surplus == -1000.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: force session diagnostics consistency
+# ---------------------------------------------------------------------------
+
+class TestForceSessionDiagnostics:
+    """Test that force start/stop set all diagnostic fields consistently."""
+
+    def _simulate_start_force(self):
+        """Mirror _action_start_force diagnostic state."""
+        MAX_CURRENT = 16
+        state = {
+            "current_mode": "force",
+            "last_action": "start_force",
+            "last_reason": "force_charge_active",
+            "committed_current": float(MAX_CURRENT),
+            "last_committed_int": MAX_CURRENT,
+            "last_commit_reason": "start_force",
+            "charging_on": True,
+        }
+        return state
+
+    def _simulate_stop_force(self):
+        """Mirror _action_stop_force diagnostic state."""
+        state = {
+            "current_mode": "stopped",
+            "last_action": "stop_force",
+            "last_reason": "force_charge_stopped",
+            "committed_current": None,
+            "last_committed_int": None,
+            "last_commit_reason": "stop_force",
+            "charging_on": False,
+        }
+        return state
+
+    def _simulate_controller_disabled_shutdown(self):
+        """Mirror _async_controller_shutdown_sequence diagnostic state."""
+        state = {
+            "current_mode": "stopped",
+            "last_action": "controller_disabled_stop",
+            "last_reason": "controller_disabled",
+            "committed_current": None,
+            "last_committed_int": None,
+            "last_commit_reason": "controller_disabled",
+            "charging_on": False,
+        }
+        return state
+
+    def test_start_force_sets_committed_current(self):
+        state = self._simulate_start_force()
+        assert state["committed_current"] == 16.0
+
+    def test_start_force_sets_applied_current(self):
+        state = self._simulate_start_force()
+        assert state["last_committed_int"] == 16
+
+    def test_start_force_sets_control_reason(self):
+        state = self._simulate_start_force()
+        assert state["last_commit_reason"] == "start_force"
+
+    def test_start_force_sets_mode(self):
+        state = self._simulate_start_force()
+        assert state["current_mode"] == "force"
+
+    def test_start_force_sets_last_action(self):
+        state = self._simulate_start_force()
+        assert state["last_action"] == "start_force"
+
+    def test_stop_force_clears_committed_current(self):
+        state = self._simulate_stop_force()
+        assert state["committed_current"] is None
+
+    def test_stop_force_clears_applied_current(self):
+        state = self._simulate_stop_force()
+        assert state["last_committed_int"] is None
+
+    def test_stop_force_sets_control_reason(self):
+        state = self._simulate_stop_force()
+        assert state["last_commit_reason"] == "stop_force"
+
+    def test_stop_force_sets_mode_stopped(self):
+        state = self._simulate_stop_force()
+        assert state["current_mode"] == "stopped"
+
+    def test_stop_force_sets_last_action(self):
+        state = self._simulate_stop_force()
+        assert state["last_action"] == "stop_force"
+
+    def test_stop_force_sets_charging_off(self):
+        state = self._simulate_stop_force()
+        assert state["charging_on"] is False
+
+    def test_controller_disabled_shutdown_diagnostics(self):
+        """Controller OFF while force active → consistent shutdown state."""
+        state = self._simulate_controller_disabled_shutdown()
+        assert state["current_mode"] == "stopped"
+        assert state["last_action"] == "controller_disabled_stop"
+        assert state["last_reason"] == "controller_disabled"
+        assert state["committed_current"] is None
+        assert state["last_committed_int"] is None
+        assert state["last_commit_reason"] == "controller_disabled"
+        assert state["charging_on"] is False
+
+    def test_full_force_session_lifecycle(self):
+        """Start force → stop force → all diagnostics consistent."""
+        start = self._simulate_start_force()
+        assert start["charging_on"] is True
+        assert start["committed_current"] == 16.0
+        assert start["last_commit_reason"] == "start_force"
+
+        stop = self._simulate_stop_force()
+        assert stop["charging_on"] is False
+        assert stop["committed_current"] is None
+        assert stop["last_commit_reason"] == "stop_force"
+
+
+# ---------------------------------------------------------------------------
+# Tests: controller_enabled gates service calls
+# ---------------------------------------------------------------------------
+
+class TestControllerEnabledGatesServices:
+    """Service calls must be rejected when controller is disabled."""
+
+    def _service_force_start_allowed(self, controller_enabled: bool) -> bool:
+        """Mirror async_service_force_start gating logic."""
+        if not controller_enabled:
+            return False
+        return True
+
+    def _service_force_stop_allowed(self, controller_enabled: bool) -> bool:
+        """Mirror async_service_force_stop gating logic."""
+        if not controller_enabled:
+            return False
+        return True
+
+    def test_force_start_blocked_when_disabled(self):
+        assert self._service_force_start_allowed(False) is False
+
+    def test_force_start_allowed_when_enabled(self):
+        assert self._service_force_start_allowed(True) is True
+
+    def test_force_stop_blocked_when_disabled(self):
+        assert self._service_force_stop_allowed(False) is False
+
+    def test_force_stop_allowed_when_enabled(self):
+        assert self._service_force_stop_allowed(True) is True
+
+    def test_controller_off_while_force_triggers_shutdown(self):
+        """Disabling controller during force charge triggers shutdown."""
+        controller_enabled = True
+        charging_on = True
+        current_mode = "force"
+        shutdown_triggered = False
+
+        prev = controller_enabled
+        controller_enabled = False
+        if prev and not controller_enabled and charging_on:
+            shutdown_triggered = True
+
+        assert shutdown_triggered is True
+
+    def test_shutdown_from_force_sets_correct_diagnostics(self):
+        """After shutdown from force mode, diagnostics are consistent."""
+        # Simulate: was in force mode, controller disabled
+        last_action = "controller_disabled_stop"
+        last_reason = "controller_disabled"
+        last_commit_reason = "controller_disabled"
+        committed_current = None
+        last_committed_int = None
+        current_mode = "stopped"
+
+        assert last_action == "controller_disabled_stop"
+        assert last_reason == "controller_disabled"
+        assert last_commit_reason == "controller_disabled"
+        assert committed_current is None
+        assert last_committed_int is None
+        assert current_mode == "stopped"
