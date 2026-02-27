@@ -67,7 +67,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
         name="Stormbreaker Surplus EV Charge",
         manufacturer="Stormbreaker Surplus",
         model="EV Charge Controller",
-        sw_version="1.1.0",
+        sw_version="2.0.0",
     )
 
 
