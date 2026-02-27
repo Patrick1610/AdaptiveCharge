@@ -33,6 +33,7 @@ MODE_CONSUMPTION_PRODUCTION = "consumption_production"
 MODE_FORCE = "force"
 MODE_SURPLUS = "surplus"
 MODE_STOPPED = "stopped"
+MODE_NIGHT_TARGET = "night_target"
 
 # --- Confidence Levels ---
 CONFIDENCE_HIGH = "high"
@@ -49,6 +50,12 @@ DEFAULT_START_DELAY = 30
 DEFAULT_STOP_DELAY = 30
 DEFAULT_MODULATE_MIN_INTERVAL = 30
 DEFAULT_MAX_CURRENT_LIMIT = 16
+
+# --- Import guard (configurable fail-safe) ---
+CONF_IMPORT_GUARD_THRESHOLD = "import_guard_threshold_w"
+CONF_IMPORT_GUARD_DURATION = "import_guard_duration_s"
+DEFAULT_IMPORT_GUARD_THRESHOLD_W = 150.0
+DEFAULT_IMPORT_GUARD_DURATION_S = 10.0
 
 # --- Alignment engine defaults ---
 DEFAULT_EV_STEP_THRESHOLD_W = 400.0
@@ -67,6 +74,9 @@ DEFAULT_COOLDOWN_DOWN_S = 0.0
 DEFAULT_MIN_ON_TIME_S = 300.0
 DEFAULT_MIN_OFF_TIME_S = 120.0
 DEFAULT_SETTLING_DURATION_S = 10.0
+
+# --- Service call discipline ---
+DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S = 10.0
 
 # --- Platforms ---
 PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]

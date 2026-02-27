@@ -19,6 +19,7 @@ from .alignment import (
     AlignmentEngine,
     EMAFilter,
     MeasurementTracker,
+    compute_adaptive_skew_threshold,
     compute_coherence,
     compute_confidence,
     compute_skew,
@@ -31,6 +32,8 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_IMPORT_GUARD_DURATION,
+    CONF_IMPORT_GUARD_THRESHOLD,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
@@ -56,12 +59,15 @@ from .const import (
     DEFAULT_EV_STEP_THRESHOLD_W,
     DEFAULT_HYSTERESIS_DOWN,
     DEFAULT_HYSTERESIS_UP,
+    DEFAULT_IMPORT_GUARD_DURATION_S,
+    DEFAULT_IMPORT_GUARD_THRESHOLD_W,
     DEFAULT_IMPORT_SAFETY_DURATION_S,
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MAX_STEP_A,
     DEFAULT_MIN_OFF_TIME_S,
     DEFAULT_MIN_ON_TIME_S,
+    DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SETTLING_DURATION_S,
@@ -151,6 +157,12 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._start_delay: int = int(options.get(CONF_START_DELAY, DEFAULT_START_DELAY))
         self._stop_delay: int = int(options.get(CONF_STOP_DELAY, DEFAULT_STOP_DELAY))
         self._modulate_min_interval: int = int(options.get(CONF_MODULATE_MIN_INTERVAL, DEFAULT_MODULATE_MIN_INTERVAL))
+        self._import_guard_threshold: float = float(
+            options.get(CONF_IMPORT_GUARD_THRESHOLD, DEFAULT_IMPORT_GUARD_THRESHOLD_W)
+        )
+        self._import_guard_duration: float = float(
+            options.get(CONF_IMPORT_GUARD_DURATION, DEFAULT_IMPORT_GUARD_DURATION_S)
+        )
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -160,16 +172,26 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charge_tonight: bool = False
         self._charging_enabled: bool = False
 
+        # Master controller switch — default OFF for safe first install
+        self._controller_enabled: bool = False
+
         # Control state
         self._charging_on: bool = False
         self._current_mode: str = MODE_STOPPED
         self._last_action: str = ""
+        self._last_reason: str = ""
+        self._target_current: float = 0.0
         self._last_raw_floored: int = 0
         self._pending_task: asyncio.Task | None = None
         self._pending_modulate_task: asyncio.Task | None = None
         self._pending_plugin_task: asyncio.Task | None = None
         self._force_charge_prev: bool = False
         self._cable_prev: bool | None = None
+
+        # Timestamps for diagnostics
+        self._last_action_ts: float | None = None
+        self._last_current_set_ts: float | None = None
+        self._last_switch_toggle_ts: float | None = None
 
         # Solar done tracking
         self._solar_below_threshold_since: datetime | None = None
@@ -199,8 +221,9 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._confidence: str = CONFIDENCE_LOW
         self._last_commit_reason: str = ""
 
-        # Import safety
+        # Import guard state
         self._import_exceed_since: float | None = None
+        self._import_guard_active: bool = False
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
@@ -408,6 +431,30 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         elif self._alignment.settling:
             control_reason = "settling_window"
 
+        # --- Compute alignment_ok and alignment_reason ---
+        skew_threshold = compute_adaptive_skew_threshold(self._net_tracker, self._ev_tracker)
+        if skew is None:
+            alignment_ok = False
+            alignment_reason = "no data"
+        elif skew > skew_threshold:
+            alignment_ok = False
+            alignment_reason = "skew too high"
+        elif (
+            self._net_tracker.staleness is not None
+            and self._net_tracker.staleness > float(self._sample_interval) * 3.0
+        ):
+            alignment_ok = False
+            alignment_reason = "net stale"
+        elif (
+            self._ev_tracker.staleness is not None
+            and self._ev_tracker.staleness > float(self._sample_interval) * 3.0
+        ):
+            alignment_ok = False
+            alignment_reason = "ev stale"
+        else:
+            alignment_ok = True
+            alignment_reason = "ok"
+
         # --- Solar done ---
         if solar_w is not None:
             if solar_w < self._solar_done_threshold_w:
@@ -436,8 +483,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         )
         force_charge = self._charge_now or tonight_condition
 
-        # --- Cable plug-in detection ---
-        if cable_connected is not None and cable_connected != self._cable_prev:
+        # --- Cable plug-in detection (only when controller enabled) ---
+        if self._controller_enabled and cable_connected is not None and cable_connected != self._cable_prev:
             if cable_connected and not self._cable_prev:
                 if self._pending_plugin_task and not self._pending_plugin_task.done():
                     self._pending_plugin_task.cancel()
@@ -445,26 +492,29 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                     self._action_plug_in_delayed(force_charge, smoothed_floored),
                     eager_start=False,
                 )
+        if cable_connected is not None:
             self._cable_prev = cable_connected
 
-        # --- Import safety check ---
-        import_safety_triggered = self._check_import_safety(
-            computed_net_w, mono_now
-        )
+        # --- Import guard check ---
+        import_guard_triggered = self._check_import_guard(computed_net_w, mono_now)
 
-        # --- Control logic ---
-        await self._run_control_logic(
-            force_charge=force_charge,
-            smoothed_floored=smoothed_floored,
-            raw_floored=raw_floored,
-            ema_current=ema_current_a,
-            mono_now=mono_now,
-            import_safety=import_safety_triggered,
-            coherence=coherence,
-            control_reason=control_reason,
-        )
+        # --- Control logic (only when controller enabled) ---
+        if self._controller_enabled:
+            await self._run_control_logic(
+                force_charge=force_charge,
+                smoothed_floored=smoothed_floored,
+                raw_floored=raw_floored,
+                ema_current=ema_current_a,
+                mono_now=mono_now,
+                import_safety=import_guard_triggered,
+                coherence=coherence,
+                control_reason=control_reason,
+            )
 
         self._last_raw_floored = raw_floored
+        # Update target_current from ema for diagnostics
+        capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
+        self._target_current = min(max(ema_current_a, 0.0), capped_limit)
 
         data: dict[str, Any] = {
             "net_w": computed_net_w,
@@ -489,12 +539,27 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
             "tonight_condition": tonight_condition,
             "need": need,
             "charging_enabled": self._charging_enabled,
+            "controller_enabled": self._controller_enabled,
+            "charging_active": self._charging_on,
             "current_mode": self._current_mode,
             "last_action": self._last_action,
+            "last_reason": self._last_reason,
+            "target_current": round(self._target_current, 2),
+            "current_setting": self._last_committed_int,
+            "available_current": round(ema_current_a, 2),
             "charging_on": self._charging_on,
             "sample_count": len(self._samples),
             "last_updated": now.isoformat(),
+            # --- Import guard ---
+            "import_guard_active": self._import_guard_active,
+            "import_watts": max(computed_net_w, 0.0),
+            # --- Timestamps ---
+            "last_action_ts": self._last_action_ts,
+            "last_current_set_ts": self._last_current_set_ts,
+            "last_switch_toggle_ts": self._last_switch_toggle_ts,
             # --- Alignment & coherence diagnostics ---
+            "alignment_ok": alignment_ok,
+            "alignment_reason": alignment_reason,
             "alignment_active": self._alignment.active,
             "settling_active": self._alignment.settling,
             "confidence_level": self._confidence,
@@ -551,22 +616,55 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         return data
 
     # ------------------------------------------------------------------
-    # Import safety
+    # Import guard (configurable fail-safe)
     # ------------------------------------------------------------------
 
-    def _check_import_safety(self, net_w: float, mono_now: float) -> bool:
-        """Return True if import has exceeded threshold for long enough."""
-        threshold = DEFAULT_IMPORT_SAFETY_THRESHOLD_W
-        duration = DEFAULT_IMPORT_SAFETY_DURATION_S
+    def _check_import_guard(self, net_w: float, mono_now: float) -> bool:
+        """Return True if grid import has exceeded threshold for long enough."""
+        threshold = self._import_guard_threshold
+        duration = self._import_guard_duration
 
         if net_w > threshold:
             if self._import_exceed_since is None:
                 self._import_exceed_since = mono_now
             elif (mono_now - self._import_exceed_since) >= duration:
+                self._import_guard_active = True
                 return True
         else:
             self._import_exceed_since = None
+            self._import_guard_active = False
         return False
+
+    def _check_import_safety(self, net_w: float, mono_now: float) -> bool:
+        """Legacy alias — delegates to _check_import_guard."""
+        return self._check_import_guard(net_w, mono_now)
+
+    # ------------------------------------------------------------------
+    # Controller enable/disable
+    # ------------------------------------------------------------------
+
+    async def _async_controller_shutdown_sequence(self) -> None:
+        """Shutdown sequence when controller is disabled.
+
+        Policy: if the controller had started charging (_charging_on == True),
+        stop charging and reset current to default.  This matches the existing
+        stop behaviour already used by _action_stop_surplus / _action_stop_force.
+        """
+        if not self._charging_on:
+            return
+        _LOGGER.info("Stormbreaker: controller disabled — running shutdown sequence")
+        self._cancel_pending()
+        self._last_reason = "controller_disabled"
+        await self._disable_charging()
+        self._charging_on = False
+        self._current_mode = MODE_STOPPED
+        self._last_action = "controller_disabled_stop"
+        self._last_action_ts = time.monotonic()
+        self._last_off_time = time.monotonic()
+        self._committed_current = None
+        self._last_committed_int = None
+        await asyncio.sleep(10)
+        await self._set_charge_current(MAX_CURRENT_ABS)
 
     # ------------------------------------------------------------------
     # Control logic
@@ -618,9 +716,11 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                     eager_start=False,
                 )
                 self._last_commit_reason = "import_safety_stop"
+                self._last_reason = "import_guard"
+                self._last_action_ts = time.monotonic()
             else:
                 await self._commit_current(
-                    new_target, mono_now, reason="import_safety_reduce"
+                    new_target, mono_now, reason="import_guard_reduce"
                 )
             return
 
@@ -733,6 +833,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                 self._last_down_time = mono_now
 
             self._last_action = f"modulate_{target_int}A"
+            self._last_reason = reason
+            self._last_action_ts = mono_now
 
             # Start settling window to avoid self-induced dip flapping
             self._alignment.start_settling(
@@ -764,6 +866,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = True
         self._current_mode = MODE_FORCE
         self._last_action = "start_force"
+        self._last_reason = "force_charge_active"
+        self._last_action_ts = time.monotonic()
         self._last_on_time = time.monotonic()
         self._committed_current = float(MAX_CURRENT_ABS)
         self._last_committed_int = MAX_CURRENT_ABS
@@ -774,6 +878,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = False
         self._current_mode = MODE_STOPPED
         self._last_action = "stop_force"
+        self._last_reason = "force_charge_stopped"
+        self._last_action_ts = time.monotonic()
         self._last_off_time = time.monotonic()
         self._committed_current = None
         self._last_committed_int = None
@@ -788,6 +894,8 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = True
         self._current_mode = MODE_SURPLUS
         self._last_action = f"start_surplus_{current_a}A"
+        self._last_reason = "surplus_above_threshold"
+        self._last_action_ts = time.monotonic()
         self._last_on_time = time.monotonic()
         self._committed_current = float(current_a)
         self._last_committed_int = current_a
@@ -799,10 +907,13 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
         self._charging_on = False
         self._current_mode = MODE_STOPPED
         self._last_action = "stop_surplus"
+        self._last_reason = "surplus_below_threshold"
+        self._last_action_ts = time.monotonic()
         self._last_off_time = time.monotonic()
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_surplus"
+        self._import_guard_active = False
         await asyncio.sleep(10)
         await self._set_charge_current(MAX_CURRENT_ABS)
 
@@ -829,6 +940,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                     {"entity_id": self._charge_current_number, "value": current_a},
                     blocking=True,
                 )
+                self._last_current_set_ts = time.monotonic()
             except (HomeAssistantError, ServiceNotFound) as exc:
                 _LOGGER.warning("Failed to set charge current: %s", exc)
 
@@ -843,6 +955,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                     {"entity_id": self._charge_switch},
                     blocking=True,
                 )
+                self._last_switch_toggle_ts = time.monotonic()
             except (HomeAssistantError, ServiceNotFound) as exc:
                 _LOGGER.warning("Failed to enable charging: %s", exc)
 
@@ -857,6 +970,7 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
                     {"entity_id": self._charge_switch},
                     blocking=True,
                 )
+                self._last_switch_toggle_ts = time.monotonic()
             except (HomeAssistantError, ServiceNotFound) as exc:
                 _LOGGER.warning("Failed to disable charging: %s", exc)
 
@@ -915,3 +1029,17 @@ class StormbreakerCoordinator(DataUpdateCoordinator):
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""
         self._max_current_limit = value
+
+    def set_controller_enabled(self, value: bool) -> None:
+        """Set the controller enabled flag (master switch).
+
+        Disabling schedules a shutdown sequence if charging is active.
+        """
+        prev = self._controller_enabled
+        self._controller_enabled = value
+        if prev and not value and self._charging_on:
+            # Schedule shutdown sequence via task so it runs in event loop
+            self.hass.async_create_task(
+                self._async_controller_shutdown_sequence(),
+                eager_start=False,
+            )
