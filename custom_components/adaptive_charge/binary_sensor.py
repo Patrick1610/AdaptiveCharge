@@ -10,12 +10,12 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
+from .helpers import device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,16 +33,6 @@ async def async_setup_entry(
     ])
 
 
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name="AdaptiveCharge",
-        manufacturer="AdaptiveCharge",
-        model="EV Charge Controller",
-        sw_version="2.0.0",
-    )
-
-
 class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
     """Binary sensor indicating whether force charge is active."""
 
@@ -56,7 +46,7 @@ class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_force_charge"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     @property
     def is_on(self) -> bool | None:
@@ -92,7 +82,7 @@ class ChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charging_active"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     @property
     def is_on(self) -> bool | None:

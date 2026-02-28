@@ -7,12 +7,12 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DEFAULT_CHARGE_BUFFER, DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DEFAULT_RANGE_HYSTERESIS_PCT, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
+from .helpers import device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,15 +34,6 @@ async def async_setup_entry(
     )
 
 
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name="AdaptiveCharge",
-        manufacturer="AdaptiveCharge",
-        model="EV Charge Controller",
-        sw_version="2.0.0",
-    )
-
 
 class DesiredRangeNumber(RestoreEntity, NumberEntity):
     """Number entity for the desired vehicle range in km."""
@@ -61,7 +52,7 @@ class DesiredRangeNumber(RestoreEntity, NumberEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_desired_range_km"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""
@@ -99,7 +90,7 @@ class MaxCurrentLimitNumber(RestoreEntity, NumberEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_max_current_limit_a"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""
@@ -137,7 +128,7 @@ class ChargeBufferNumber(RestoreEntity, NumberEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charge_buffer_pct"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""
@@ -175,7 +166,7 @@ class RangeHysteresisNumber(RestoreEntity, NumberEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_range_hysteresis_pct"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""

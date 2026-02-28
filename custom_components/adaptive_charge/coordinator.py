@@ -4,9 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
 from datetime import datetime, timedelta
-from statistics import mean
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -73,6 +71,10 @@ from .const import (
     DEFAULT_MAX_STEP_A,
     DEFAULT_RANGE_HYSTERESIS_PCT,
     DEFAULT_TONIGHT_REENTRY_CURRENT_A,
+    DEFAULT_TONIGHT_START_HOUR,
+    DEFAULT_TONIGHT_START_MINUTE,
+    DEFAULT_NIGHT_OFF_HOUR,
+    DEFAULT_NIGHT_OFF_MINUTE,
     DEFAULT_MIN_OFF_TIME_S,
     DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S,
@@ -192,6 +194,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
         self._charge_buffer: float = 0.0
         self._range_hysteresis_pct: float = DEFAULT_RANGE_HYSTERESIS_PCT
+        self._tonight_start_hour: int = DEFAULT_TONIGHT_START_HOUR
+        self._tonight_start_minute: int = DEFAULT_TONIGHT_START_MINUTE
+        self._night_off_hour: int = DEFAULT_NIGHT_OFF_HOUR
+        self._night_off_minute: int = DEFAULT_NIGHT_OFF_MINUTE
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -225,9 +231,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Solar done tracking
         self._solar_below_threshold_since: datetime | None = None
         self._solar_done: bool = False
-
-        # Smoothing deque: list of (timestamp, current_a) — kept for UI sensors
-        self._samples: deque[tuple[datetime, float]] = deque()
 
         # --- Alignment engine ---
         self._net_tracker = MeasurementTracker("net_power")
@@ -298,22 +301,25 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._schedule_night_off()
 
     def _schedule_night_off(self) -> None:
-        """Schedule the nightly 05:00 charge_tonight reset."""
+        """Schedule the nightly charge_tonight reset at configured time."""
         if self._unsub_night_off:
             self._unsub_night_off()
         self._unsub_night_off = async_track_time_change(
             self.hass,
             self._async_night_off,
-            hour=5,
-            minute=0,
+            hour=self._night_off_hour,
+            minute=self._night_off_minute,
             second=0,
         )
 
     @callback
     def _async_night_off(self, _now) -> None:
-        """Turn off charge_tonight at 05:00."""
-        _LOGGER.info("AdaptiveCharge: Night-Off — disabling charge_tonight at 05:00")
-        self._tonight_reason = "auto_off: 05:00 reset"
+        """Turn off charge_tonight at configured night-off time."""
+        _LOGGER.info(
+            "AdaptiveCharge: Night-Off — disabling charge_tonight at %02d:%02d",
+            self._night_off_hour, self._night_off_minute,
+        )
+        self._tonight_reason = f"auto_off: {self._night_off_hour:02d}:{self._night_off_minute:02d} reset"
         self._charge_tonight = False
         self._schedule_night_off()
         self.hass.async_create_task(
@@ -363,7 +369,76 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         now = datetime.now()
         mono_now = time.monotonic()
 
-        # --- Read raw sensor values ---
+        # --- Phase 1: Read & convert sensors ---
+        sensor_data = self._read_sensors()
+
+        # --- Phase 2: Alignment, EMA, confidence ---
+        analysis = self._analyze_measurements(sensor_data, mono_now)
+
+        # --- Phase 3: Solar done ---
+        self._evaluate_solar_done(sensor_data["solar_w"], now)
+
+        # --- Phase 4: Charge tonight auto-off ---
+        self._evaluate_tonight_auto_off(sensor_data["cable_connected"])
+
+        # --- Phase 5: Force charge / need / tonight condition ---
+        force_data = self._evaluate_force_charge(
+            sensor_data["current_range"],
+            sensor_data["presence"],
+            sensor_data["cable_connected"],
+        )
+
+        # --- Phase 6: Cable plug-in detection ---
+        self._detect_cable_plugin(
+            sensor_data["cable_connected"],
+            force_data["force_charge"],
+            analysis["ema_current_a"],
+        )
+
+        # --- Phase 7: Import guard ---
+        import_guard_triggered = self._check_import_guard(
+            sensor_data["computed_net_w"], mono_now
+        )
+
+        # --- Phase 8: Control logic ---
+        if self._controller_enabled:
+            await self._run_control_logic(
+                force_charge=force_data["force_charge"],
+                smoothed_floored=0,
+                raw_floored=analysis["raw_floored"],
+                ema_current=analysis["ema_current_a"],
+                mono_now=mono_now,
+                import_safety=import_guard_triggered,
+                coherence=analysis["coherence"],
+                control_reason=analysis["control_reason"],
+            )
+
+        self._last_raw_floored = analysis["raw_floored"]
+        capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
+        self._target_current = min(max(analysis["ema_current_a"], 0.0), capped_limit)
+
+        # During force charge, charger power is NOT available surplus current
+        if force_data["force_charge"]:
+            display_ema = 0.0
+            display_available = 0.0
+        else:
+            display_ema = round(analysis["ema_current_a"], 2)
+            display_available = round(analysis["ema_current_a"], 2)
+
+        # --- Phase 9: Build data dict ---
+        data = self._build_data_dict(
+            sensor_data, analysis, force_data, display_ema, display_available, now
+        )
+
+        self.async_set_updated_data(data)
+        return data
+
+    # ------------------------------------------------------------------
+    # Phase 1: Read & convert sensors
+    # ------------------------------------------------------------------
+
+    def _read_sensors(self) -> dict[str, Any]:
+        """Read raw sensor values and convert units."""
         net_raw = _get_float_state(self.hass, self._net_power_sensor)
         consumption_raw = _get_float_state(self.hass, self._consumption_sensor)
         production_raw = _get_float_state(self.hass, self._production_sensor)
@@ -374,35 +449,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         cable_connected = _get_bool_state(self.hass, self._cable_sensor)
         current_range = _get_float_state(self.hass, self._current_range_sensor)
 
-        # --- Convert units ---
-        if net_raw is not None:
-            net_w = _to_watts(net_raw, self._net_power_sensor, self.hass)
-        else:
-            net_w = None
-
-        if consumption_raw is not None:
-            consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass)
-        else:
-            consumption_w = None
-
-        if production_raw is not None:
-            production_w = _to_watts(production_raw, self._production_sensor, self.hass)
-        else:
-            production_w = None
-
-        if ev_raw is not None:
-            ev_w = _to_watts(ev_raw, self._ev_power_sensor, self.hass)
-        else:
-            ev_w = 0.0
-
+        net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
+        consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
+        production_w = _to_watts(production_raw, self._production_sensor, self.hass) if production_raw is not None else None
+        ev_w = _to_watts(ev_raw, self._ev_power_sensor, self.hass) if ev_raw is not None else 0.0
         voltage = voltage_raw if voltage_raw is not None else 230.0
+        solar_w = _to_watts(solar_raw, self._solar_sensor, self.hass) if solar_raw is not None else None
 
-        if solar_raw is not None:
-            solar_w = _to_watts(solar_raw, self._solar_sensor, self.hass)
-        else:
-            solar_w = None
-
-        # --- Compute net_w ---
         if self._net_power_mode == MODE_NET_ONLY:
             computed_net_w = net_w if net_w is not None else 0.0
         else:
@@ -413,49 +466,53 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             else:
                 computed_net_w = 0.0
 
-        # --- Update measurement trackers (every poll, regardless of value change) ---
+        return {
+            "computed_net_w": computed_net_w,
+            "ev_w": ev_w,
+            "voltage": voltage,
+            "solar_w": solar_w,
+            "presence": presence,
+            "cable_connected": cable_connected,
+            "current_range": current_range,
+        }
+
+    # ------------------------------------------------------------------
+    # Phase 2: Alignment, EMA, confidence
+    # ------------------------------------------------------------------
+
+    def _analyze_measurements(
+        self, sensor_data: dict[str, Any], mono_now: float
+    ) -> dict[str, Any]:
+        """Update trackers, compute EMA, confidence, and control reason."""
+        computed_net_w = sensor_data["computed_net_w"]
+        ev_w = sensor_data["ev_w"]
+        voltage = sensor_data["voltage"]
+
         self._net_tracker.update(computed_net_w, mono_now)
         self._ev_tracker.update(ev_w, mono_now)
         self._voltage_tracker.update(voltage, mono_now)
 
-        # --- EV step detection ---
         self._alignment.on_ev_power_change(self._prev_ev_w, ev_w, mono_now)
-
-        # --- Net power change detection for alignment ---
         net_delta = computed_net_w - self._prev_net_w if self._prev_net_w is not None else 0.0
         self._alignment.on_net_power_update(mono_now, net_delta)
         self._alignment.check_timeout(mono_now)
-
-        # --- Settling window check ---
         self._alignment.check_settling(mono_now)
 
-        # --- Skew-based alignment activation ---
         skew = compute_skew(self._net_tracker, self._ev_tracker)
         coherence = compute_coherence(self._net_tracker, self._ev_tracker)
 
         self._prev_ev_w = ev_w
         self._prev_net_w = computed_net_w
 
-        # --- Compute surplus (coherence-aware) ---
         surplus_w = (0.0 - computed_net_w) + ev_w
         raw_current_a = (surplus_w / (voltage * 3.0)) if voltage > 0 else 0.0
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
 
-        # EMA-smoothed current for control decisions
         ema_current_a = self._ema_filter.update(raw_current_a, mono_now)
         ema_current_a = min(max(ema_current_a, 0.0), capped)
 
-        # --- Legacy smoothing (kept for UI sensor compatibility) ---
         raw_floored = min(max(int(raw_current_a), 0), int(capped))
-        self._samples.append((now, raw_current_a))
-        cutoff = now - timedelta(seconds=self._smoothing_window)
-        while self._samples and self._samples[0][0] < cutoff:
-            self._samples.popleft()
-        valid_samples = [v for _, v in self._samples]
-        smoothed_a = mean(valid_samples) if valid_samples else 0.0
-        smoothed_floored = min(max(int(smoothed_a), 0), int(capped))
 
-        # --- Confidence ---
         self._confidence = compute_confidence(
             net_tracker=self._net_tracker,
             ev_tracker=self._ev_tracker,
@@ -466,7 +523,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             settling=self._alignment.settling,
         )
 
-        # --- Determine control reason prefix ---
         control_reason = ""
         if coherence < 0.3:
             control_reason = "low_coherence"
@@ -475,7 +531,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         elif self._alignment.settling:
             control_reason = "settling_window"
 
-        # --- Compute alignment_ok and alignment_reason ---
         skew_threshold = compute_adaptive_skew_threshold(self._net_tracker, self._ev_tracker)
         if skew is None:
             alignment_ok = False
@@ -499,7 +554,24 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             alignment_ok = True
             alignment_reason = "ok"
 
-        # --- Solar done ---
+        return {
+            "surplus_w": surplus_w,
+            "raw_current_a": raw_current_a,
+            "raw_floored": raw_floored,
+            "ema_current_a": ema_current_a,
+            "coherence": coherence,
+            "skew": skew,
+            "control_reason": control_reason,
+            "alignment_ok": alignment_ok,
+            "alignment_reason": alignment_reason,
+        }
+
+    # ------------------------------------------------------------------
+    # Phase 3: Solar done
+    # ------------------------------------------------------------------
+
+    def _evaluate_solar_done(self, solar_w: float | None, now: datetime) -> None:
+        """Update solar_done state based on solar sensor."""
         if solar_w is not None:
             if solar_w < self._solar_done_threshold_w:
                 if self._solar_below_threshold_since is None:
@@ -511,12 +583,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 self._solar_below_threshold_since = None
                 self._solar_done = False
         else:
-            # No solar sensor configured — assume solar is always "done"
-            # so that charge_tonight can function without a solar sensor.
             self._solar_done = True
 
-        # --- Charge Tonight auto-off triggers ---
-        # (a) EV unplugged: cable was connected, now disconnected
+    # ------------------------------------------------------------------
+    # Phase 4: Charge tonight auto-off
+    # ------------------------------------------------------------------
+
+    def _evaluate_tonight_auto_off(self, cable_connected: bool | None) -> None:
+        """Check auto-off triggers for charge_tonight."""
         if (
             self._charge_tonight
             and self._cable_prev is not None
@@ -528,7 +602,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._tonight_reason = "auto_off: cable unplugged"
             self._charge_tonight = False
 
-        # (b) solar_done transitions on → off (end of night charging plan)
         if (
             self._charge_tonight
             and self._prev_solar_done
@@ -540,10 +613,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         self._prev_solar_done = self._solar_done
 
-        # --- Force charge ---
+    # ------------------------------------------------------------------
+    # Phase 5: Force charge / need / tonight evaluation
+    # ------------------------------------------------------------------
+
+    def _evaluate_force_charge(
+        self,
+        current_range: float | None,
+        presence: bool | None,
+        cable_connected: bool | None,
+    ) -> dict[str, Any]:
+        """Evaluate force charge, need, tonight condition, and earliest-start gate."""
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
-        # Hysteresis: start charging when below effective_range,
-        # stop only when hysteresis band above effective_range to prevent cycling.
         hysteresis_km = effective_range * (self._range_hysteresis_pct / 100.0)
         prev_need_active = self._need_active
         if current_range is not None:
@@ -554,7 +635,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         else:
             self._need_active = False
         need = self._need_active
-        # Detect tonight reentry: need was False, now True again (range dropped back)
+
         tonight_reentry = (
             not prev_need_active
             and self._need_active
@@ -563,90 +644,105 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         )
         if tonight_reentry:
             self._tonight_reentry = True
+
+        # Earliest start gate: tonight only triggers after configured start hour
+        now_time = datetime.now()
+        after_start = (
+            now_time.hour > self._tonight_start_hour
+            or (now_time.hour == self._tonight_start_hour and now_time.minute >= self._tonight_start_minute)
+        )
         tonight_condition = (
             self._charge_tonight
             and bool(presence)
             and bool(cable_connected)
             and need
             and self._solar_done
+            and after_start
         )
-        # charge_now always overrules tonight — charges at full power
         force_charge = self._charge_now or tonight_condition
         if force_charge:
             self._force_source = "charge_now_switch" if self._charge_now else "charge_tonight"
 
-        # --- Cable plug-in detection (only when controller enabled) ---
-        # Skip when _cable_prev is None (first read after startup) to avoid
-        # spurious plug-in detection before all sensors are available.
-        if self._controller_enabled and cable_connected is not None and self._cable_prev is not None and cable_connected != self._cable_prev:
+        return {
+            "effective_range": effective_range,
+            "hysteresis_km": hysteresis_km,
+            "need": need,
+            "tonight_condition": tonight_condition,
+            "force_charge": force_charge,
+        }
+
+    # ------------------------------------------------------------------
+    # Phase 6: Cable plug-in detection
+    # ------------------------------------------------------------------
+
+    def _detect_cable_plugin(
+        self,
+        cable_connected: bool | None,
+        force_charge: bool,
+        ema_current_a: float,
+    ) -> None:
+        """Detect cable plug-in events and schedule delayed action."""
+        if (
+            self._controller_enabled
+            and cable_connected is not None
+            and self._cable_prev is not None
+            and cable_connected != self._cable_prev
+        ):
             if cable_connected and not self._cable_prev:
                 if self._pending_plugin_task and not self._pending_plugin_task.done():
                     self._pending_plugin_task.cancel()
                 self._pending_plugin_task = self.hass.async_create_task(
-                    self._action_plug_in_delayed(force_charge, smoothed_floored),
+                    self._action_plug_in_delayed(force_charge, ema_current_a),
                     eager_start=False,
                 )
         if cable_connected is not None:
             self._cable_prev = cable_connected
 
-        # --- Import guard check ---
-        import_guard_triggered = self._check_import_guard(computed_net_w, mono_now)
+    # ------------------------------------------------------------------
+    # Build data dict
+    # ------------------------------------------------------------------
 
-        # --- Control logic (only when controller enabled) ---
-        if self._controller_enabled:
-            await self._run_control_logic(
-                force_charge=force_charge,
-                smoothed_floored=smoothed_floored,
-                raw_floored=raw_floored,
-                ema_current=ema_current_a,
-                mono_now=mono_now,
-                import_safety=import_guard_triggered,
-                coherence=coherence,
-                control_reason=control_reason,
-            )
-
-        self._last_raw_floored = raw_floored
-        # Update target_current from ema for diagnostics
-        capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
-        self._target_current = min(max(ema_current_a, 0.0), capped_limit)
-
-        # During force charge, charger power is NOT available surplus current
-        if force_charge:
-            display_ema = 0.0
-            display_available = 0.0
-        else:
-            display_ema = round(ema_current_a, 2)
-            display_available = round(ema_current_a, 2)
-
-        data: dict[str, Any] = {
+    def _build_data_dict(
+        self,
+        sensor_data: dict[str, Any],
+        analysis: dict[str, Any],
+        force_data: dict[str, Any],
+        display_ema: float,
+        display_available: float,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Assemble the coordinator data dict."""
+        computed_net_w = sensor_data["computed_net_w"]
+        skew = analysis["skew"]
+        return {
             "net_w": computed_net_w,
-            "ev_w": ev_w,
-            "voltage": voltage,
-            "surplus_w": surplus_w,
-            "raw_current_a": raw_current_a,
-            "raw_floored": raw_floored,
-            "smoothed_a": smoothed_a,
-            "smoothed_floored": smoothed_floored,
+            "ev_w": sensor_data["ev_w"],
+            "voltage": sensor_data["voltage"],
+            "surplus_w": analysis["surplus_w"],
+            "raw_current_a": analysis["raw_current_a"],
+            "raw_floored": analysis["raw_floored"],
             "ema_current_a": display_ema,
-            "solar_w": solar_w,
+            "solar_w": sensor_data["solar_w"],
             "solar_done": self._solar_done,
-            "force_charge": force_charge,
-            "force_source": self._force_source if force_charge else "",
-            "presence": presence,
-            "cable_connected": cable_connected,
-            "current_range": current_range,
+            "force_charge": force_data["force_charge"],
+            "force_source": self._force_source if force_data["force_charge"] else "",
+            "presence": sensor_data["presence"],
+            "cable_connected": sensor_data["cable_connected"],
+            "current_range": sensor_data["current_range"],
             "desired_range": self._desired_range,
-            "effective_range": effective_range,
+            "effective_range": force_data["effective_range"],
             "range_hysteresis_pct": self._range_hysteresis_pct,
-            "range_hysteresis_km": round(hysteresis_km, 1),
+            "range_hysteresis_km": round(force_data["hysteresis_km"], 1),
             "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
-            "tonight_condition": tonight_condition,
+            "tonight_condition": force_data["tonight_condition"],
             "tonight_reason": self._tonight_reason,
             "tonight_reentry": self._tonight_reentry,
-            "need": need,
+            "tonight_start_time": f"{self._tonight_start_hour:02d}:{self._tonight_start_minute:02d}",
+            "night_off_time": f"{self._night_off_hour:02d}:{self._night_off_minute:02d}",
+            "need": force_data["need"],
             "charging_enabled": self._charging_enabled,
             "controller_enabled": self._controller_enabled,
             "charging_active": self._charging_on,
@@ -657,7 +753,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "current_setting": self._last_committed_int,
             "available_current": display_available,
             "charging_on": self._charging_on,
-            "sample_count": len(self._samples),
+            "sample_count": len(self._net_tracker._intervals),
             "last_updated": now.isoformat(),
             # --- Import guard ---
             "import_guard_active": self._import_guard_active,
@@ -679,12 +775,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "last_current_set_ts": self._last_current_set_ts,
             "last_switch_toggle_ts": self._last_switch_toggle_ts,
             # --- Alignment & coherence diagnostics ---
-            "alignment_ok": alignment_ok,
-            "alignment_reason": alignment_reason,
+            "alignment_ok": analysis["alignment_ok"],
+            "alignment_reason": analysis["alignment_reason"],
             "alignment_active": self._alignment.active,
             "settling_active": self._alignment.settling,
             "confidence_level": self._confidence,
-            "measurement_coherence": round(coherence, 3),
+            "measurement_coherence": round(analysis["coherence"], 3),
             "estimated_skew_seconds": (
                 round(skew, 3) if skew is not None else None
             ),
@@ -739,9 +835,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "committed_current": self._committed_current,
             "last_control_reason": self._last_commit_reason,
         }
-        # Push to coordinator listeners
-        self.async_set_updated_data(data)
-        return data
 
     # ------------------------------------------------------------------
     # Import guard (configurable fail-safe)
@@ -1121,12 +1214,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         await asyncio.sleep(10)
         await self._set_charge_current(int(self._max_current_limit))
 
-    async def _action_plug_in_delayed(self, force_charge: bool, smoothed_floored: int) -> None:
+    async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
         await asyncio.sleep(2)
+        # Re-read current EMA to avoid stale value from 2 seconds ago
+        current_ema = self._ema_filter.value if self._ema_filter.value is not None else ema_current_a
+        ema_floored = max(int(current_ema), 0)
         if force_charge:
             await self._action_start_force()
-        elif smoothed_floored > 0:
-            await self._action_start_surplus(smoothed_floored)
+        elif ema_floored > 0:
+            await self._action_start_surplus(ema_floored)
         else:
             await self._action_stop_surplus()
 
@@ -1134,8 +1230,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # Actuator helpers
     # ------------------------------------------------------------------
 
-    async def _set_charge_current(self, current_a: int) -> None:
-        """Set the charge current on the configured number entity."""
+    async def _set_charge_current(self, current_a: int) -> bool:
+        """Set the charge current on the configured number entity.
+
+        Returns True on success, False on failure.
+        """
         if self._charge_current_number:
             try:
                 await self.hass.services.async_call(
@@ -1145,12 +1244,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     blocking=True,
                 )
                 self._last_current_set_ts = time.monotonic()
+                return True
             except (HomeAssistantError, ServiceNotFound) as exc:
                 _LOGGER.warning("Failed to set charge current: %s", exc)
+                return False
+        return True
 
-    async def _enable_charging(self) -> None:
-        """Enable charging via configured switch or virtual state."""
-        self._charging_enabled = True
+    async def _enable_charging(self) -> bool:
+        """Enable charging via configured switch or virtual state.
+
+        Returns True on success, False on failure.
+        """
         if self._charge_switch:
             try:
                 await self.hass.services.async_call(
@@ -1160,12 +1264,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     blocking=True,
                 )
                 self._last_switch_toggle_ts = time.monotonic()
+                self._charging_enabled = True
+                return True
             except (HomeAssistantError, ServiceNotFound) as exc:
                 _LOGGER.warning("Failed to enable charging: %s", exc)
+                return False
+        else:
+            self._charging_enabled = True
+            return True
 
-    async def _disable_charging(self) -> None:
-        """Disable charging via configured switch or virtual state."""
-        self._charging_enabled = False
+    async def _disable_charging(self) -> bool:
+        """Disable charging via configured switch or virtual state.
+
+        Returns True on success, False on failure.
+        """
         if self._charge_switch:
             try:
                 await self.hass.services.async_call(
@@ -1175,8 +1287,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     blocking=True,
                 )
                 self._last_switch_toggle_ts = time.monotonic()
+                self._charging_enabled = False
+                return True
             except (HomeAssistantError, ServiceNotFound) as exc:
                 _LOGGER.warning("Failed to disable charging: %s", exc)
+                return False
+        else:
+            self._charging_enabled = False
+            return True
 
     # ------------------------------------------------------------------
     # Service handlers
@@ -1246,6 +1364,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_range_hysteresis_pct(self, value: float) -> None:
         """Set the range hysteresis percentage (0-10%)."""
         self._range_hysteresis_pct = value
+
+    def set_tonight_start_time(self, hour: int, minute: int) -> None:
+        """Set the earliest charge tonight start time."""
+        self._tonight_start_hour = hour
+        self._tonight_start_minute = minute
+
+    def set_night_off_time(self, hour: int, minute: int) -> None:
+        """Set the nightly charge_tonight reset time and reschedule."""
+        self._night_off_hour = hour
+        self._night_off_minute = minute
+        self._schedule_night_off()
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).

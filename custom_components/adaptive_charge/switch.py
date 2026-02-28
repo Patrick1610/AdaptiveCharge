@@ -7,12 +7,12 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
+from .helpers import device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,15 +33,6 @@ async def async_setup_entry(
     )
 
 
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name="AdaptiveCharge",
-        manufacturer="AdaptiveCharge",
-        model="EV Charge Controller",
-        sw_version="2.0.0",
-    )
-
 
 class ControllerEnabledSwitch(RestoreEntity, SwitchEntity):
     """Master switch that enables or disables the charge controller.
@@ -59,7 +50,7 @@ class ControllerEnabledSwitch(RestoreEntity, SwitchEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_controller_enabled"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state; default to off on first install."""
@@ -95,7 +86,7 @@ class ChargeNowSwitch(RestoreEntity, SwitchEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charge_now"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""
@@ -131,7 +122,7 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charge_tonight"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""

@@ -12,12 +12,12 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
+from .helpers import device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,16 +48,6 @@ async def async_setup_entry(
     )
 
 
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name="AdaptiveCharge",
-        manufacturer="AdaptiveCharge",
-        model="EV Charge Controller",
-        sw_version="2.0.0",
-    )
-
-
 class _BaseAdaptiveChargeSensor(CoordinatorEntity, SensorEntity):
     """Base class for AdaptiveCharge sensors."""
 
@@ -70,7 +60,7 @@ class _BaseAdaptiveChargeSensor(CoordinatorEntity, SensorEntity):
     ) -> None:
         super().__init__(coordinator)
         self._entry = entry
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = device_info(entry)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
