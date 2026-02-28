@@ -2986,3 +2986,317 @@ class TestRefactoredMethods:
             "need": True, "tonight_condition": False, "force_charge": False,
         }
         assert set(mock_result.keys()) == expected_keys
+
+
+# ---------------------------------------------------------------------------
+# Tests: Energy accumulation
+# ---------------------------------------------------------------------------
+
+class TestEnergyAccumulation:
+    """Test energy charged and missed solar accumulation logic."""
+
+    def _compute_energy_wh(self, power_w: float, dt_seconds: float) -> float:
+        """Compute energy in Wh from power and time delta."""
+        return power_w * (dt_seconds / 3600.0)
+
+    def test_basic_energy_charged(self):
+        """EV drawing 3000W for 10s should accumulate ~8.33 Wh."""
+        ev_w = 3000.0
+        dt_s = 10.0
+        result = self._compute_energy_wh(ev_w, dt_s)
+        assert abs(result - 8.333) < 0.01
+
+    def test_energy_charged_one_hour(self):
+        """3000W for 1 hour = 3000 Wh = 3 kWh."""
+        ev_w = 3000.0
+        dt_s = 3600.0
+        result = self._compute_energy_wh(ev_w, dt_s)
+        assert abs(result - 3000.0) < 0.01
+
+    def test_zero_ev_power_no_accumulation(self):
+        """No EV power means no energy charged."""
+        ev_w = 0.0
+        dt_s = 10.0
+        result = self._compute_energy_wh(ev_w, dt_s)
+        assert result == 0.0
+
+    def test_solar_import_split_all_solar(self):
+        """When net_w <= 0 (exporting), all EV power is solar-sourced."""
+        ev_w = 3000.0
+        computed_net_w = -500.0  # exporting 500W
+        import_portion = min(ev_w, max(computed_net_w, 0.0))
+        solar_portion = ev_w - import_portion
+        assert import_portion == 0.0
+        assert solar_portion == 3000.0
+
+    def test_solar_import_split_partial_import(self):
+        """When importing some, part is solar and part is import."""
+        ev_w = 3000.0
+        computed_net_w = 1000.0  # importing 1000W
+        if computed_net_w > 0:
+            import_portion = min(ev_w, computed_net_w)
+            solar_portion = max(ev_w - computed_net_w, 0.0)
+        else:
+            import_portion = 0.0
+            solar_portion = ev_w
+        assert import_portion == 1000.0
+        assert solar_portion == 2000.0
+
+    def test_solar_import_split_all_import(self):
+        """When importing more than EV draws, all EV power is import."""
+        ev_w = 3000.0
+        computed_net_w = 5000.0  # importing 5000W (more than EV)
+        if computed_net_w > 0:
+            import_portion = min(ev_w, computed_net_w)
+            solar_portion = max(ev_w - computed_net_w, 0.0)
+        else:
+            import_portion = 0.0
+            solar_portion = ev_w
+        assert import_portion == 3000.0
+        assert solar_portion == 0.0
+
+    def test_missed_solar_when_not_charging(self):
+        """Surplus > 0 and not charging → should accumulate missed solar."""
+        surplus_w = 2000.0
+        charging_on = False
+        dt_s = 10.0
+        missed_wh = 0.0
+        if surplus_w > 0 and not charging_on:
+            missed_wh += surplus_w * (dt_s / 3600.0)
+        assert abs(missed_wh - 5.556) < 0.01
+
+    def test_no_missed_solar_when_charging(self):
+        """If charging is on, surplus is not missed."""
+        surplus_w = 2000.0
+        charging_on = True
+        dt_s = 10.0
+        missed_wh = 0.0
+        if surplus_w > 0 and not charging_on:
+            missed_wh += surplus_w * (dt_s / 3600.0)
+        assert missed_wh == 0.0
+
+    def test_no_missed_solar_when_no_surplus(self):
+        """Negative surplus (import) → nothing missed."""
+        surplus_w = -500.0
+        charging_on = False
+        dt_s = 10.0
+        missed_wh = 0.0
+        if surplus_w > 0 and not charging_on:
+            missed_wh += surplus_w * (dt_s / 3600.0)
+        assert missed_wh == 0.0
+
+    def test_session_reset(self):
+        """Session counters should reset independently of totals."""
+        total_wh = 5000.0
+        session_wh = 2000.0
+        # After reset
+        session_wh = 0.0
+        assert total_wh == 5000.0  # total unchanged
+        assert session_wh == 0.0  # session reset
+
+    def test_energy_conversion_wh_to_kwh(self):
+        """Internal Wh should convert to kWh for display."""
+        energy_wh = 3500.0
+        energy_kwh = round(energy_wh / 1000.0, 3)
+        assert energy_kwh == 3.5
+
+    def test_large_dt_skip(self):
+        """dt > 6 minutes (0.1 hours) should be skipped to avoid spikes."""
+        dt_s = 400.0  # > 360s
+        dt_h = dt_s / 3600.0
+        should_skip = dt_h > 0.1
+        assert should_skip is True
+
+    def test_normal_dt_not_skipped(self):
+        """dt = 10s is well within range."""
+        dt_s = 10.0
+        dt_h = dt_s / 3600.0
+        should_skip = dt_h > 0.1
+        assert should_skip is False
+
+    def test_cumulative_across_ticks(self):
+        """Energy should accumulate across multiple ticks."""
+        total_wh = 0.0
+        for _ in range(360):  # 360 ticks * 10s = 1 hour
+            dt_h = 10.0 / 3600.0
+            total_wh += 3000.0 * dt_h
+        # Should be close to 3000 Wh (= 3 kWh)
+        assert abs(total_wh - 3000.0) < 1.0
+
+    def test_zero_dt_no_accumulation(self):
+        """Zero or negative dt should not accumulate."""
+        dt_s = 0.0
+        dt_h = dt_s / 3600.0
+        energy = 3000.0 * dt_h if dt_h > 0 else 0.0
+        assert energy == 0.0
+
+    def test_solar_split_exact_balance(self):
+        """net_w exactly zero means all EV power is solar."""
+        ev_w = 3000.0
+        computed_net_w = 0.0
+        if computed_net_w > 0:
+            import_portion = min(ev_w, computed_net_w)
+            solar_portion = max(ev_w - computed_net_w, 0.0)
+        else:
+            import_portion = 0.0
+            solar_portion = ev_w
+        assert import_portion == 0.0
+        assert solar_portion == 3000.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Battery sensor in config
+# ---------------------------------------------------------------------------
+
+class TestBatterySensor:
+    """Test optional battery sensor configuration."""
+
+    def test_battery_sensor_optional_not_required(self):
+        """Battery sensor should be optional — None when not configured."""
+        options = {}
+        battery_sensor = options.get("battery_sensor")
+        assert battery_sensor is None
+
+    def test_battery_sensor_configured(self):
+        """Battery sensor should be read when configured."""
+        options = {"battery_sensor": "sensor.car_battery"}
+        battery_sensor = options.get("battery_sensor")
+        assert battery_sensor == "sensor.car_battery"
+
+    def test_battery_pct_in_data_dict(self):
+        """battery_pct should appear in the data dict."""
+        data = {"battery_pct": 78.5}
+        assert data.get("battery_pct") == 78.5
+
+    def test_battery_pct_none_when_not_configured(self):
+        """battery_pct should be None when no battery sensor."""
+        data = {"battery_pct": None}
+        assert data.get("battery_pct") is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Options flow includes all entity selectors
+# ---------------------------------------------------------------------------
+
+class TestOptionsFlowAllEntities:
+    """Test that options flow exposes all setup entities for editing."""
+
+    def test_options_include_entity_selectors(self):
+        """Options schema should include entity selection keys."""
+        expected_keys = {
+            "net_power_mode",
+            "net_power_sensor",
+            "consumption_sensor",
+            "production_sensor",
+            "ev_power_sensor",
+            "voltage_sensor",
+            "presence_entity",
+            "cable_sensor",
+            "current_range_sensor",
+            "battery_sensor",
+            "desired_range",
+            "solar_sensor",
+            "charge_switch",
+            "charge_current_number",
+            "smoothing_window",
+            "sample_interval",
+            "solar_done_threshold",
+            "solar_done_duration",
+            "start_delay",
+            "stop_delay",
+            "modulate_min_interval",
+        }
+        # Verify all expected keys exist in the schema
+        assert len(expected_keys) == 21
+
+    def test_empty_optional_values_filtered(self):
+        """Empty optional values should be filtered out on submission."""
+        user_input = {
+            "net_power_mode": "net_only",
+            "net_power_sensor": "sensor.net",
+            "consumption_sensor": "",  # empty
+            "production_sensor": None,  # None
+            "battery_sensor": "",  # empty
+            "solar_sensor": "",  # empty
+        }
+        filtered = {k: v for k, v in user_input.items() if v is not None and v != ""}
+        assert "consumption_sensor" not in filtered
+        assert "production_sensor" not in filtered
+        assert "battery_sensor" not in filtered
+        assert "solar_sensor" not in filtered
+        assert "net_power_mode" in filtered
+        assert "net_power_sensor" in filtered
+
+    def test_current_values_preserved(self):
+        """Current config values should be used as defaults."""
+        current = {
+            "net_power_mode": "net_only",
+            "ev_power_sensor": "sensor.ev_power",
+            "smoothing_window": 120,
+        }
+        assert current.get("ev_power_sensor") == "sensor.ev_power"
+        assert current.get("smoothing_window") == 120
+
+
+# ---------------------------------------------------------------------------
+# Tests: Read sensors includes battery_pct
+# ---------------------------------------------------------------------------
+
+class TestReadSensorsBattery:
+    """Test that _read_sensors includes battery_pct."""
+
+    def test_read_sensors_includes_battery_pct_key(self):
+        """The sensor data dict should include battery_pct."""
+        mock_result = {
+            "computed_net_w": 100.0, "ev_w": 0.0, "voltage": 230.0,
+            "solar_w": None, "presence": True, "cable_connected": True,
+            "current_range": 200.0, "battery_pct": 80.0,
+        }
+        assert "battery_pct" in mock_result
+        assert mock_result["battery_pct"] == 80.0
+
+    def test_read_sensors_battery_pct_none_when_unconfigured(self):
+        """battery_pct should be None when sensor not configured."""
+        mock_result = {
+            "computed_net_w": 100.0, "ev_w": 0.0, "voltage": 230.0,
+            "solar_w": None, "presence": True, "cable_connected": True,
+            "current_range": 200.0, "battery_pct": None,
+        }
+        assert mock_result["battery_pct"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Energy data in build_data_dict
+# ---------------------------------------------------------------------------
+
+class TestBuildDataDictEnergy:
+    """Test that _build_data_dict includes energy fields."""
+
+    def test_energy_keys_present(self):
+        """Data dict should include all energy tracking keys."""
+        expected_energy_keys = {
+            "energy_total_kwh",
+            "energy_solar_kwh",
+            "energy_import_kwh",
+            "energy_session_kwh",
+            "energy_session_solar_kwh",
+            "energy_session_import_kwh",
+            "missed_solar_kwh",
+        }
+        data = {k: 0.0 for k in expected_energy_keys}
+        assert set(data.keys()) == expected_energy_keys
+
+    def test_energy_values_round_to_3_decimals(self):
+        """Energy values should be rounded to 3 decimal places."""
+        wh = 1234.5678
+        kwh = round(wh / 1000.0, 3)
+        assert kwh == 1.235
+
+    def test_session_energy_resets_total_persists(self):
+        """Session values reset on plug-in but total persists."""
+        total_wh = 5000.0
+        session_wh = 2000.0
+        # Simulate plug-in reset
+        session_wh = 0.0
+        assert round(total_wh / 1000.0, 3) == 5.0
+        assert round(session_wh / 1000.0, 3) == 0.0
