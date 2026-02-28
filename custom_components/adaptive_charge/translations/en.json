@@ -87,9 +87,23 @@
   "options": {
     "step": {
       "init": {
-        "title": "Advanced Settings",
-        "description": "Update timing parameters.",
+        "title": "AdaptiveCharge Settings",
+        "description": "Edit all entity selections and timing parameters.",
         "data": {
+          "net_power_mode": "Net Power Mode",
+          "net_power_sensor": "Net Power Sensor",
+          "consumption_sensor": "Consumption Sensor",
+          "production_sensor": "Production Sensor",
+          "ev_power_sensor": "EV Power Sensor",
+          "voltage_sensor": "Voltage Sensor",
+          "presence_entity": "Vehicle Presence",
+          "cable_sensor": "Cable Connected Sensor",
+          "current_range_sensor": "Current Range Sensor",
+          "battery_sensor": "Battery Level Sensor",
+          "desired_range": "Desired Range (km)",
+          "solar_sensor": "Solar Sensor",
+          "charge_switch": "Charge Switch",
+          "charge_current_number": "Charge Current Number",
           "smoothing_window": "Smoothing Window (s)",
           "sample_interval": "Sample Interval (s)",
           "solar_done_threshold": "Solar Done Threshold (W)",
