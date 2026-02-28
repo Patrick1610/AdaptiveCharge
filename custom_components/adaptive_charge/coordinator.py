@@ -105,6 +105,9 @@ MAX_CURRENT_ABS = 16
 # Minimum tracker samples before lag can fall back to 0.0 (warmup threshold)
 _LAG_WARMUP_SAMPLES = 5
 
+# Maximum time delta (hours) for energy accumulation; skip if exceeded (missed ticks)
+_MAX_ENERGY_DT_HOURS = 0.1  # 6 minutes
+
 
 def _get_float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
     """Return the float value of an entity state, or None."""
@@ -711,7 +714,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         dt_h = (mono_now - self._last_energy_mono) / 3600.0
         self._last_energy_mono = mono_now
 
-        if dt_h <= 0 or dt_h > 0.1:
+        if dt_h <= 0 or dt_h > _MAX_ENERGY_DT_HOURS:
             # Skip if dt is unreasonable (> 6 minutes = missed ticks)
             return
 
@@ -1481,6 +1484,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_range_hysteresis_pct(self, value: float) -> None:
         """Set the range hysteresis percentage (0-10%)."""
         self._range_hysteresis_pct = value
+
+    def restore_energy_state(
+        self, total_wh: float, solar_wh: float, import_wh: float
+    ) -> None:
+        """Restore cumulative energy counters from persistent state."""
+        self._energy_total_wh = total_wh
+        self._energy_solar_wh = solar_wh
+        self._energy_import_wh = import_wh
+
+    def restore_missed_solar(self, missed_wh: float) -> None:
+        """Restore cumulative missed solar counter from persistent state."""
+        self._missed_solar_wh = missed_wh
 
     def set_tonight_start_time(self, hour: int, minute: int) -> None:
         """Set the earliest charge tonight start time."""

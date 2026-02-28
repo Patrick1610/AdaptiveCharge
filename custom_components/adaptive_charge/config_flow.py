@@ -145,7 +145,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 4: vehicle entities."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_range()
 
         schema = vol.Schema(
@@ -196,7 +196,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 6: optional solar sensor."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_actuators_optional()
 
         schema = vol.Schema(
@@ -213,7 +213,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 7: optional charge switch and current number."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_advanced()
 
         schema = vol.Schema(

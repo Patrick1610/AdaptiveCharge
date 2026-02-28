@@ -376,10 +376,12 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
         if state is not None and state.state not in ("unknown", "unavailable", ""):
             try:
                 total = float(state.state)
-                self.coordinator._energy_total_wh = total * 1000.0
                 attrs = state.attributes or {}
-                self.coordinator._energy_solar_wh = float(attrs.get("solar_energy_kwh", 0)) * 1000.0
-                self.coordinator._energy_import_wh = float(attrs.get("import_energy_kwh", 0)) * 1000.0
+                solar = float(attrs.get("solar_energy_kwh", 0))
+                import_e = float(attrs.get("import_energy_kwh", 0))
+                self.coordinator.restore_energy_state(
+                    total * 1000.0, solar * 1000.0, import_e * 1000.0
+                )
             except (ValueError, TypeError):
                 pass
 
@@ -420,7 +422,7 @@ class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
         state = await self.async_get_last_state()
         if state is not None and state.state not in ("unknown", "unavailable", ""):
             try:
-                self.coordinator._missed_solar_wh = float(state.state) * 1000.0
+                self.coordinator.restore_missed_solar(float(state.state) * 1000.0)
             except (ValueError, TypeError):
                 pass
 
