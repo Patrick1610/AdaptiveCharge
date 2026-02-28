@@ -346,7 +346,7 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required(
                     CONF_NET_POWER_SENSOR,
-                    default=current.get(CONF_NET_POWER_SENSOR),
+                    description={"suggested_value": current.get(CONF_NET_POWER_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
             }
         )
@@ -365,11 +365,11 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required(
                     CONF_CONSUMPTION_SENSOR,
-                    default=current.get(CONF_CONSUMPTION_SENSOR),
+                    description={"suggested_value": current.get(CONF_CONSUMPTION_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
                 vol.Required(
                     CONF_PRODUCTION_SENSOR,
-                    default=current.get(CONF_PRODUCTION_SENSOR),
+                    description={"suggested_value": current.get(CONF_PRODUCTION_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
             }
         )

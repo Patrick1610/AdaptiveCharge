@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -17,6 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
@@ -623,13 +623,13 @@ class _UtilityMeterSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     @callback
     def _async_check_monthly_reset(self, _now) -> None:
         """Reset on the first day of each month."""
-        if datetime.now().day == 1:
+        if dt_util.now().day == 1:
             self._async_reset(_now)
 
     @callback
     def _async_check_yearly_reset(self, _now) -> None:
         """Reset on January 1st."""
-        now = datetime.now()
+        now = dt_util.now()
         if now.month == 1 and now.day == 1:
             self._async_reset(_now)
 
