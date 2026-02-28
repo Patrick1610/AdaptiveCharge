@@ -71,7 +71,8 @@ from .const import (
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MAX_STEP_A,
-    DEFAULT_RANGE_HYSTERESIS_KM,
+    DEFAULT_RANGE_HYSTERESIS_PCT,
+    DEFAULT_TONIGHT_REENTRY_CURRENT_A,
     DEFAULT_MIN_OFF_TIME_S,
     DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S,
@@ -190,6 +191,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
         self._charge_buffer: float = 0.0
+        self._range_hysteresis_pct: float = DEFAULT_RANGE_HYSTERESIS_PCT
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -211,6 +213,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._force_charge_prev: bool = False
         self._force_source: str = ""
         self._need_active: bool = False
+        self._tonight_reason: str = ""
+        self._tonight_reentry: bool = False
         self._cable_prev: bool | None = None
 
         # Timestamps for diagnostics
@@ -309,6 +313,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def _async_night_off(self, _now) -> None:
         """Turn off charge_tonight at 05:00."""
         _LOGGER.info("AdaptiveCharge: Night-Off — disabling charge_tonight at 05:00")
+        self._tonight_reason = "auto_off: 05:00 reset"
         self._charge_tonight = False
         self._schedule_night_off()
         self.hass.async_create_task(
@@ -520,6 +525,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and not cable_connected
         ):
             _LOGGER.info("AdaptiveCharge: charge_tonight auto-off — cable unplugged")
+            self._tonight_reason = "auto_off: cable unplugged"
             self._charge_tonight = False
 
         # (b) solar_done transitions on → off (end of night charging plan)
@@ -529,6 +535,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and not self._solar_done
         ):
             _LOGGER.info("AdaptiveCharge: charge_tonight auto-off — solar_done ended")
+            self._tonight_reason = "auto_off: solar_done ended"
             self._charge_tonight = False
 
         self._prev_solar_done = self._solar_done
@@ -536,15 +543,26 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Force charge ---
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         # Hysteresis: start charging when below effective_range,
-        # stop only when 5km above effective_range to prevent cycling.
+        # stop only when hysteresis band above effective_range to prevent cycling.
+        hysteresis_km = effective_range * (self._range_hysteresis_pct / 100.0)
+        prev_need_active = self._need_active
         if current_range is not None:
             if self._need_active:
-                self._need_active = current_range < (effective_range + DEFAULT_RANGE_HYSTERESIS_KM)
+                self._need_active = current_range < (effective_range + hysteresis_km)
             else:
                 self._need_active = current_range < effective_range
         else:
             self._need_active = False
         need = self._need_active
+        # Detect tonight reentry: need was False, now True again (range dropped back)
+        tonight_reentry = (
+            not prev_need_active
+            and self._need_active
+            and self._force_charge_prev
+            and self._force_source == "charge_tonight"
+        )
+        if tonight_reentry:
+            self._tonight_reentry = True
         tonight_condition = (
             self._charge_tonight
             and bool(presence)
@@ -552,6 +570,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and need
             and self._solar_done
         )
+        # charge_now always overrules tonight — charges at full power
         force_charge = self._charge_now or tonight_condition
         if force_charge:
             self._force_source = "charge_now_switch" if self._charge_now else "charge_tonight"
@@ -618,12 +637,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "current_range": current_range,
             "desired_range": self._desired_range,
             "effective_range": effective_range,
-            "range_hysteresis_km": DEFAULT_RANGE_HYSTERESIS_KM,
+            "range_hysteresis_pct": self._range_hysteresis_pct,
+            "range_hysteresis_km": round(hysteresis_km, 1),
             "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
             "tonight_condition": tonight_condition,
+            "tonight_reason": self._tonight_reason,
+            "tonight_reentry": self._tonight_reentry,
             "need": need,
             "charging_enabled": self._charging_enabled,
             "controller_enabled": self._controller_enabled,
@@ -1025,8 +1047,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     async def _action_start_force(self) -> None:
         max_a = int(self._max_current_limit)
         source = self._force_source or "charge_now_switch"
-        _LOGGER.info("AdaptiveCharge: start_force at %dA (source=%s)", max_a, source)
-        await self._set_charge_current(max_a)
+        # Tonight reentry (range dropped back) uses lower current;
+        # charge_now always overrules and uses full power.
+        if self._tonight_reentry and source == "charge_tonight":
+            start_a = min(DEFAULT_TONIGHT_REENTRY_CURRENT_A, max_a)
+            self._tonight_reentry = False
+        else:
+            start_a = max_a
+        _LOGGER.info("AdaptiveCharge: start_force at %dA (source=%s)", start_a, source)
+        await self._set_charge_current(start_a)
         await asyncio.sleep(5)
         await self._enable_charging()
         self._charging_on = True
@@ -1035,8 +1064,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_reason = "force_charge_active"
         self._last_action_ts = time.monotonic()
         self._last_on_time = time.monotonic()
-        self._committed_current = float(max_a)
-        self._last_committed_int = max_a
+        self._committed_current = float(start_a)
+        self._last_committed_int = start_a
         self._last_commit_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
@@ -1181,10 +1210,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     async def async_service_enable_tonight(self) -> None:
         """Service: enable charge tonight."""
+        self._tonight_reason = "enabled via service"
         self._charge_tonight = True
 
     async def async_service_disable_tonight(self) -> None:
         """Service: disable charge tonight."""
+        self._tonight_reason = "disabled via service"
         self._charge_tonight = False
 
     # ------------------------------------------------------------------
@@ -1197,6 +1228,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     def set_charge_tonight(self, value: bool) -> None:
         """Set the charge_tonight flag."""
+        self._tonight_reason = "enabled via switch" if value else "disabled via switch"
         self._charge_tonight = value
 
     def set_desired_range(self, value: float) -> None:
@@ -1209,6 +1241,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     def set_charge_buffer(self, value: float) -> None:
         """Set the charge buffer percentage (0-25%)."""
+        self._charge_buffer = value
+
+    def set_range_hysteresis_pct(self, value: float) -> None:
+        """Set the range hysteresis percentage (0-10%)."""
+        self._range_hysteresis_pct = value
         self._charge_buffer = value
 
     def set_controller_enabled(self, value: bool) -> None:

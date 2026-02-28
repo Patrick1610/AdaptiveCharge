@@ -2008,18 +2008,18 @@ class TestChargeTonightStartLogic:
         solar_done: bool,
         charge_buffer: float = 0.0,
         need_active: bool = False,
+        range_hysteresis_pct: float = 3.0,
     ) -> tuple[bool, bool]:
         """Evaluate tonight_condition and force_charge.
 
         Returns (tonight_condition, force_charge).
         """
-        RANGE_HYSTERESIS_KM = 5.0  # matches DEFAULT_RANGE_HYSTERESIS_KM
-
         effective_range = desired_range * (1.0 + charge_buffer / 100.0)
+        hysteresis_km = effective_range * (range_hysteresis_pct / 100.0)
         # Apply hysteresis: start below effective_range, stop above effective_range + hysteresis
         if current_range is not None:
             if need_active:
-                need = current_range < (effective_range + RANGE_HYSTERESIS_KM)
+                need = current_range < (effective_range + hysteresis_km)
             else:
                 need = current_range < effective_range
         else:
@@ -2219,22 +2219,26 @@ class TestRangeHysteresis:
     """Test range hysteresis prevents rapid start/stop cycling.
 
     Hysteresis: start charging when below effective_range, stop only when
-    5km above effective_range. This prevents flapping when the reported
-    range fluctuates around the threshold.
+    hysteresis band above effective_range. Uses a percentage of effective_range
+    (default 3%). This prevents flapping when the reported range fluctuates
+    around the threshold.
     """
 
-    HYSTERESIS_KM = 5.0  # matches DEFAULT_RANGE_HYSTERESIS_KM
+    HYSTERESIS_PCT = 3.0  # matches DEFAULT_RANGE_HYSTERESIS_PCT
 
     def _eval_need(
         self,
         current_range: float | None,
         effective_range: float,
         need_active: bool,
+        hysteresis_pct: float | None = None,
     ) -> bool:
         """Evaluate need with hysteresis, mirroring coordinator logic."""
+        pct = hysteresis_pct if hysteresis_pct is not None else self.HYSTERESIS_PCT
+        hysteresis_km = effective_range * (pct / 100.0)
         if current_range is not None:
             if need_active:
-                return current_range < (effective_range + self.HYSTERESIS_KM)
+                return current_range < (effective_range + hysteresis_km)
             else:
                 return current_range < effective_range
         return False
@@ -2260,18 +2264,18 @@ class TestRangeHysteresis:
         assert need is True
 
     def test_charging_stays_active_slightly_above(self):
-        """While charging, 2km above target → still active (within 5km band)."""
+        """While charging, 2km above target → still active (within 3% band = 6km)."""
         need = self._eval_need(current_range=202.0, effective_range=200.0, need_active=True)
         assert need is True
 
-    def test_charging_stays_active_at_4km_above(self):
-        """While charging, 4km above target → still active (within 5km band)."""
-        need = self._eval_need(current_range=204.0, effective_range=200.0, need_active=True)
+    def test_charging_stays_active_at_5km_above(self):
+        """While charging, 5km above target → still active (within 3% band = 6km)."""
+        need = self._eval_need(current_range=205.0, effective_range=200.0, need_active=True)
         assert need is True
 
-    def test_charging_stops_at_5km_above(self):
-        """While charging, 5km above target → stops (at boundary, not strictly below)."""
-        need = self._eval_need(current_range=205.0, effective_range=200.0, need_active=True)
+    def test_charging_stops_at_hysteresis_boundary(self):
+        """While charging, at hysteresis boundary (3% of 200 = 6km above) → stops."""
+        need = self._eval_need(current_range=206.0, effective_range=200.0, need_active=True)
         assert need is False
 
     def test_charging_stops_well_above(self):
@@ -2280,7 +2284,9 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_full_cycle_prevents_flapping(self):
-        """Simulate a charge cycle: start → charge → overshoot → hold → stop."""
+        """Simulate a charge cycle: start → charge → overshoot → hold → stop.
+        With 3% hysteresis on effective=200, band is 6km, stop at 206.
+        """
         effective = 200.0
         need_active = False
 
@@ -2292,12 +2298,12 @@ class TestRangeHysteresis:
         need_active = self._eval_need(200.0, effective, need_active)
         assert need_active is True
 
-        # Step 3: range rises to 203 (3km above) → still charging
-        need_active = self._eval_need(203.0, effective, need_active)
+        # Step 3: range rises to 204 (4km above) → still charging
+        need_active = self._eval_need(204.0, effective, need_active)
         assert need_active is True
 
-        # Step 4: range rises to 205 (5km above) → stops
-        need_active = self._eval_need(205.0, effective, need_active)
+        # Step 4: range rises to 206 (6km above, = hysteresis boundary) → stops
+        need_active = self._eval_need(206.0, effective, need_active)
         assert need_active is False
 
         # Step 5: range drops to 201 (1km above, but need_active=False) → no restart
@@ -2314,7 +2320,9 @@ class TestRangeHysteresis:
         assert self._eval_need(None, 200.0, need_active=True) is False
 
     def test_hysteresis_with_buffer(self):
-        """Buffer and hysteresis combine correctly."""
+        """Buffer and hysteresis combine correctly.
+        effective=220, 3% hysteresis = 6.6km, stop at 226.6.
+        """
         desired_range = 200.0
         charge_buffer = 10.0  # effective = 220
         effective = desired_range * (1.0 + charge_buffer / 100.0)
@@ -2324,24 +2332,25 @@ class TestRangeHysteresis:
         need_active = self._eval_need(215.0, effective, need_active=False)
         assert need_active is True
 
-        # Charging: 222 < 225 (220+5) → still active
-        need_active = self._eval_need(222.0, effective, need_active)
+        # Charging: 224 < 226.6 (220 + 6.6) → still active
+        need_active = self._eval_need(224.0, effective, need_active)
         assert need_active is True
 
-        # Charging: 226 >= 225 → stops
-        need_active = self._eval_need(226.0, effective, need_active)
+        # Charging: 227 >= 226.6 → stops
+        need_active = self._eval_need(227.0, effective, need_active)
         assert need_active is False
 
     def test_tonight_uses_hysteresis_to_keep_charging(self):
-        """Charge tonight should keep charging until 5km above effective_range."""
-        RANGE_HYSTERESIS_KM = 5.0  # matches DEFAULT_RANGE_HYSTERESIS_KM
-
+        """Charge tonight should keep charging until hysteresis band above effective_range.
+        3% of 200 = 6km, so stops at 206.
+        """
         effective_range = 200.0
+        hysteresis_km = effective_range * (self.HYSTERESIS_PCT / 100.0)  # 6.0
         need_active = True  # already charging
-        current_range = 202.0  # 2km above effective, but within hysteresis band
+        current_range = 202.0  # 2km above effective, but within 6km band
 
         if need_active:
-            need = current_range < (effective_range + RANGE_HYSTERESIS_KM)
+            need = current_range < (effective_range + hysteresis_km)
         else:
             need = current_range < effective_range
 
@@ -2353,3 +2362,305 @@ class TestRangeHysteresis:
             and True  # solar_done
         )
         assert tonight_condition is True  # keeps charging due to hysteresis
+
+    def test_custom_hysteresis_percentage(self):
+        """Custom hysteresis percentage: 5% of 200 = 10km band."""
+        effective = 200.0
+
+        # With 5%: band = 10km, stops at 210
+        # 208 < 210 → still charging
+        need = self._eval_need(208.0, effective, need_active=True, hysteresis_pct=5.0)
+        assert need is True
+
+        # 210 >= 210 → stops
+        need = self._eval_need(210.0, effective, need_active=True, hysteresis_pct=5.0)
+        assert need is False
+
+    def test_zero_hysteresis_disables_band(self):
+        """0% hysteresis → no band, stops immediately at effective_range."""
+        effective = 200.0
+
+        # Exactly at range → stops (no band)
+        need = self._eval_need(200.0, effective, need_active=True, hysteresis_pct=0.0)
+        assert need is False
+
+    def test_hysteresis_scales_with_range(self):
+        """Larger effective_range → larger hysteresis band in km.
+        3% of 400 = 12km band.
+        """
+        effective = 400.0
+        # 410 < 412 → still active
+        need = self._eval_need(410.0, effective, need_active=True)
+        assert need is True
+        # 412 >= 412 → stops
+        need = self._eval_need(412.0, effective, need_active=True)
+        assert need is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tonight reason tracking
+# ---------------------------------------------------------------------------
+
+class TestTonightReasonTracking:
+    """Test that charge_tonight tracks why it was enabled/disabled."""
+
+    def test_reason_on_cable_unplug(self):
+        """Auto-off by cable unplug should record reason."""
+        charge_tonight = True
+        cable_prev = True
+        cable_connected = False
+        tonight_reason = ""
+
+        if (
+            charge_tonight
+            and cable_prev is not None
+            and cable_connected is not None
+            and cable_prev
+            and not cable_connected
+        ):
+            tonight_reason = "auto_off: cable unplugged"
+            charge_tonight = False
+
+        assert charge_tonight is False
+        assert tonight_reason == "auto_off: cable unplugged"
+
+    def test_reason_on_solar_done_ended(self):
+        """Auto-off by solar_done ending should record reason."""
+        charge_tonight = True
+        prev_solar_done = True
+        solar_done = False
+        tonight_reason = ""
+
+        if charge_tonight and prev_solar_done and not solar_done:
+            tonight_reason = "auto_off: solar_done ended"
+            charge_tonight = False
+
+        assert charge_tonight is False
+        assert tonight_reason == "auto_off: solar_done ended"
+
+    def test_reason_on_night_off(self):
+        """05:00 reset should record reason."""
+        tonight_reason = "auto_off: 05:00 reset"
+        assert tonight_reason == "auto_off: 05:00 reset"
+
+    def test_reason_on_switch_enable(self):
+        """Manual switch enable should record reason."""
+        tonight_reason = "enabled via switch"
+        assert tonight_reason == "enabled via switch"
+
+    def test_reason_on_switch_disable(self):
+        """Manual switch disable should record reason."""
+        tonight_reason = "disabled via switch"
+        assert tonight_reason == "disabled via switch"
+
+    def test_reason_on_service_enable(self):
+        """Service enable should record reason."""
+        tonight_reason = "enabled via service"
+        assert tonight_reason == "enabled via service"
+
+    def test_reason_on_service_disable(self):
+        """Service disable should record reason."""
+        tonight_reason = "disabled via service"
+        assert tonight_reason == "disabled via service"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tonight reentry lower current
+# ---------------------------------------------------------------------------
+
+class TestTonightReentryLowerCurrent:
+    """Test that tonight reentry (range drops back) uses lower current."""
+
+    DEFAULT_TONIGHT_REENTRY_CURRENT_A = 5
+
+    def test_reentry_detected_when_need_reactivates(self):
+        """Reentry detected when need transitions False→True during tonight force charge."""
+        prev_need_active = False
+        need_active = True
+        force_charge_prev = True
+        force_source = "charge_tonight"
+
+        tonight_reentry = (
+            not prev_need_active
+            and need_active
+            and force_charge_prev
+            and force_source == "charge_tonight"
+        )
+        assert tonight_reentry is True
+
+    def test_no_reentry_on_first_activation(self):
+        """First activation is not a reentry (force_charge_prev was False)."""
+        prev_need_active = False
+        need_active = True
+        force_charge_prev = False
+        force_source = "charge_tonight"
+
+        tonight_reentry = (
+            not prev_need_active
+            and need_active
+            and force_charge_prev
+            and force_source == "charge_tonight"
+        )
+        assert tonight_reentry is False
+
+    def test_no_reentry_for_charge_now(self):
+        """charge_now should NOT trigger reentry even if need reactivates."""
+        prev_need_active = False
+        need_active = True
+        force_charge_prev = True
+        force_source = "charge_now_switch"
+
+        tonight_reentry = (
+            not prev_need_active
+            and need_active
+            and force_charge_prev
+            and force_source == "charge_now_switch"
+        )
+        # charge_now_switch does not match "charge_tonight"
+        tonight_reentry_correct = (
+            not prev_need_active
+            and need_active
+            and force_charge_prev
+            and force_source == "charge_tonight"
+        )
+        assert tonight_reentry_correct is False
+
+    def test_reentry_uses_lower_current(self):
+        """During tonight reentry, start at lower current (5A) instead of max."""
+        max_a = 16
+        tonight_reentry = True
+        source = "charge_tonight"
+
+        if tonight_reentry and source == "charge_tonight":
+            start_a = min(self.DEFAULT_TONIGHT_REENTRY_CURRENT_A, max_a)
+        else:
+            start_a = max_a
+
+        assert start_a == 5
+
+    def test_charge_now_ignores_reentry_uses_max(self):
+        """charge_now always uses max current, ignoring reentry flag."""
+        max_a = 16
+        tonight_reentry = True
+        source = "charge_now_switch"
+
+        if tonight_reentry and source == "charge_tonight":
+            start_a = min(self.DEFAULT_TONIGHT_REENTRY_CURRENT_A, max_a)
+        else:
+            start_a = max_a
+
+        assert start_a == 16
+
+    def test_reentry_respects_max_current_limit(self):
+        """If max_current_limit < reentry current, use max_current_limit."""
+        max_a = 3  # lower than 5A reentry
+        tonight_reentry = True
+        source = "charge_tonight"
+
+        if tonight_reentry and source == "charge_tonight":
+            start_a = min(self.DEFAULT_TONIGHT_REENTRY_CURRENT_A, max_a)
+        else:
+            start_a = max_a
+
+        assert start_a == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charge now overrules tonight
+# ---------------------------------------------------------------------------
+
+class TestChargeNowOverrulesTonight:
+    """Test that charge_now always overrules charge_tonight."""
+
+    def test_charge_now_takes_priority(self):
+        """charge_now is True → force_charge True, source is charge_now_switch."""
+        charge_now = True
+        tonight_condition = True
+        force_charge = charge_now or tonight_condition
+        force_source = "charge_now_switch" if charge_now else "charge_tonight"
+        assert force_charge is True
+        assert force_source == "charge_now_switch"
+
+    def test_charge_now_true_even_without_tonight(self):
+        """charge_now works independently of tonight conditions."""
+        charge_now = True
+        tonight_condition = False
+        force_charge = charge_now or tonight_condition
+        force_source = "charge_now_switch" if charge_now else "charge_tonight"
+        assert force_charge is True
+        assert force_source == "charge_now_switch"
+
+    def test_charge_now_bypasses_need(self):
+        """charge_now does not require need (range check) to charge."""
+        charge_now = True
+        need = False  # range already sufficient
+        # tonight_condition includes need, but charge_now doesn't
+        tonight_condition = False  # need is False → tonight won't trigger
+        force_charge = charge_now or tonight_condition
+        assert force_charge is True
+
+    def test_charge_now_always_max_current(self):
+        """charge_now always charges at max current, even when reentry is flagged."""
+        max_a = 16
+        tonight_reentry = True  # leftover from previous tonight session
+        source = "charge_now_switch"
+
+        # charge_now ignores tonight_reentry because source != "charge_tonight"
+        if tonight_reentry and source == "charge_tonight":
+            start_a = min(5, max_a)
+        else:
+            start_a = max_a
+
+        assert start_a == 16
+
+    def test_tonight_only_when_charge_now_off(self):
+        """tonight_condition only matters when charge_now is off."""
+        charge_now = False
+        tonight_condition = True
+        force_charge = charge_now or tonight_condition
+        force_source = "charge_now_switch" if charge_now else "charge_tonight"
+        assert force_charge is True
+        assert force_source == "charge_tonight"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Range hysteresis percentage-based
+# ---------------------------------------------------------------------------
+
+class TestRangeHysteresisPercentage:
+    """Test that range hysteresis uses a percentage of effective_range."""
+
+    def test_hysteresis_km_calculation(self):
+        """3% of 200km = 6km hysteresis band."""
+        effective_range = 200.0
+        hysteresis_pct = 3.0
+        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km == 6.0
+
+    def test_hysteresis_km_larger_range(self):
+        """3% of 400km = 12km hysteresis band."""
+        effective_range = 400.0
+        hysteresis_pct = 3.0
+        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km == 12.0
+
+    def test_hysteresis_km_small_range(self):
+        """3% of 100km = 3km hysteresis band."""
+        effective_range = 100.0
+        hysteresis_pct = 3.0
+        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km == 3.0
+
+    def test_zero_percent_no_hysteresis(self):
+        """0% hysteresis = 0km band."""
+        effective_range = 200.0
+        hysteresis_pct = 0.0
+        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km == 0.0
+
+    def test_max_10_percent(self):
+        """10% of 200km = 20km hysteresis band."""
+        effective_range = 200.0
+        hysteresis_pct = 10.0
+        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km == 20.0

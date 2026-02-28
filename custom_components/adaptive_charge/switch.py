@@ -139,10 +139,29 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
         state = await self.async_get_last_state()
         if state is not None:
             self._coordinator.set_charge_tonight(state.state == "on")
+        self.async_on_remove(
+            self._coordinator.async_add_listener(self.async_write_ha_state)
+        )
 
     @property
     def is_on(self) -> bool:
         return self._coordinator._charge_tonight
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self._coordinator.data or {}
+        return {
+            "tonight_reason": data.get("tonight_reason", ""),
+            "tonight_condition": data.get("tonight_condition"),
+            "tonight_reentry": data.get("tonight_reentry"),
+            "need": data.get("need"),
+            "solar_done": data.get("solar_done"),
+            "presence": data.get("presence"),
+            "cable_connected": data.get("cable_connected"),
+            "force_source": data.get("force_source", ""),
+            "effective_range": data.get("effective_range"),
+            "current_range": data.get("current_range"),
+        }
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._coordinator.set_charge_tonight(True)
