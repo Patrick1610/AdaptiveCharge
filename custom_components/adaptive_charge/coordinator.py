@@ -289,6 +289,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_solar_wh: float = 0.0
         self._energy_session_import_wh: float = 0.0
         self._missed_solar_wh: float = 0.0
+        self._missed_solar_absence_wh: float = 0.0
+        self._missed_solar_cable_wh: float = 0.0
+        self._missed_solar_low_surplus_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
         # Unsub for interval tracker and night-off timer
@@ -752,7 +755,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Missed solar accumulation ---
         if surplus_w > 0 and not self._charging_on:
-            self._missed_solar_wh += surplus_w * dt_h
+            missed_wh = surplus_w * dt_h
+            self._missed_solar_wh += missed_wh
+
+            voltage = sensor_data.get("voltage", 230.0) or 230.0
+            surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
+
+            if not presence:
+                self._missed_solar_absence_wh += missed_wh
+            elif not cable_connected:
+                self._missed_solar_cable_wh += missed_wh
+            elif surplus_a < 1.0:
+                self._missed_solar_low_surplus_wh += missed_wh
 
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
@@ -933,6 +947,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "energy_session_solar_kwh": round(self._energy_session_solar_wh / 1000.0, 3),
             "energy_session_import_kwh": round(self._energy_session_import_wh / 1000.0, 3),
             "missed_solar_kwh": round(self._missed_solar_wh / 1000.0, 3),
+            "missed_solar_absence_kwh": round(self._missed_solar_absence_wh / 1000.0, 3),
+            "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
+            "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
         }
 
     # ------------------------------------------------------------------
@@ -1505,6 +1522,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def restore_missed_solar(self, missed_wh: float) -> None:
         """Restore cumulative missed solar counter from persistent state."""
         self._missed_solar_wh = missed_wh
+
+    def restore_missed_solar_split(
+        self, absence_wh: float, cable_wh: float, low_surplus_wh: float
+    ) -> None:
+        """Restore missed solar sub-category counters from persistent state."""
+        self._missed_solar_absence_wh = absence_wh
+        self._missed_solar_cable_wh = cable_wh
+        self._missed_solar_low_surplus_wh = low_surplus_wh
 
     def set_tonight_start_time(self, hour: int, minute: int) -> None:
         """Set the earliest charge tonight start time."""

@@ -289,26 +289,30 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for reconfiguring all settings."""
+    """Handle options flow for reconfiguring all settings (multi-step)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialise options flow."""
         self._config_entry = config_entry
+        self._data: dict[str, Any] = {}
+
+    def _current(self) -> dict[str, Any]:
+        """Return merged data + options + collected data."""
+        return {**self._config_entry.data, **self._config_entry.options, **self._data}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Manage options — all entity selectors + parameters in one form."""
-        current = {**self._config_entry.data, **self._config_entry.options}
-
+        """Step 1: select net power mode."""
+        current = self._current()
         if user_input is not None:
-            # Filter out empty optional values
-            filtered = {k: v for k, v in user_input.items() if v is not None and v != ""}
-            return self.async_create_entry(title="", data=filtered)
+            self._data.update(user_input)
+            if user_input[CONF_NET_POWER_MODE] == MODE_NET_ONLY:
+                return await self.async_step_net_power()
+            return await self.async_step_consumption_production()
 
         schema = vol.Schema(
             {
-                # --- Entity selectors ---
                 vol.Required(
                     CONF_NET_POWER_MODE,
                     default=current.get(CONF_NET_POWER_MODE, MODE_NET_ONLY),
@@ -325,18 +329,63 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                         }
                     }
                 ),
-                vol.Optional(
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_net_power(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 2a: net power sensor."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_charger()
+
+        schema = vol.Schema(
+            {
+                vol.Required(
                     CONF_NET_POWER_SENSOR,
-                    description={"suggested_value": current.get(CONF_NET_POWER_SENSOR, "")},
+                    default=current.get(CONF_NET_POWER_SENSOR),
                 ): selector.selector({"entity": {"domain": "sensor"}}),
-                vol.Optional(
+            }
+        )
+        return self.async_show_form(step_id="net_power", data_schema=schema)
+
+    async def async_step_consumption_production(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 2b: consumption and production sensors."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_charger()
+
+        schema = vol.Schema(
+            {
+                vol.Required(
                     CONF_CONSUMPTION_SENSOR,
-                    description={"suggested_value": current.get(CONF_CONSUMPTION_SENSOR, "")},
+                    default=current.get(CONF_CONSUMPTION_SENSOR),
                 ): selector.selector({"entity": {"domain": "sensor"}}),
-                vol.Optional(
+                vol.Required(
                     CONF_PRODUCTION_SENSOR,
-                    description={"suggested_value": current.get(CONF_PRODUCTION_SENSOR, "")},
+                    default=current.get(CONF_PRODUCTION_SENSOR),
                 ): selector.selector({"entity": {"domain": "sensor"}}),
+            }
+        )
+        return self.async_show_form(step_id="consumption_production", data_schema=schema)
+
+    async def async_step_charger(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 3: charger sensors."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_vehicle()
+
+        schema = vol.Schema(
+            {
                 vol.Required(
                     CONF_EV_POWER_SENSOR,
                     default=current.get(CONF_EV_POWER_SENSOR),
@@ -345,6 +394,21 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     CONF_VOLTAGE_SENSOR,
                     default=current.get(CONF_VOLTAGE_SENSOR),
                 ): selector.selector({"entity": {"domain": "sensor"}}),
+            }
+        )
+        return self.async_show_form(step_id="charger", data_schema=schema)
+
+    async def async_step_vehicle(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 4: vehicle entities."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update({k: v for k, v in user_input.items() if v is not None and v != ""})
+            return await self.async_step_range()
+
+        schema = vol.Schema(
+            {
                 vol.Required(
                     CONF_PRESENCE_ENTITY,
                     default=current.get(CONF_PRESENCE_ENTITY),
@@ -361,16 +425,61 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     CONF_BATTERY_SENSOR,
                     description={"suggested_value": current.get(CONF_BATTERY_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
+            }
+        )
+        return self.async_show_form(step_id="vehicle", data_schema=schema)
+
+    async def async_step_range(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 5: desired range."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_solar_optional()
+
+        schema = vol.Schema(
+            {
                 vol.Required(
                     CONF_DESIRED_RANGE,
                     default=float(current.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 1000, "step": 1, "unit_of_measurement": "km", "mode": "box"}}
                 ),
+            }
+        )
+        return self.async_show_form(step_id="range", data_schema=schema)
+
+    async def async_step_solar_optional(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 6: optional solar sensor."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update({k: v for k, v in user_input.items() if v is not None and v != ""})
+            return await self.async_step_actuators_optional()
+
+        schema = vol.Schema(
+            {
                 vol.Optional(
                     CONF_SOLAR_SENSOR,
                     description={"suggested_value": current.get(CONF_SOLAR_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
+            }
+        )
+        return self.async_show_form(step_id="solar_optional", data_schema=schema)
+
+    async def async_step_actuators_optional(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 7: optional charge switch and current number."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update({k: v for k, v in user_input.items() if v is not None and v != ""})
+            return await self.async_step_advanced()
+
+        schema = vol.Schema(
+            {
                 vol.Optional(
                     CONF_CHARGE_SWITCH,
                     description={"suggested_value": current.get(CONF_CHARGE_SWITCH, "")},
@@ -379,7 +488,21 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     CONF_CHARGE_CURRENT_NUMBER,
                     description={"suggested_value": current.get(CONF_CHARGE_CURRENT_NUMBER, "")},
                 ): selector.selector({"entity": {"domain": "number"}}),
-                # --- Advanced timing parameters ---
+            }
+        )
+        return self.async_show_form(step_id="actuators_optional", data_schema=schema)
+
+    async def async_step_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 8: advanced timing settings."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return self.async_create_entry(title="", data=self._data)
+
+        schema = vol.Schema(
+            {
                 vol.Required(
                     CONF_SMOOTHING_WINDOW,
                     default=int(current.get(CONF_SMOOTHING_WINDOW, DEFAULT_SMOOTHING_WINDOW)),
@@ -424,4 +547,4 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 ),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="advanced", data_schema=schema)

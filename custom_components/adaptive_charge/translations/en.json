@@ -87,23 +87,71 @@
   "options": {
     "step": {
       "init": {
-        "title": "AdaptiveCharge Settings",
-        "description": "Edit all entity selections and timing parameters.",
+        "title": "AdaptiveCharge — Net Power Mode",
+        "description": "Choose how your net power is measured.",
         "data": {
-          "net_power_mode": "Net Power Mode",
-          "net_power_sensor": "Net Power Sensor",
+          "net_power_mode": "Net Power Mode"
+        }
+      },
+      "net_power": {
+        "title": "Net Power Sensor",
+        "description": "Select the sensor that measures net grid power (positive = import, negative = export).",
+        "data": {
+          "net_power_sensor": "Net Power Sensor"
+        }
+      },
+      "consumption_production": {
+        "title": "Consumption & Production Sensors",
+        "description": "Select the sensors for house consumption and solar production.",
+        "data": {
           "consumption_sensor": "Consumption Sensor",
-          "production_sensor": "Production Sensor",
+          "production_sensor": "Production Sensor"
+        }
+      },
+      "charger": {
+        "title": "Charger Sensors",
+        "description": "Select sensors for EV power consumption and grid voltage.",
+        "data": {
           "ev_power_sensor": "EV Power Sensor",
-          "voltage_sensor": "Voltage Sensor",
+          "voltage_sensor": "Voltage Sensor"
+        }
+      },
+      "vehicle": {
+        "title": "Vehicle Entities",
+        "description": "Select entities for vehicle presence, cable connection, and current range.",
+        "data": {
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
-          "battery_sensor": "Battery Level Sensor",
-          "desired_range": "Desired Range (km)",
-          "solar_sensor": "Solar Sensor",
+          "battery_sensor": "Battery Level Sensor (optional)"
+        }
+      },
+      "range": {
+        "title": "Target Range",
+        "description": "Set the target range in km for overnight charging.",
+        "data": {
+          "desired_range": "Desired Range (km)"
+        }
+      },
+      "solar_optional": {
+        "title": "Solar Sensor (Optional)",
+        "description": "Optionally select a sensor for solar generation to track solar done state.",
+        "data": {
+          "solar_sensor": "Solar Sensor"
+        }
+      },
+      "actuators_optional": {
+        "title": "Actuators (Optional)",
+        "description": "Optionally select the charge switch and charge current number entities.",
+        "data": {
           "charge_switch": "Charge Switch",
-          "charge_current_number": "Charge Current Number",
+          "charge_current_number": "Charge Current Number"
+        }
+      },
+      "advanced": {
+        "title": "Advanced Settings",
+        "description": "Fine-tune timing parameters for the charging control algorithm.",
+        "data": {
           "smoothing_window": "Smoothing Window (s)",
           "sample_interval": "Sample Interval (s)",
           "solar_done_threshold": "Solar Done Threshold (W)",
@@ -127,7 +175,17 @@
       "available_current_decision": {"name": "Available Current Decision (A)"},
       "alignment_diagnostics": {"name": "Alignment Diagnostics"},
       "energy_charged_kwh": {"name": "Energy Charged (kWh)"},
-      "missed_solar_kwh": {"name": "Missed Solar (kWh)"}
+      "missed_solar_kwh": {"name": "Missed Solar (kWh)"},
+      "missed_solar_absence_kwh": {"name": "Missed Solar Absence (kWh)"},
+      "missed_solar_cable_kwh": {"name": "Missed Solar Cable (kWh)"},
+      "missed_solar_low_surplus_kwh": {"name": "Missed Solar Low Surplus (kWh)"},
+      "definitive_range_km": {"name": "Definitive Range (km)"},
+      "energy_charged_daily": {"name": "Energy Charged Daily (kWh)"},
+      "energy_charged_monthly": {"name": "Energy Charged Monthly (kWh)"},
+      "energy_charged_yearly": {"name": "Energy Charged Yearly (kWh)"},
+      "missed_solar_daily": {"name": "Missed Solar Daily (kWh)"},
+      "missed_solar_monthly": {"name": "Missed Solar Monthly (kWh)"},
+      "missed_solar_yearly": {"name": "Missed Solar Yearly (kWh)"}
     },
     "binary_sensor": {
       "force_charge": {"name": "Force Charge"},
@@ -136,6 +194,7 @@
     "number": {
       "desired_range_km": {"name": "Desired Range (km)"},
       "max_current_limit_a": {"name": "Max Current Limit (A)"},
+      "min_current_limit_a": {"name": "Min Current Limit (A)"},
       "charge_buffer_pct": {"name": "Charge Buffer (%)"},
       "range_hysteresis_pct": {"name": "Range Hysteresis (%)"}
     },
