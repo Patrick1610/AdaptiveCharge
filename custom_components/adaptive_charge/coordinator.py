@@ -404,7 +404,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if self._controller_enabled:
             await self._run_control_logic(
                 force_charge=force_data["force_charge"],
-                smoothed_floored=0,
                 raw_floored=analysis["raw_floored"],
                 ema_current=analysis["ema_current_a"],
                 mono_now=mono_now,
@@ -645,12 +644,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if tonight_reentry:
             self._tonight_reentry = True
 
-        # Earliest start gate: tonight only triggers after configured start hour
+        # Earliest start gate: tonight only triggers after configured start hour.
+        # Handles overnight wrapping: if start=22:00 and night_off=05:00,
+        # then 23:00 and 01:00 are both valid (after start OR before night_off).
         now_time = datetime.now()
-        after_start = (
-            now_time.hour > self._tonight_start_hour
-            or (now_time.hour == self._tonight_start_hour and now_time.minute >= self._tonight_start_minute)
-        )
+        current_minutes = now_time.hour * 60 + now_time.minute
+        start_minutes = self._tonight_start_hour * 60 + self._tonight_start_minute
+        off_minutes = self._night_off_hour * 60 + self._night_off_minute
+        if start_minutes >= off_minutes:
+            # Overnight window (e.g. 22:00–05:00): valid if after start OR before off
+            after_start = current_minutes >= start_minutes or current_minutes < off_minutes
+        else:
+            # Same-day window (e.g. 08:00–17:00): valid if between start and off
+            after_start = start_minutes <= current_minutes < off_minutes
         tonight_condition = (
             self._charge_tonight
             and bool(presence)
@@ -753,7 +759,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "current_setting": self._last_committed_int,
             "available_current": display_available,
             "charging_on": self._charging_on,
-            "sample_count": len(self._net_tracker._intervals),
+            "sample_count": self._net_tracker.interval_count,
             "last_updated": now.isoformat(),
             # --- Import guard ---
             "import_guard_active": self._import_guard_active,
@@ -790,8 +796,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 else (
                     0.0
                     if (
-                        len(self._net_tracker._intervals) >= _LAG_WARMUP_SAMPLES
-                        and len(self._ev_tracker._intervals) >= _LAG_WARMUP_SAMPLES
+                        self._net_tracker.interval_count >= _LAG_WARMUP_SAMPLES
+                        and self._ev_tracker.interval_count >= _LAG_WARMUP_SAMPLES
                     )
                     else None
                 )
@@ -921,7 +927,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     async def _run_control_logic(
         self,
         force_charge: bool,
-        smoothed_floored: int,
         raw_floored: int,
         ema_current: float,
         mono_now: float,
@@ -1335,6 +1340,30 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Service: disable charge tonight."""
         self._tonight_reason = "disabled via service"
         self._charge_tonight = False
+
+    # ------------------------------------------------------------------
+    # Public properties (used by time/number/switch entities)
+    # ------------------------------------------------------------------
+
+    @property
+    def tonight_start_hour(self) -> int:
+        """Return the configured earliest charge start hour."""
+        return self._tonight_start_hour
+
+    @property
+    def tonight_start_minute(self) -> int:
+        """Return the configured earliest charge start minute."""
+        return self._tonight_start_minute
+
+    @property
+    def night_off_hour(self) -> int:
+        """Return the configured night-off hour."""
+        return self._night_off_hour
+
+    @property
+    def night_off_minute(self) -> int:
+        """Return the configured night-off minute."""
+        return self._night_off_minute
 
     # ------------------------------------------------------------------
     # Public setters (used by switch/number entities)

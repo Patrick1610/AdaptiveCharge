@@ -69,8 +69,8 @@ class EarliestChargeStartTime(RestoreEntity, TimeEntity):
     @property
     def native_value(self) -> dt_time | None:
         return dt_time(
-            self._coordinator._tonight_start_hour,
-            self._coordinator._tonight_start_minute,
+            self._coordinator.tonight_start_hour,
+            self._coordinator.tonight_start_minute,
         )
 
     async def async_set_value(self, value: dt_time) -> None:
@@ -109,8 +109,8 @@ class NightOffTime(RestoreEntity, TimeEntity):
     @property
     def native_value(self) -> dt_time | None:
         return dt_time(
-            self._coordinator._night_off_hour,
-            self._coordinator._night_off_minute,
+            self._coordinator.night_off_hour,
+            self._coordinator.night_off_minute,
         )
 
     async def async_set_value(self, value: dt_time) -> None:

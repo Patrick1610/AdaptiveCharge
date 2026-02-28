@@ -2684,12 +2684,19 @@ class TestEarliestChargeStartGate:
         current_minute: int,
         start_hour: int = 22,
         start_minute: int = 0,
+        off_hour: int = 5,
+        off_minute: int = 0,
     ) -> bool:
-        """Evaluate tonight_condition with time gate."""
-        after_start = (
-            current_hour > start_hour
-            or (current_hour == start_hour and current_minute >= start_minute)
-        )
+        """Evaluate tonight_condition with overnight-aware time gate."""
+        current_minutes = current_hour * 60 + current_minute
+        start_minutes = start_hour * 60 + start_minute
+        off_minutes = off_hour * 60 + off_minute
+        if start_minutes >= off_minutes:
+            # Overnight window (e.g. 22:00–05:00)
+            after_start = current_minutes >= start_minutes or current_minutes < off_minutes
+        else:
+            # Same-day window
+            after_start = start_minutes <= current_minutes < off_minutes
         return (
             charge_tonight
             and presence
@@ -2742,14 +2749,30 @@ class TestEarliestChargeStartGate:
             start_hour=20, start_minute=30,
         ) is True
 
-    def test_midnight_wrapping(self):
-        """At 00:30 with start 22:00 — should NOT trigger (before start in same day cycle)."""
-        # 00:30 is NOT > 22, so it's blocked.
-        # This is correct for a "same evening" interpretation.
+    def test_midnight_wrapping_allows_after_midnight(self):
+        """At 00:30 with start 22:00 / off 05:00 → should trigger (overnight window)."""
         result = self._eval_tonight_with_time(
             charge_tonight=True, presence=True, cable_connected=True,
             need=True, solar_done=True,
             current_hour=0, current_minute=30,
+        )
+        assert result is True
+
+    def test_midnight_wrapping_blocks_before_start(self):
+        """At 15:00 with start 22:00 / off 05:00 → should NOT trigger."""
+        result = self._eval_tonight_with_time(
+            charge_tonight=True, presence=True, cable_connected=True,
+            need=True, solar_done=True,
+            current_hour=15, current_minute=0,
+        )
+        assert result is False
+
+    def test_midnight_wrapping_blocks_after_off(self):
+        """At 06:00 with start 22:00 / off 05:00 → should NOT trigger (past off time)."""
+        result = self._eval_tonight_with_time(
+            charge_tonight=True, presence=True, cable_connected=True,
+            need=True, solar_done=True,
+            current_hour=6, current_minute=0,
         )
         assert result is False
 
