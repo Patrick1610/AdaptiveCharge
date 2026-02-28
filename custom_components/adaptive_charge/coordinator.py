@@ -1246,7 +1246,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_range_hysteresis_pct(self, value: float) -> None:
         """Set the range hysteresis percentage (0-10%)."""
         self._range_hysteresis_pct = value
-        self._charge_buffer = value
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).
