@@ -11,6 +11,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -144,7 +145,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 4: vehicle entities."""
         if user_input is not None:
-            self._data = {**self._data, **user_input}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
             return await self.async_step_range()
 
         schema = vol.Schema(
@@ -156,6 +157,9 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {"entity": {"domain": "binary_sensor"}}
                 ),
                 vol.Required(CONF_CURRENT_RANGE_SENSOR): selector.selector(
+                    {"entity": {"domain": "sensor"}}
+                ),
+                vol.Optional(CONF_BATTERY_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
                 ),
             }

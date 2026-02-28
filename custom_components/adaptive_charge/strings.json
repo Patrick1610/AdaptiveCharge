@@ -37,7 +37,8 @@
         "data": {
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
-          "current_range_sensor": "Current Range Sensor"
+          "current_range_sensor": "Current Range Sensor",
+          "battery_sensor": "Battery Level Sensor (optional)"
         }
       },
       "range": {

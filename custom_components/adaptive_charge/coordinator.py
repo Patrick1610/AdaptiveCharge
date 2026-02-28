@@ -23,6 +23,7 @@ from .alignment import (
     compute_skew,
 )
 from .const import (
+    CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -162,6 +163,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._presence_entity: str | None = options.get(CONF_PRESENCE_ENTITY)
         self._cable_sensor: str | None = options.get(CONF_CABLE_SENSOR)
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
+        self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
@@ -447,6 +449,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         presence = _get_bool_state(self.hass, self._presence_entity)
         cable_connected = _get_bool_state(self.hass, self._cable_sensor)
         current_range = _get_float_state(self.hass, self._current_range_sensor)
+        battery_pct = _get_float_state(self.hass, self._battery_sensor)
 
         net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
         consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
@@ -473,6 +476,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "presence": presence,
             "cable_connected": cable_connected,
             "current_range": current_range,
+            "battery_pct": battery_pct,
         }
 
     # ------------------------------------------------------------------
@@ -735,6 +739,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "presence": sensor_data["presence"],
             "cable_connected": sensor_data["cable_connected"],
             "current_range": sensor_data["current_range"],
+            "battery_pct": sensor_data.get("battery_pct"),
             "desired_range": self._desired_range,
             "effective_range": force_data["effective_range"],
             "range_hysteresis_pct": self._range_hysteresis_pct,
