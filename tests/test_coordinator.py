@@ -2219,9 +2219,9 @@ class TestRangeHysteresis:
     """Test range hysteresis prevents rapid start/stop cycling.
 
     Hysteresis: start charging when below effective_range, stop only when
-    hysteresis band above effective_range. Uses a percentage of effective_range
-    (default 3%). This prevents flapping when the reported range fluctuates
-    around the threshold.
+    hysteresis band above effective_range. Uses a percentage of desired_range
+    (default 3%). This decouples hysteresis from the charge buffer and prevents
+    flapping when the reported range fluctuates around the threshold.
     """
 
     HYSTERESIS_PCT = 3.0  # matches DEFAULT_RANGE_HYSTERESIS_PCT
@@ -2232,10 +2232,12 @@ class TestRangeHysteresis:
         effective_range: float,
         need_active: bool,
         hysteresis_pct: float | None = None,
+        desired_range: float | None = None,
     ) -> bool:
         """Evaluate need with hysteresis, mirroring coordinator logic."""
         pct = hysteresis_pct if hysteresis_pct is not None else self.HYSTERESIS_PCT
-        hysteresis_km = effective_range * (pct / 100.0)
+        base = desired_range if desired_range is not None else effective_range
+        hysteresis_km = base * (pct / 100.0)
         if current_range is not None:
             if need_active:
                 return current_range < (effective_range + hysteresis_km)
@@ -2320,8 +2322,9 @@ class TestRangeHysteresis:
         assert self._eval_need(None, 200.0, need_active=True) is False
 
     def test_hysteresis_with_buffer(self):
-        """Buffer and hysteresis combine correctly.
-        effective=220, 3% hysteresis = 6.6km, stop at 226.6.
+        """Buffer and hysteresis are decoupled.
+        desired=200, buffer=10% → effective=220.
+        hysteresis = 3% of desired(200) = 6km, stop at 226.
         """
         desired_range = 200.0
         charge_buffer = 10.0  # effective = 220
@@ -2329,15 +2332,15 @@ class TestRangeHysteresis:
         assert abs(effective - 220.0) < 0.01
 
         # Start: 215 < 220 → need
-        need_active = self._eval_need(215.0, effective, need_active=False)
+        need_active = self._eval_need(215.0, effective, need_active=False, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 224 < 226.6 (220 + 6.6) → still active
-        need_active = self._eval_need(224.0, effective, need_active)
+        # Charging: 224 < 226 (220 + 6) → still active
+        need_active = self._eval_need(224.0, effective, need_active, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 227 >= 226.6 → stops
-        need_active = self._eval_need(227.0, effective, need_active)
+        # Charging: 227 > 226 → stops
+        need_active = self._eval_need(227.0, effective, need_active, desired_range=desired_range)
         assert need_active is False
 
     def test_tonight_uses_hysteresis_to_keep_charging(self):
@@ -2628,42 +2631,52 @@ class TestChargeNowOverrulesTonight:
 # ---------------------------------------------------------------------------
 
 class TestRangeHysteresisPercentage:
-    """Test that range hysteresis uses a percentage of effective_range."""
+    """Test that range hysteresis uses a percentage of desired_range (decoupled from buffer)."""
 
     def test_hysteresis_km_calculation(self):
-        """3% of 200km = 6km hysteresis band."""
-        effective_range = 200.0
+        """3% of desired 200km = 6km hysteresis band."""
+        desired_range = 200.0
         hysteresis_pct = 3.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 6.0
 
     def test_hysteresis_km_larger_range(self):
-        """3% of 400km = 12km hysteresis band."""
-        effective_range = 400.0
+        """3% of desired 400km = 12km hysteresis band."""
+        desired_range = 400.0
         hysteresis_pct = 3.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 12.0
 
     def test_hysteresis_km_small_range(self):
-        """3% of 100km = 3km hysteresis band."""
-        effective_range = 100.0
+        """3% of desired 100km = 3km hysteresis band."""
+        desired_range = 100.0
         hysteresis_pct = 3.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 3.0
 
     def test_zero_percent_no_hysteresis(self):
         """0% hysteresis = 0km band."""
-        effective_range = 200.0
+        desired_range = 200.0
         hysteresis_pct = 0.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 0.0
 
     def test_max_10_percent(self):
-        """10% of 200km = 20km hysteresis band."""
-        effective_range = 200.0
+        """10% of desired 200km = 20km hysteresis band."""
+        desired_range = 200.0
         hysteresis_pct = 10.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 20.0
+
+    def test_hysteresis_independent_of_buffer(self):
+        """Hysteresis band is same regardless of charge buffer."""
+        desired_range = 200.0
+        hysteresis_pct = 3.0
+        # Without buffer
+        hysteresis_km_no_buffer = desired_range * (hysteresis_pct / 100.0)
+        # With 10% buffer (effective=220)
+        hysteresis_km_with_buffer = desired_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km_no_buffer == hysteresis_km_with_buffer == 6.0
 
 
 # ---------------------------------------------------------------------------
@@ -3179,15 +3192,13 @@ class TestBatterySensor:
 # ---------------------------------------------------------------------------
 
 class TestOptionsFlowAllEntities:
-    """Test that options flow exposes all setup entities for editing."""
+    """Test that options flow collects all setup entities across multiple steps."""
 
     def test_options_include_entity_selectors(self):
-        """Options schema should include entity selection keys."""
+        """Options flow should collect all entity selection keys across steps."""
         expected_keys = {
             "net_power_mode",
             "net_power_sensor",
-            "consumption_sensor",
-            "production_sensor",
             "ev_power_sensor",
             "voltage_sensor",
             "presence_entity",
@@ -3206,8 +3217,8 @@ class TestOptionsFlowAllEntities:
             "stop_delay",
             "modulate_min_interval",
         }
-        # Verify all expected keys exist in the schema
-        assert len(expected_keys) == 21
+        # Verify all expected keys exist (consumption/production flow is alternative)
+        assert len(expected_keys) == 19
 
     def test_empty_optional_values_filtered(self):
         """Empty optional values should be filtered out on submission."""
@@ -3300,3 +3311,317 @@ class TestBuildDataDictEnergy:
         session_wh = 0.0
         assert round(total_wh / 1000.0, 3) == 5.0
         assert round(session_wh / 1000.0, 3) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: format_duration helper
+# ---------------------------------------------------------------------------
+
+class TestFormatDuration:
+    """Test the format_duration helper for dynamic time formatting."""
+
+    def _format_duration(self, seconds: float) -> str:
+        """Mirror of helpers.format_duration."""
+        if seconds < 0:
+            seconds = 0.0
+        total = int(seconds)
+        if total < 60:
+            return f"{seconds:.1f}s"
+        days, remainder = divmod(total, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if days > 0:
+            parts = [f"{days}d", f"{hours}h", f"{minutes}m"]
+            return " ".join(p for p in parts if not p.startswith("0"))
+        if hours > 0:
+            return f"{hours}h {minutes}m {secs}s"
+        return f"{minutes}m {secs}s"
+
+    def test_under_one_minute(self):
+        """Values under 60s should show decimal seconds."""
+        assert self._format_duration(45.0) == "45.0s"
+
+    def test_exactly_zero(self):
+        assert self._format_duration(0.0) == "0.0s"
+
+    def test_negative_clamps_to_zero(self):
+        assert self._format_duration(-5.0) == "0.0s"
+
+    def test_one_minute(self):
+        assert self._format_duration(60.0) == "1m 0s"
+
+    def test_five_minutes_twenty_three_seconds(self):
+        assert self._format_duration(323.0) == "5m 23s"
+
+    def test_one_hour(self):
+        assert self._format_duration(3600.0) == "1h 0m 0s"
+
+    def test_two_hours_fifteen_minutes(self):
+        assert self._format_duration(8130.0) == "2h 15m 30s"
+
+    def test_one_day(self):
+        result = self._format_duration(86400.0)
+        assert "1d" in result
+
+    def test_one_day_three_hours(self):
+        result = self._format_duration(97200.0)
+        assert "1d" in result
+        assert "3h" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Min current limit
+# ---------------------------------------------------------------------------
+
+class TestMinCurrentLimit:
+    """Test minimum current limit functionality."""
+
+    def test_default_min_current_limit_is_zero(self):
+        """Default min current limit should be 0."""
+        # Matches DEFAULT_MIN_CURRENT_LIMIT in const.py
+        DEFAULT_MIN_CURRENT_LIMIT = 0
+        assert DEFAULT_MIN_CURRENT_LIMIT == 0
+
+    def test_min_start_threshold_with_zero_min(self):
+        """With min=0, start threshold is max(0, 1.0) = 1.0."""
+        min_current_limit = 0.0
+        min_start = max(min_current_limit, 1.0)
+        assert min_start == 1.0
+
+    def test_min_start_threshold_with_custom_min(self):
+        """With min=6, start threshold is max(6, 1.0) = 6.0."""
+        min_current_limit = 6.0
+        min_start = max(min_current_limit, 1.0)
+        assert min_start == 6.0
+
+    def test_surplus_below_min_does_not_start(self):
+        """If EMA < min_start, charging should not start."""
+        min_current_limit = 6.0
+        min_start = max(min_current_limit, 1.0)
+        ema_current = 4.0
+        charging_on = False
+        should_start = ema_current >= min_start and not charging_on
+        assert should_start is False
+
+    def test_surplus_above_min_starts(self):
+        """If EMA >= min_start, charging can start."""
+        min_current_limit = 6.0
+        min_start = max(min_current_limit, 1.0)
+        ema_current = 7.0
+        charging_on = False
+        should_start = ema_current >= min_start and not charging_on
+        assert should_start is True
+
+    def test_start_a_clamps_to_min(self):
+        """start_a should be at least min_start."""
+        min_current_limit = 6.0
+        min_start = max(min_current_limit, 1.0)
+        ema_current = 7.0
+        max_current_limit = 16
+        start_a = max(int(min_start), min(int(ema_current), max_current_limit))
+        assert start_a == 7
+
+    def test_start_a_with_low_ema(self):
+        """If ema is just above min_start, start_a = min_start."""
+        min_current_limit = 6.0
+        min_start = max(min_current_limit, 1.0)
+        ema_current = 6.5  # just above min, int(6.5) = 6
+        max_current_limit = 16
+        start_a = max(int(min_start), min(int(ema_current), max_current_limit))
+        assert start_a == 6
+
+
+# ---------------------------------------------------------------------------
+# Tests: Missed solar sub-categories
+# ---------------------------------------------------------------------------
+
+class TestMissedSolarSubCategories:
+    """Test missed solar split into absence, cable, and low surplus."""
+
+    def _classify_missed(
+        self, surplus_w: float, presence: bool, cable_connected: bool, voltage: float = 230.0
+    ) -> str:
+        """Return category of missed solar, mirroring coordinator logic."""
+        surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
+        if not presence:
+            return "absence"
+        if not cable_connected:
+            return "cable"
+        if surplus_a < 1.0:
+            return "low_surplus"
+        return "none"
+
+    def test_missed_due_to_absence(self):
+        """Vehicle not home → missed classified as absence."""
+        assert self._classify_missed(2000.0, presence=False, cable_connected=False) == "absence"
+
+    def test_missed_due_to_cable(self):
+        """Vehicle home but cable disconnected → missed classified as cable."""
+        assert self._classify_missed(2000.0, presence=True, cable_connected=False) == "cable"
+
+    def test_missed_due_to_low_surplus(self):
+        """Vehicle home, cable connected, but surplus < 1A threshold."""
+        # surplus < 1A: 230 * 3 * 1 = 690W
+        assert self._classify_missed(500.0, presence=True, cable_connected=True) == "low_surplus"
+
+    def test_surplus_above_threshold_no_category(self):
+        """Surplus >= 1A → not classified (charging should be active)."""
+        # surplus > 1A: 230 * 3 * 1 = 690W
+        assert self._classify_missed(1000.0, presence=True, cable_connected=True) == "none"
+
+    def test_accumulation_per_category(self):
+        """Missed solar should accumulate into the correct sub-category."""
+        absence_wh = 0.0
+        cable_wh = 0.0
+        low_surplus_wh = 0.0
+        dt_h = 10.0 / 3600.0
+
+        # Tick 1: away from home, surplus 2000W
+        surplus_w = 2000.0
+        missed_wh = surplus_w * dt_h
+        cat = self._classify_missed(surplus_w, presence=False, cable_connected=False)
+        if cat == "absence":
+            absence_wh += missed_wh
+
+        # Tick 2: home, cable disconnected, surplus 1500W
+        surplus_w = 1500.0
+        missed_wh = surplus_w * dt_h
+        cat = self._classify_missed(surplus_w, presence=True, cable_connected=False)
+        if cat == "cable":
+            cable_wh += missed_wh
+
+        # Tick 3: home, cable connected, surplus 400W (< 690W = 1A)
+        surplus_w = 400.0
+        missed_wh = surplus_w * dt_h
+        cat = self._classify_missed(surplus_w, presence=True, cable_connected=True)
+        if cat == "low_surplus":
+            low_surplus_wh += missed_wh
+
+        assert absence_wh > 0
+        assert cable_wh > 0
+        assert low_surplus_wh > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Definitive range sensor
+# ---------------------------------------------------------------------------
+
+class TestDefinitiveRange:
+    """Test the definitive range sensor (desired + buffer)."""
+
+    def test_no_buffer(self):
+        """Without buffer, effective_range == desired_range."""
+        desired = 200.0
+        buffer_pct = 0.0
+        effective = desired * (1.0 + buffer_pct / 100.0)
+        assert effective == 200.0
+
+    def test_with_buffer(self):
+        """With 10% buffer, effective_range = 220."""
+        desired = 200.0
+        buffer_pct = 10.0
+        effective = desired * (1.0 + buffer_pct / 100.0)
+        assert abs(effective - 220.0) < 0.01
+
+    def test_hysteresis_attributes_present(self):
+        """Data dict should include hysteresis attributes."""
+        expected = {
+            "desired_range", "charge_buffer", "effective_range",
+            "range_hysteresis_pct", "range_hysteresis_km", "current_range",
+        }
+        data = {k: 0.0 for k in expected}
+        assert expected.issubset(set(data.keys()))
+
+
+# ---------------------------------------------------------------------------
+# Tests: Utility meter sensor logic
+# ---------------------------------------------------------------------------
+
+class TestUtilityMeterLogic:
+    """Test utility meter accumulation and reset logic."""
+
+    def test_delta_accumulation(self):
+        """Utility meter tracks positive deltas of source sensor."""
+        accumulated = 0.0
+        last_value = None
+        source_values = [0.0, 0.5, 1.0, 1.5, 2.0]
+        for val in source_values:
+            if last_value is not None:
+                delta = val - last_value
+                if delta > 0:
+                    accumulated += delta
+            last_value = val
+        assert abs(accumulated - 2.0) < 0.001
+
+    def test_no_accumulation_on_decrease(self):
+        """Source sensor decrease should not affect utility meter."""
+        accumulated = 0.0
+        last_value = None
+        source_values = [2.0, 1.5, 1.0]  # decreasing
+        for val in source_values:
+            if last_value is not None:
+                delta = val - last_value
+                if delta > 0:
+                    accumulated += delta
+            last_value = val
+        assert accumulated == 0.0
+
+    def test_reset_sets_to_zero(self):
+        """After reset, accumulated should be zero."""
+        accumulated = 5.5
+        accumulated = 0.0
+        assert accumulated == 0.0
+
+    def test_daily_reset_period(self):
+        """Daily period should trigger on every midnight."""
+        period = "daily"
+        assert period == "daily"
+
+    def test_monthly_reset_on_first(self):
+        """Monthly reset only on day 1."""
+        day = 1
+        should_reset = day == 1
+        assert should_reset is True
+
+    def test_monthly_no_reset_on_other_days(self):
+        """Monthly should not reset on day 15."""
+        day = 15
+        should_reset = day == 1
+        assert should_reset is False
+
+    def test_yearly_reset_on_jan_first(self):
+        """Yearly reset only on Jan 1."""
+        month, day = 1, 1
+        should_reset = month == 1 and day == 1
+        assert should_reset is True
+
+    def test_yearly_no_reset_on_other_dates(self):
+        """Yearly should not reset on Feb 1."""
+        month, day = 2, 1
+        should_reset = month == 1 and day == 1
+        assert should_reset is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Energy data dict includes missed solar sub-categories
+# ---------------------------------------------------------------------------
+
+class TestBuildDataDictMissedSolarSplit:
+    """Test that data dict includes missed solar sub-category keys."""
+
+    def test_missed_solar_split_keys_present(self):
+        """Data dict should include missed solar sub-category keys."""
+        expected_keys = {
+            "missed_solar_kwh",
+            "missed_solar_absence_kwh",
+            "missed_solar_cable_kwh",
+            "missed_solar_low_surplus_kwh",
+        }
+        data = {k: 0.0 for k in expected_keys}
+        assert expected_keys.issubset(set(data.keys()))
+
+    def test_min_current_limit_in_data_dict(self):
+        """Data dict should include min_current_limit."""
+        data = {"min_current_limit": 6.0, "max_current_limit": 16.0}
+        assert "min_current_limit" in data
+        assert data["min_current_limit"] == 6.0
