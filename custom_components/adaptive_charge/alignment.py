@@ -133,6 +133,11 @@ class MeasurementTracker:
         ratio = self.jitter / self.avg_interval
         return max(0.0, min(1.0, 1.0 - ratio))
 
+    @property
+    def interval_count(self) -> int:
+        """Number of recorded update intervals."""
+        return len(self._intervals)
+
 
 class EMAFilter:
     """Exponential moving average filter with time-based decay."""

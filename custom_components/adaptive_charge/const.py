@@ -13,6 +13,7 @@ CONF_VOLTAGE_SENSOR = "voltage_sensor"
 CONF_PRESENCE_ENTITY = "presence_entity"
 CONF_CABLE_SENSOR = "cable_sensor"
 CONF_CURRENT_RANGE_SENSOR = "current_range_sensor"
+CONF_BATTERY_SENSOR = "battery_sensor"
 CONF_DESIRED_RANGE = "desired_range"
 CONF_SOLAR_SENSOR = "solar_sensor"
 CONF_CHARGE_SWITCH = "charge_switch"
@@ -50,6 +51,13 @@ DEFAULT_START_DELAY = 30
 DEFAULT_STOP_DELAY = 30
 DEFAULT_MODULATE_MIN_INTERVAL = 30
 DEFAULT_MAX_CURRENT_LIMIT = 16
+DEFAULT_CHARGE_BUFFER = 0
+DEFAULT_RANGE_HYSTERESIS_PCT = 3.0
+DEFAULT_TONIGHT_REENTRY_CURRENT_A = 5
+DEFAULT_TONIGHT_START_HOUR = 22
+DEFAULT_TONIGHT_START_MINUTE = 0
+DEFAULT_NIGHT_OFF_HOUR = 5
+DEFAULT_NIGHT_OFF_MINUTE = 0
 
 # --- Import guard (configurable fail-safe) ---
 CONF_IMPORT_GUARD_THRESHOLD = "import_guard_threshold_w"
@@ -92,7 +100,7 @@ DEFAULT_SETTLING_DURATION_S = 10.0
 DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S = 10.0
 
 # --- Platforms ---
-PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]
+PLATFORMS = ["sensor", "binary_sensor", "number", "switch", "time"]
 
 # --- Service names ---
 SERVICE_FORCE_START = "force_start"

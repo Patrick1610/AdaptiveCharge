@@ -11,6 +11,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -144,7 +145,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 4: vehicle entities."""
         if user_input is not None:
-            self._data = {**self._data, **user_input}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_range()
 
         schema = vol.Schema(
@@ -156,6 +157,9 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {"entity": {"domain": "binary_sensor"}}
                 ),
                 vol.Required(CONF_CURRENT_RANGE_SENSOR): selector.selector(
+                    {"entity": {"domain": "sensor"}}
+                ),
+                vol.Optional(CONF_BATTERY_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
                 ),
             }
@@ -192,7 +196,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 6: optional solar sensor."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_actuators_optional()
 
         schema = vol.Schema(
@@ -209,7 +213,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 7: optional charge switch and current number."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_advanced()
 
         schema = vol.Schema(
@@ -285,7 +289,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for reconfiguring advanced settings."""
+    """Handle options flow for reconfiguring all settings."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialise options flow."""
@@ -294,53 +298,127 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Manage options."""
-        options = {**self._config_entry.data, **self._config_entry.options}
+        """Manage options — all entity selectors + parameters in one form."""
+        current = {**self._config_entry.data, **self._config_entry.options}
 
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Filter out empty optional values
+            filtered = {k: v for k, v in user_input.items() if v is not None and v != ""}
+            return self.async_create_entry(title="", data=filtered)
 
         schema = vol.Schema(
             {
+                # --- Entity selectors ---
+                vol.Required(
+                    CONF_NET_POWER_MODE,
+                    default=current.get(CONF_NET_POWER_MODE, MODE_NET_ONLY),
+                ): selector.selector(
+                    {
+                        "select": {
+                            "options": [
+                                {"value": MODE_NET_ONLY, "label": "Single net power sensor"},
+                                {
+                                    "value": MODE_CONSUMPTION_PRODUCTION,
+                                    "label": "Separate consumption & production sensors",
+                                },
+                            ]
+                        }
+                    }
+                ),
+                vol.Optional(
+                    CONF_NET_POWER_SENSOR,
+                    description={"suggested_value": current.get(CONF_NET_POWER_SENSOR, "")},
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Optional(
+                    CONF_CONSUMPTION_SENSOR,
+                    description={"suggested_value": current.get(CONF_CONSUMPTION_SENSOR, "")},
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Optional(
+                    CONF_PRODUCTION_SENSOR,
+                    description={"suggested_value": current.get(CONF_PRODUCTION_SENSOR, "")},
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Required(
+                    CONF_EV_POWER_SENSOR,
+                    default=current.get(CONF_EV_POWER_SENSOR),
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Required(
+                    CONF_VOLTAGE_SENSOR,
+                    default=current.get(CONF_VOLTAGE_SENSOR),
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Required(
+                    CONF_PRESENCE_ENTITY,
+                    default=current.get(CONF_PRESENCE_ENTITY),
+                ): selector.selector({"entity": {"domain": "device_tracker"}}),
+                vol.Required(
+                    CONF_CABLE_SENSOR,
+                    default=current.get(CONF_CABLE_SENSOR),
+                ): selector.selector({"entity": {"domain": "binary_sensor"}}),
+                vol.Required(
+                    CONF_CURRENT_RANGE_SENSOR,
+                    default=current.get(CONF_CURRENT_RANGE_SENSOR),
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Optional(
+                    CONF_BATTERY_SENSOR,
+                    description={"suggested_value": current.get(CONF_BATTERY_SENSOR, "")},
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Required(
+                    CONF_DESIRED_RANGE,
+                    default=float(current.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 1000, "step": 1, "unit_of_measurement": "km", "mode": "box"}}
+                ),
+                vol.Optional(
+                    CONF_SOLAR_SENSOR,
+                    description={"suggested_value": current.get(CONF_SOLAR_SENSOR, "")},
+                ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Optional(
+                    CONF_CHARGE_SWITCH,
+                    description={"suggested_value": current.get(CONF_CHARGE_SWITCH, "")},
+                ): selector.selector({"entity": {"domain": "switch"}}),
+                vol.Optional(
+                    CONF_CHARGE_CURRENT_NUMBER,
+                    description={"suggested_value": current.get(CONF_CHARGE_CURRENT_NUMBER, "")},
+                ): selector.selector({"entity": {"domain": "number"}}),
+                # --- Advanced timing parameters ---
                 vol.Required(
                     CONF_SMOOTHING_WINDOW,
-                    default=int(options.get(CONF_SMOOTHING_WINDOW, DEFAULT_SMOOTHING_WINDOW)),
+                    default=int(current.get(CONF_SMOOTHING_WINDOW, DEFAULT_SMOOTHING_WINDOW)),
                 ): selector.selector(
                     {"number": {"min": 10, "max": 600, "step": 10, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Required(
                     CONF_SAMPLE_INTERVAL,
-                    default=int(options.get(CONF_SAMPLE_INTERVAL, DEFAULT_SAMPLE_INTERVAL)),
+                    default=int(current.get(CONF_SAMPLE_INTERVAL, DEFAULT_SAMPLE_INTERVAL)),
                 ): selector.selector(
                     {"number": {"min": 5, "max": 60, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Required(
                     CONF_SOLAR_DONE_THRESHOLD,
-                    default=int(options.get(CONF_SOLAR_DONE_THRESHOLD, DEFAULT_SOLAR_DONE_THRESHOLD)),
+                    default=int(current.get(CONF_SOLAR_DONE_THRESHOLD, DEFAULT_SOLAR_DONE_THRESHOLD)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 500, "step": 10, "unit_of_measurement": "W", "mode": "box"}}
                 ),
                 vol.Required(
                     CONF_SOLAR_DONE_DURATION,
-                    default=int(options.get(CONF_SOLAR_DONE_DURATION, DEFAULT_SOLAR_DONE_DURATION)),
+                    default=int(current.get(CONF_SOLAR_DONE_DURATION, DEFAULT_SOLAR_DONE_DURATION)),
                 ): selector.selector(
                     {"number": {"min": 60, "max": 3600, "step": 60, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Required(
                     CONF_START_DELAY,
-                    default=int(options.get(CONF_START_DELAY, DEFAULT_START_DELAY)),
+                    default=int(current.get(CONF_START_DELAY, DEFAULT_START_DELAY)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Required(
                     CONF_STOP_DELAY,
-                    default=int(options.get(CONF_STOP_DELAY, DEFAULT_STOP_DELAY)),
+                    default=int(current.get(CONF_STOP_DELAY, DEFAULT_STOP_DELAY)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Required(
                     CONF_MODULATE_MIN_INTERVAL,
-                    default=int(options.get(CONF_MODULATE_MIN_INTERVAL, DEFAULT_MODULATE_MIN_INTERVAL)),
+                    default=int(current.get(CONF_MODULATE_MIN_INTERVAL, DEFAULT_MODULATE_MIN_INTERVAL)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),

@@ -37,7 +37,8 @@
         "data": {
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
-          "current_range_sensor": "Current Range Sensor"
+          "current_range_sensor": "Current Range Sensor",
+          "battery_sensor": "Battery Level Sensor (optional)"
         }
       },
       "range": {
@@ -86,9 +87,23 @@
   "options": {
     "step": {
       "init": {
-        "title": "Advanced Settings",
-        "description": "Update timing parameters.",
+        "title": "AdaptiveCharge Settings",
+        "description": "Edit all entity selections and timing parameters.",
         "data": {
+          "net_power_mode": "Net Power Mode",
+          "net_power_sensor": "Net Power Sensor",
+          "consumption_sensor": "Consumption Sensor",
+          "production_sensor": "Production Sensor",
+          "ev_power_sensor": "EV Power Sensor",
+          "voltage_sensor": "Voltage Sensor",
+          "presence_entity": "Vehicle Presence",
+          "cable_sensor": "Cable Connected Sensor",
+          "current_range_sensor": "Current Range Sensor",
+          "battery_sensor": "Battery Level Sensor",
+          "desired_range": "Desired Range (km)",
+          "solar_sensor": "Solar Sensor",
+          "charge_switch": "Charge Switch",
+          "charge_current_number": "Charge Current Number",
           "smoothing_window": "Smoothing Window (s)",
           "sample_interval": "Sample Interval (s)",
           "solar_done_threshold": "Solar Done Threshold (W)",
@@ -103,25 +118,16 @@
   "entity": {
     "sensor": {
       "net_surplus_excl_ev_w": {"name": "Net Surplus Excl EV (W)"},
-      "available_current_excl_ev_a_raw": {"name": "Available Current Raw (A)"},
-      "available_current_raw_floored_a": {"name": "Available Charge Current Raw Floored (A)"},
-      "available_current_smoothed_a": {"name": "Available Charge Current Smoothed (A)"},
-      "available_current_smoothed_floored_a": {"name": "Available Charge Current Smoothed Floored (A)"},
-      "computed_net_w": {"name": "Computed Net Power (W)"},
-      "computed_ev_w": {"name": "Computed EV Power (W)"},
-      "voltage_used_v": {"name": "Voltage Used (V)"},
-      "solar_done_status": {"name": "Solar Done Status"},
       "mode": {"name": "Mode"},
       "input_skew_seconds": {"name": "Input Skew (s)"},
-      "net_update_interval_seconds": {"name": "Net Update Interval (s)"},
-      "ev_update_interval_seconds": {"name": "EV Update Interval (s)"},
       "import_guard_state": {"name": "Import Guard State"},
-      "import_watts": {"name": "Import Watts (W)"},
       "last_action": {"name": "Last Action"},
       "last_reason": {"name": "Last Reason"},
-      "target_current": {"name": "Target Current (A)"},
       "current_setting": {"name": "Current Setting (A)"},
-      "available_current_decision": {"name": "Available Current Decision (A)"}
+      "available_current_decision": {"name": "Available Current Decision (A)"},
+      "alignment_diagnostics": {"name": "Alignment Diagnostics"},
+      "energy_charged_kwh": {"name": "Energy Charged (kWh)"},
+      "missed_solar_kwh": {"name": "Missed Solar (kWh)"}
     },
     "binary_sensor": {
       "force_charge": {"name": "Force Charge"},
@@ -129,12 +135,18 @@
     },
     "number": {
       "desired_range_km": {"name": "Desired Range (km)"},
-      "max_current_limit_a": {"name": "Max Current Limit (A)"}
+      "max_current_limit_a": {"name": "Max Current Limit (A)"},
+      "charge_buffer_pct": {"name": "Charge Buffer (%)"},
+      "range_hysteresis_pct": {"name": "Range Hysteresis (%)"}
     },
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},
       "charge_now": {"name": "Charge Now"},
       "charge_tonight": {"name": "Charge Tonight"}
+    },
+    "time": {
+      "earliest_charge_start": {"name": "Earliest Charge Start"},
+      "night_off_time": {"name": "Night Off Time"}
     }
   }
 }

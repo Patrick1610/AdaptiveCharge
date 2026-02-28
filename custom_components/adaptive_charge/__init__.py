@@ -48,6 +48,11 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> AdaptiveChargeCo
     return None
 
 
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload entry when options are updated."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AdaptiveCharge from a config entry."""
     # Remove stale charging_enable switch entity (replaced by binary_sensor.charging_active)
@@ -64,6 +69,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Reload integration when options change (so updated entity selections take effect)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # --- Register services (only once) ---
     if not hass.services.has_service(DOMAIN, SERVICE_FORCE_START):
