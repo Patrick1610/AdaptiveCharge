@@ -136,12 +136,17 @@
     "number": {
       "desired_range_km": {"name": "Desired Range (km)"},
       "max_current_limit_a": {"name": "Max Current Limit (A)"},
-      "charge_buffer_pct": {"name": "Charge Buffer (%)"}
+      "charge_buffer_pct": {"name": "Charge Buffer (%)"},
+      "range_hysteresis_pct": {"name": "Range Hysteresis (%)"}
     },
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},
       "charge_now": {"name": "Charge Now"},
       "charge_tonight": {"name": "Charge Tonight"}
+    },
+    "time": {
+      "earliest_charge_start": {"name": "Earliest Charge Start"},
+      "night_off_time": {"name": "Night Off Time"}
     }
   }
 }
