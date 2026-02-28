@@ -125,7 +125,9 @@
       "last_reason": {"name": "Last Reason"},
       "current_setting": {"name": "Current Setting (A)"},
       "available_current_decision": {"name": "Available Current Decision (A)"},
-      "alignment_diagnostics": {"name": "Alignment Diagnostics"}
+      "alignment_diagnostics": {"name": "Alignment Diagnostics"},
+      "energy_charged_kwh": {"name": "Energy Charged (kWh)"},
+      "missed_solar_kwh": {"name": "Missed Solar (kWh)"}
     },
     "binary_sensor": {
       "force_charge": {"name": "Force Charge"},

@@ -10,9 +10,10 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfPower
+from homeassistant.const import UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -44,6 +45,9 @@ async def async_setup_entry(
             CurrentSettingSensor(coordinator, entry),
             AvailableCurrentDecisionSensor(coordinator, entry),
             AlignmentDiagnosticSensor(coordinator, entry),
+            # Energy tracking
+            EnergyChargedSensor(coordinator, entry),
+            MissedSolarSensor(coordinator, entry),
         ]
     )
 
@@ -346,4 +350,93 @@ class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):
             **base,
             "target_current": data.get("target_current"),
             "force_charge": data.get("force_charge"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Energy tracking sensors
+# ---------------------------------------------------------------------------
+
+class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
+    """Cumulative energy charged to the EV (kWh), with solar/import split."""
+
+    _attr_name = "Energy Charged (kWh)"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_energy_charged_kwh"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore cumulative energy on HA restart."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                total = float(state.state)
+                self.coordinator._energy_total_wh = total * 1000.0
+                attrs = state.attributes or {}
+                self.coordinator._energy_solar_wh = float(attrs.get("solar_energy_kwh", 0)) * 1000.0
+                self.coordinator._energy_import_wh = float(attrs.get("import_energy_kwh", 0)) * 1000.0
+            except (ValueError, TypeError):
+                pass
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("energy_total_kwh", 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "solar_energy_kwh": data.get("energy_solar_kwh", 0.0),
+            "import_energy_kwh": data.get("energy_import_kwh", 0.0),
+            "session_energy_kwh": data.get("energy_session_kwh", 0.0),
+            "session_solar_kwh": data.get("energy_session_solar_kwh", 0.0),
+            "session_import_kwh": data.get("energy_session_import_kwh", 0.0),
+            "battery_pct": data.get("battery_pct"),
+        }
+
+
+class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
+    """Cumulative solar surplus energy that was not charged to the EV (kWh)."""
+
+    _attr_name = "Missed Solar (kWh)"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_kwh"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore cumulative missed solar on HA restart."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                self.coordinator._missed_solar_wh = float(state.state) * 1000.0
+            except (ValueError, TypeError):
+                pass
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("missed_solar_kwh", 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "charging_on": data.get("charging_on"),
+            "surplus_w": data.get("surplus_w"),
+            "presence": data.get("presence"),
+            "cable_connected": data.get("cable_connected"),
+            "need": data.get("need"),
         }

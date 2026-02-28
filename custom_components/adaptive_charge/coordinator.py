@@ -275,6 +275,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._mode_since: str = datetime.now().isoformat()
         self._last_transition: str = ""
 
+        # --- Energy accumulation ---
+        self._energy_total_wh: float = 0.0
+        self._energy_solar_wh: float = 0.0
+        self._energy_import_wh: float = 0.0
+        self._energy_session_wh: float = 0.0
+        self._energy_session_solar_wh: float = 0.0
+        self._energy_session_import_wh: float = 0.0
+        self._missed_solar_wh: float = 0.0
+        self._last_energy_mono: float | None = None
+
         # Unsub for interval tracker and night-off timer
         self._unsub_interval = None
         self._unsub_night_off = None
@@ -401,6 +411,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         import_guard_triggered = self._check_import_guard(
             sensor_data["computed_net_w"], mono_now
         )
+
+        # --- Phase 7b: Energy accumulation ---
+        self._accumulate_energy(sensor_data, mono_now)
 
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
@@ -682,6 +695,66 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         }
 
     # ------------------------------------------------------------------
+    # Energy accumulation
+    # ------------------------------------------------------------------
+
+    def _accumulate_energy(
+        self,
+        sensor_data: dict[str, Any],
+        mono_now: float,
+    ) -> None:
+        """Accumulate energy charged (split solar/import) and missed solar."""
+        if self._last_energy_mono is None:
+            self._last_energy_mono = mono_now
+            return
+
+        dt_h = (mono_now - self._last_energy_mono) / 3600.0
+        self._last_energy_mono = mono_now
+
+        if dt_h <= 0 or dt_h > 0.1:
+            # Skip if dt is unreasonable (> 6 minutes = missed ticks)
+            return
+
+        ev_w = sensor_data.get("ev_w", 0.0) or 0.0
+        computed_net_w = sensor_data.get("computed_net_w", 0.0) or 0.0
+        presence = sensor_data.get("presence")
+        cable_connected = sensor_data.get("cable_connected")
+        surplus_w = (0.0 - computed_net_w) + ev_w
+
+        # --- Energy charged accumulation ---
+        if self._charging_on and ev_w > 0:
+            energy_wh = ev_w * dt_h
+            self._energy_total_wh += energy_wh
+            self._energy_session_wh += energy_wh
+
+            # Split: if net_w > 0, grid is importing → that portion is import energy
+            # solar fraction = ev_w - net_w (clamped to [0, ev_w])
+            if computed_net_w > 0:
+                import_portion = min(ev_w, computed_net_w)
+                solar_portion = max(ev_w - computed_net_w, 0.0)
+            else:
+                # Net exporting: all EV power is solar-sourced
+                import_portion = 0.0
+                solar_portion = ev_w
+
+            solar_wh = solar_portion * dt_h
+            import_wh = import_portion * dt_h
+            self._energy_solar_wh += solar_wh
+            self._energy_import_wh += import_wh
+            self._energy_session_solar_wh += solar_wh
+            self._energy_session_import_wh += import_wh
+
+        # --- Missed solar accumulation ---
+        if surplus_w > 0 and not self._charging_on:
+            self._missed_solar_wh += surplus_w * dt_h
+
+    def reset_session_energy(self) -> None:
+        """Reset per-session energy counters (called on cable plug-in)."""
+        self._energy_session_wh = 0.0
+        self._energy_session_solar_wh = 0.0
+        self._energy_session_import_wh = 0.0
+
+    # ------------------------------------------------------------------
     # Phase 6: Cable plug-in detection
     # ------------------------------------------------------------------
 
@@ -845,6 +918,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "last_applied_current_a": self._last_committed_int,
             "committed_current": self._committed_current,
             "last_control_reason": self._last_commit_reason,
+            # --- Energy accumulation ---
+            "energy_total_kwh": round(self._energy_total_wh / 1000.0, 3),
+            "energy_solar_kwh": round(self._energy_solar_wh / 1000.0, 3),
+            "energy_import_kwh": round(self._energy_import_wh / 1000.0, 3),
+            "energy_session_kwh": round(self._energy_session_wh / 1000.0, 3),
+            "energy_session_solar_kwh": round(self._energy_session_solar_wh / 1000.0, 3),
+            "energy_session_import_kwh": round(self._energy_session_import_wh / 1000.0, 3),
+            "missed_solar_kwh": round(self._missed_solar_wh / 1000.0, 3),
         }
 
     # ------------------------------------------------------------------
@@ -1226,6 +1307,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
         await asyncio.sleep(2)
+        # Reset per-session energy counters on cable plug-in
+        self.reset_session_energy()
         # Re-read current EMA to avoid stale value from 2 seconds ago
         current_ema = self._ema_filter.value if self._ema_filter.value is not None else ema_current_a
         ema_floored = max(int(current_ema), 0)
