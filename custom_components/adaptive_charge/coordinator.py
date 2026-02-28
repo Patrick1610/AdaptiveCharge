@@ -22,6 +22,7 @@ from .alignment import (
     compute_confidence,
     compute_skew,
 )
+from .helpers import format_duration
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
@@ -70,6 +71,7 @@ from .const import (
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MAX_STEP_A,
+    DEFAULT_MIN_CURRENT_LIMIT,
     DEFAULT_RANGE_HYSTERESIS_PCT,
     DEFAULT_TONIGHT_REENTRY_CURRENT_A,
     DEFAULT_TONIGHT_START_HOUR,
@@ -197,6 +199,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
+        self._min_current_limit: float = DEFAULT_MIN_CURRENT_LIMIT
         self._charge_buffer: float = 0.0
         self._range_hysteresis_pct: float = DEFAULT_RANGE_HYSTERESIS_PCT
         self._tonight_start_hour: int = DEFAULT_TONIGHT_START_HOUR
@@ -644,7 +647,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     ) -> dict[str, Any]:
         """Evaluate force charge, need, tonight condition, and earliest-start gate."""
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
-        hysteresis_km = effective_range * (self._range_hysteresis_pct / 100.0)
+        hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
         prev_need_active = self._need_active
         if current_range is not None:
             if self._need_active:
@@ -822,6 +825,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "range_hysteresis_km": round(force_data["hysteresis_km"], 1),
             "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
+            "min_current_limit": self._min_current_limit,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
             "tonight_condition": force_data["tonight_condition"],
@@ -847,8 +851,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "import_guard_state": self._import_guard_state,
             "import_guard_reason": self._import_guard_reason,
             "import_watts": max(computed_net_w, 0.0),
-            "time_in_import_state": (
-                round(time.monotonic() - self._import_guard_state_since, 1)
+            "time_in_import_state": format_duration(
+                time.monotonic() - self._import_guard_state_since
                 if self._import_guard_state_since is not None
                 else 0.0
             ),
@@ -1084,7 +1088,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return
 
         # --- Start surplus charging ---
-        if ema_current >= 1.0 and not self._charging_on:
+        min_start = max(self._min_current_limit, 1.0)
+        if ema_current >= min_start and not self._charging_on:
             # Respect min-off time
             if self._last_off_time is not None:
                 off_elapsed = mono_now - self._last_off_time
@@ -1094,7 +1099,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             # debounce timer every tick which would prevent it from completing.
             if self._pending_task is None or self._pending_task.done():
                 capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
-                start_a = max(1, min(int(ema_current), int(capped_limit)))
+                start_a = max(int(min_start), min(int(ema_current), int(capped_limit)))
                 self._pending_task = self.hass.async_create_task(
                     self._debounced(self._start_delay, self._action_start_surplus, start_a),
                     eager_start=False,
@@ -1102,7 +1107,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return
 
         # --- Stop surplus charging ---
-        if ema_current < 1.0 and self._charging_on and self._current_mode == MODE_SURPLUS:
+        if ema_current < min_start and self._charging_on and self._current_mode == MODE_SURPLUS:
             # Respect min-on time
             if self._last_on_time is not None:
                 on_elapsed = mono_now - self._last_on_time
@@ -1476,6 +1481,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""
         self._max_current_limit = value
+
+    def set_min_current_limit(self, value: float) -> None:
+        """Set the min current limit in A."""
+        self._min_current_limit = value
 
     def set_charge_buffer(self, value: float) -> None:
         """Set the charge buffer percentage (0-25%)."""

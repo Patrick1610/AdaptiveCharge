@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DEFAULT_CHARGE_BUFFER, DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DEFAULT_RANGE_HYSTERESIS_PCT, DOMAIN
+from .const import DEFAULT_CHARGE_BUFFER, DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DEFAULT_MIN_CURRENT_LIMIT, DEFAULT_RANGE_HYSTERESIS_PCT, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info
 
@@ -28,6 +28,7 @@ async def async_setup_entry(
         [
             DesiredRangeNumber(coordinator, entry),
             MaxCurrentLimitNumber(coordinator, entry),
+            MinCurrentLimitNumber(coordinator, entry),
             ChargeBufferNumber(coordinator, entry),
             RangeHysteresisNumber(coordinator, entry),
         ]
