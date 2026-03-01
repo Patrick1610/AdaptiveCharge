@@ -22,6 +22,7 @@ from .const import (
     CONF_DESIRED_RANGE,
     CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
+    CONF_FORECAST_SENSORS,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_THRESHOLD,
     CONF_MAX_CURRENT_LIMIT,
@@ -306,15 +307,19 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 8: optional solar sensor."""
+        """Step 8: optional solar sensor and forecast sensors."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
+            cleaned = {k: v for k, v in user_input.items() if v}
+            self._data = {**self._data, **cleaned}
             return await self.async_step_actuators_optional()
 
         schema = vol.Schema(
             {
                 vol.Optional(CONF_SOLAR_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
+                ),
+                vol.Optional(CONF_FORECAST_SENSORS): selector.selector(
+                    {"entity": {"domain": "sensor", "multiple": True}}
                 ),
             }
         )
@@ -707,10 +712,11 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 6: optional solar sensor."""
+        """Step 6: optional solar sensor and forecast sensors."""
         current = self._current()
         if user_input is not None:
-            self._data.update({k: v for k, v in user_input.items() if v is not None and v != ""})
+            cleaned = {k: v for k, v in user_input.items() if v}
+            self._data.update(cleaned)
             return await self.async_step_actuators_optional()
 
         schema = vol.Schema(
@@ -719,6 +725,10 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     CONF_SOLAR_SENSOR,
                     description={"suggested_value": current.get(CONF_SOLAR_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Optional(
+                    CONF_FORECAST_SENSORS,
+                    description={"suggested_value": current.get(CONF_FORECAST_SENSORS, [])},
+                ): selector.selector({"entity": {"domain": "sensor", "multiple": True}}),
             }
         )
         return self.async_show_form(step_id="solar_optional", data_schema=schema)

@@ -27,6 +27,7 @@ from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
     CONF_CHARGE_LIMIT_SENSOR,
+    CONF_FORECAST_SENSORS,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -185,6 +186,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
         self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
+        self._forecast_sensors: list[str] = options.get(CONF_FORECAST_SENSORS, []) or []
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
@@ -498,6 +500,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
 
+        # Sum all forecast sensor values (each typically reports kWh remaining today)
+        forecast_kwh: float | None = None
+        for fid in self._forecast_sensors:
+            val = _get_float_state(self.hass, fid)
+            if val is not None:
+                forecast_kwh = (forecast_kwh or 0.0) + val
+
         net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
         consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
         production_w = _to_watts(production_raw, self._production_sensor, self.hass) if production_raw is not None else None
@@ -525,6 +534,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "current_range": current_range,
             "battery_pct": battery_pct,
             "charge_limit_pct": charge_limit_pct,
+            "forecast_kwh": forecast_kwh,
         }
 
     # ------------------------------------------------------------------
@@ -892,6 +902,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "current_range": sensor_data["current_range"],
             "battery_pct": sensor_data.get("battery_pct"),
             "charge_limit_pct": sensor_data.get("charge_limit_pct"),
+            "forecast_kwh": sensor_data.get("forecast_kwh"),
             "desired_range": self._desired_range,
             "effective_range": force_data["effective_range"],
             "range_hysteresis_pct": self._range_hysteresis_pct,

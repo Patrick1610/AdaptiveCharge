@@ -72,9 +72,10 @@
       },
       "solar_optional": {
         "title": "Solar Sensor (Optional)",
-        "description": "Optionally select a sensor for solar generation to track solar done state.",
+        "description": "Optionally select a solar generation sensor and/or one or more forecast sensors (e.g. Solcast, Open-Meteo Solar). Multiple forecast sensors are summed.",
         "data": {
-          "solar_sensor": "Solar Sensor"
+          "solar_sensor": "Solar Sensor",
+          "forecast_sensors": "Solar Forecast Sensor(s)"
         }
       },
       "actuators_optional": {
@@ -200,9 +201,10 @@
       },
       "solar_optional": {
         "title": "Solar Sensor (Optional)",
-        "description": "Optionally select a sensor for solar generation to track solar done state.",
+        "description": "Optionally select a solar generation sensor and/or one or more forecast sensors (e.g. Solcast, Open-Meteo Solar). Multiple forecast sensors are summed.",
         "data": {
-          "solar_sensor": "Solar Sensor"
+          "solar_sensor": "Solar Sensor",
+          "forecast_sensors": "Solar Forecast Sensor(s)"
         }
       },
       "actuators_optional": {
