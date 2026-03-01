@@ -294,6 +294,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_below_since: float | None = None
         self._import_guard_last_reduce_time: float | None = None
         self._import_guard_zero_since: float | None = None  # when we first held at 0A
+        self._ev_zero_since: float | None = None  # when EV power first read 0 while _charging_on
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
@@ -449,6 +450,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Phase 7b: Energy accumulation ---
         self._accumulate_energy(sensor_data, mono_now)
+
+        # --- Phase 7c: Stale charge detection ---
+        self._detect_stale_charge(sensor_data["ev_w"], mono_now)
 
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
@@ -868,6 +872,47 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 )
         if cable_connected is not None:
             self._cable_prev = cable_connected
+
+    # EV_ZERO_STALE_S: seconds of zero EV power (while charging_on) before
+    # the coordinator declares the car stopped independently.
+    _EV_ZERO_STALE_S: float = 60.0
+
+    def _detect_stale_charge(self, ev_w: float, mono_now: float) -> None:
+        """Reset _charging_on if the car has stopped drawing power for a sustained period.
+
+        Covers the case where the car independently stops charging (e.g. reaches
+        its charge limit, user disables charging via the car app) — the coordinator
+        would otherwise keep _charging_on=True indefinitely.
+        """
+        if not self._charging_on:
+            self._ev_zero_since = None
+            return
+
+        if ev_w > 0:
+            self._ev_zero_since = None
+            return
+
+        # ev_w == 0 while we think we're charging
+        if self._ev_zero_since is None:
+            self._ev_zero_since = mono_now
+            return
+
+        if (mono_now - self._ev_zero_since) >= self._EV_ZERO_STALE_S:
+            _LOGGER.info(
+                "AdaptiveCharge: EV power has been 0 for %.0fs while charging_on=True "
+                "— resetting to stopped (car stopped independently)",
+                mono_now - self._ev_zero_since,
+            )
+            self._charging_on = False
+            self._ev_zero_since = None
+            self._set_mode(MODE_STOPPED, "car_stopped_independently", "auto_rule")
+            self._last_action = "stale_charge_reset"
+            self._last_reason = "car_stopped_independently"
+            self._last_action_ts = mono_now
+            self._last_off_time = mono_now
+            self._committed_current = None
+            self._last_committed_int = None
+            self._last_commit_reason = "stale_charge_reset"
 
     # ------------------------------------------------------------------
     # Build data dict
