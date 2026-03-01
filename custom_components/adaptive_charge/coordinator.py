@@ -26,6 +26,7 @@ from .helpers import format_duration
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
     CONF_CONSUMPTION_SENSOR,
@@ -42,6 +43,7 @@ from .const import (
     CONF_NET_POWER_SENSOR,
     CONF_PRESENCE_ENTITY,
     CONF_PRODUCTION_SENSOR,
+    CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
@@ -55,6 +57,7 @@ from .const import (
     CONFIDENCE_MEDIUM,
     DEFAULT_ALIGNMENT_TIMEOUT_MAX,
     DEFAULT_ALIGNMENT_TIMEOUT_MIN,
+    DEFAULT_CHARGE_BUFFER,
     DEFAULT_COOLDOWN_DOWN_S,
     DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
@@ -200,8 +203,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
         self._min_current_limit: float = DEFAULT_MIN_CURRENT_LIMIT
-        self._charge_buffer: float = 0.0
-        self._range_hysteresis_pct: float = DEFAULT_RANGE_HYSTERESIS_PCT
+        self._charge_buffer: float = float(options.get(CONF_CHARGE_BUFFER, DEFAULT_CHARGE_BUFFER))
+        self._range_hysteresis_pct: float = float(options.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT))
         self._tonight_start_hour: int = DEFAULT_TONIGHT_START_HOUR
         self._tonight_start_minute: int = DEFAULT_TONIGHT_START_MINUTE
         self._night_off_hour: int = DEFAULT_NIGHT_OFF_HOUR
@@ -648,15 +651,24 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         presence: bool | None,
         cable_connected: bool | None,
     ) -> dict[str, Any]:
-        """Evaluate force charge, need, tonight condition, and earliest-start gate."""
+        """Evaluate force charge, need, tonight condition, and earliest-start gate.
+
+        Symmetric hysteresis (Option B): the hysteresis band is centered on
+        effective_range.  start threshold = effective_range - hyst/2,
+        stop threshold = effective_range + hyst/2.
+        Hysteresis is always ≤ buffer (enforced in the config flow).
+        """
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
+        half_hyst = hysteresis_km / 2.0
         prev_need_active = self._need_active
         if current_range is not None:
             if self._need_active:
-                self._need_active = current_range < (effective_range + hysteresis_km)
+                # Stop only when range reaches upper band
+                self._need_active = current_range < (effective_range + half_hyst)
             else:
-                self._need_active = current_range < effective_range
+                # Start when range drops below lower band
+                self._need_active = current_range < (effective_range - half_hyst)
         else:
             self._need_active = False
         need = self._need_active
@@ -1502,14 +1514,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_min_current_limit(self, value: float) -> None:
         """Set the min current limit in A."""
         self._min_current_limit = value
-
-    def set_charge_buffer(self, value: float) -> None:
-        """Set the charge buffer percentage (0-25%)."""
-        self._charge_buffer = value
-
-    def set_range_hysteresis_pct(self, value: float) -> None:
-        """Set the range hysteresis percentage (0-10%)."""
-        self._range_hysteresis_pct = value
 
     def restore_energy_state(
         self, total_wh: float, solar_wh: float, import_wh: float

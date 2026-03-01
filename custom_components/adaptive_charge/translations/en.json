@@ -42,10 +42,12 @@
         }
       },
       "range": {
-        "title": "Target Range",
-        "description": "Set the target range in km for overnight charging.",
+        "title": "Target Range & Buffer",
+        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)"
+          "desired_range": "Desired Range (km)",
+          "charge_buffer": "Charge Buffer (%)",
+          "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
       "solar_optional": {
@@ -78,7 +80,8 @@
       }
     },
     "error": {
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage."
     },
     "abort": {
       "already_configured": "Integration is already configured."
@@ -127,10 +130,12 @@
         }
       },
       "range": {
-        "title": "Target Range",
-        "description": "Set the target range in km for overnight charging.",
+        "title": "Target Range & Buffer",
+        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)"
+          "desired_range": "Desired Range (km)",
+          "charge_buffer": "Charge Buffer (%)",
+          "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
       "solar_optional": {
@@ -203,9 +208,7 @@
     "number": {
       "desired_range_km": {"name": "Desired Range (km)"},
       "max_current_limit_a": {"name": "Max Current Limit (A)"},
-      "min_current_limit_a": {"name": "Min Current Limit (A)"},
-      "charge_buffer_pct": {"name": "Charge Buffer (%)"},
-      "range_hysteresis_pct": {"name": "Range Hysteresis (%)"}
+      "min_current_limit_a": {"name": "Min Current Limit (A)"}
     },
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},

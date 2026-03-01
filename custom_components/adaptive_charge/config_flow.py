@@ -13,6 +13,7 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
     CONF_CONSUMPTION_SENSOR,
@@ -24,6 +25,7 @@ from .const import (
     CONF_NET_POWER_SENSOR,
     CONF_PRESENCE_ENTITY,
     CONF_PRODUCTION_SENSOR,
+    CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
@@ -32,8 +34,10 @@ from .const import (
     CONF_START_DELAY,
     CONF_STOP_DELAY,
     CONF_VOLTAGE_SENSOR,
+    DEFAULT_CHARGE_BUFFER,
     DEFAULT_DESIRED_RANGE,
     DEFAULT_MODULATE_MIN_INTERVAL,
+    DEFAULT_RANGE_HYSTERESIS_PCT,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SMOOTHING_WINDOW,
     DEFAULT_SOLAR_DONE_DURATION,
@@ -169,10 +173,16 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_range(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 5: desired range."""
+        """Step 5: desired range, charge buffer, and range hysteresis."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._data = {**self._data, **user_input}
-            return await self.async_step_solar_optional()
+            buffer_val = float(user_input.get(CONF_CHARGE_BUFFER, DEFAULT_CHARGE_BUFFER))
+            hyst_val = float(user_input.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT))
+            if hyst_val > buffer_val:
+                errors[CONF_RANGE_HYSTERESIS_PCT] = "hysteresis_exceeds_buffer"
+            else:
+                self._data = {**self._data, **user_input}
+                return await self.async_step_solar_optional()
 
         schema = vol.Schema(
             {
@@ -186,10 +196,32 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             "mode": "box",
                         }
                     }
-                )
+                ),
+                vol.Required(CONF_CHARGE_BUFFER, default=DEFAULT_CHARGE_BUFFER): selector.selector(
+                    {
+                        "number": {
+                            "min": 0,
+                            "max": 25,
+                            "step": 1,
+                            "unit_of_measurement": "%",
+                            "mode": "box",
+                        }
+                    }
+                ),
+                vol.Required(CONF_RANGE_HYSTERESIS_PCT, default=DEFAULT_RANGE_HYSTERESIS_PCT): selector.selector(
+                    {
+                        "number": {
+                            "min": 0,
+                            "max": 25,
+                            "step": 0.5,
+                            "unit_of_measurement": "%",
+                            "mode": "box",
+                        }
+                    }
+                ),
             }
         )
-        return self.async_show_form(step_id="range", data_schema=schema)
+        return self.async_show_form(step_id="range", data_schema=schema, errors=errors)
 
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
@@ -432,11 +464,17 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_range(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 5: desired range."""
+        """Step 5: desired range, charge buffer, and range hysteresis."""
         current = self._current()
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_solar_optional()
+            buffer_val = float(user_input.get(CONF_CHARGE_BUFFER, DEFAULT_CHARGE_BUFFER))
+            hyst_val = float(user_input.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT))
+            if hyst_val > buffer_val:
+                errors[CONF_RANGE_HYSTERESIS_PCT] = "hysteresis_exceeds_buffer"
+            else:
+                self._data.update(user_input)
+                return await self.async_step_solar_optional()
 
         schema = vol.Schema(
             {
@@ -446,9 +484,21 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 ): selector.selector(
                     {"number": {"min": 0, "max": 1000, "step": 1, "unit_of_measurement": "km", "mode": "box"}}
                 ),
+                vol.Required(
+                    CONF_CHARGE_BUFFER,
+                    default=float(current.get(CONF_CHARGE_BUFFER, DEFAULT_CHARGE_BUFFER)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 25, "step": 1, "unit_of_measurement": "%", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_RANGE_HYSTERESIS_PCT,
+                    default=float(current.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 25, "step": 0.5, "unit_of_measurement": "%", "mode": "box"}}
+                ),
             }
         )
-        return self.async_show_form(step_id="range", data_schema=schema)
+        return self.async_show_form(step_id="range", data_schema=schema, errors=errors)
 
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None

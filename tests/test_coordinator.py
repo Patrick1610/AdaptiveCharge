@@ -2015,13 +2015,14 @@ class TestChargeTonightStartLogic:
         Returns (tonight_condition, force_charge).
         """
         effective_range = desired_range * (1.0 + charge_buffer / 100.0)
-        hysteresis_km = effective_range * (range_hysteresis_pct / 100.0)
-        # Apply hysteresis: start below effective_range, stop above effective_range + hysteresis
+        hysteresis_km = desired_range * (range_hysteresis_pct / 100.0)
+        half_hyst = hysteresis_km / 2.0
+        # Symmetric hysteresis: start below effective_range - half, stop above effective_range + half
         if current_range is not None:
             if need_active:
-                need = current_range < (effective_range + hysteresis_km)
+                need = current_range < (effective_range + half_hyst)
             else:
-                need = current_range < effective_range
+                need = current_range < (effective_range - half_hyst)
         else:
             need = False
         tonight_condition = (
@@ -2216,12 +2217,12 @@ class TestForceSourceTracking:
 # ---------------------------------------------------------------------------
 
 class TestRangeHysteresis:
-    """Test range hysteresis prevents rapid start/stop cycling.
+    """Test symmetric range hysteresis prevents rapid start/stop cycling.
 
-    Hysteresis: start charging when below effective_range, stop only when
-    hysteresis band above effective_range. Uses a percentage of desired_range
-    (default 3%). This decouples hysteresis from the charge buffer and prevents
-    flapping when the reported range fluctuates around the threshold.
+    Symmetric hysteresis (Option B): the hysteresis band is centered on
+    effective_range. Start charging at effective_range - hyst/2, stop at
+    effective_range + hyst/2. Uses a percentage of desired_range (default 3%).
+    Hysteresis is always ≤ buffer (enforced in the config flow).
     """
 
     HYSTERESIS_PCT = 3.0  # matches DEFAULT_RANGE_HYSTERESIS_PCT
@@ -2234,19 +2235,25 @@ class TestRangeHysteresis:
         hysteresis_pct: float | None = None,
         desired_range: float | None = None,
     ) -> bool:
-        """Evaluate need with hysteresis, mirroring coordinator logic."""
+        """Evaluate need with symmetric hysteresis, mirroring coordinator logic.
+
+        Symmetric band: start at effective_range - hyst/2, stop at effective_range + hyst/2.
+        """
         pct = hysteresis_pct if hysteresis_pct is not None else self.HYSTERESIS_PCT
         base = desired_range if desired_range is not None else effective_range
         hysteresis_km = base * (pct / 100.0)
+        half_hyst = hysteresis_km / 2.0
         if current_range is not None:
             if need_active:
-                return current_range < (effective_range + hysteresis_km)
+                return current_range < (effective_range + half_hyst)
             else:
-                return current_range < effective_range
+                return current_range < (effective_range - half_hyst)
         return False
 
     def test_initial_state_below_range_starts_need(self):
-        """From cold start, range below target → need=True."""
+        """From cold start, range well below lower band → need=True.
+        3% of 200 = 6km, half = 3km, start threshold = 197.
+        """
         need = self._eval_need(current_range=150.0, effective_range=200.0, need_active=False)
         assert need is True
 
@@ -2256,28 +2263,41 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_initial_state_exactly_at_range_no_need(self):
-        """From cold start, range exactly at target → need=False (not strictly below)."""
+        """From cold start, range exactly at target → need=False (above start threshold 197)."""
         need = self._eval_need(current_range=200.0, effective_range=200.0, need_active=False)
         assert need is False
 
+    def test_initial_state_in_deadband_no_need(self):
+        """From cold start, range between start (197) and stop (203) → no need.
+        The deadband prevents unnecessary charging starts.
+        """
+        need = self._eval_need(current_range=198.0, effective_range=200.0, need_active=False)
+        assert need is False
+
+    def test_initial_state_at_lower_boundary_starts_need(self):
+        """From cold start, range exactly at lower boundary → starts need.
+        3% of 200 = 6km, half = 3km, start threshold = 197. 196 < 197 → need.
+        """
+        need = self._eval_need(current_range=196.0, effective_range=200.0, need_active=False)
+        assert need is True
+
     def test_charging_stays_active_at_effective_range(self):
-        """While charging, reaching effective_range does NOT stop (hysteresis)."""
+        """While charging, reaching effective_range does NOT stop (symmetric hysteresis).
+        3% of 200 = 6km, half = 3km, stop at 203.
+        """
         need = self._eval_need(current_range=200.0, effective_range=200.0, need_active=True)
         assert need is True
 
     def test_charging_stays_active_slightly_above(self):
-        """While charging, 2km above target → still active (within 3% band = 6km)."""
+        """While charging, 2km above target → still active (within +3km upper band)."""
         need = self._eval_need(current_range=202.0, effective_range=200.0, need_active=True)
         assert need is True
 
-    def test_charging_stays_active_at_5km_above(self):
-        """While charging, 5km above target → still active (within 3% band = 6km)."""
-        need = self._eval_need(current_range=205.0, effective_range=200.0, need_active=True)
-        assert need is True
-
-    def test_charging_stops_at_hysteresis_boundary(self):
-        """While charging, at hysteresis boundary (3% of 200 = 6km above) → stops."""
-        need = self._eval_need(current_range=206.0, effective_range=200.0, need_active=True)
+    def test_charging_stops_at_upper_hysteresis_boundary(self):
+        """While charging, at upper hysteresis boundary (3km above effective) → stops.
+        3% of 200 = 6km, half = 3km, stop at 203.
+        """
+        need = self._eval_need(current_range=203.0, effective_range=200.0, need_active=True)
         assert need is False
 
     def test_charging_stops_well_above(self):
@@ -2286,34 +2306,35 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_full_cycle_prevents_flapping(self):
-        """Simulate a charge cycle: start → charge → overshoot → hold → stop.
-        With 3% hysteresis on effective=200, band is 6km, stop at 206.
+        """Simulate a charge cycle with symmetric hysteresis.
+        With 3% hysteresis on effective=200, half band is 3km.
+        Start below 197, stop at 203.
         """
         effective = 200.0
         need_active = False
 
-        # Step 1: range at 195, below target → enter need
+        # Step 1: range at 195, below start threshold (197) → enter need
         need_active = self._eval_need(195.0, effective, need_active)
         assert need_active is True
 
-        # Step 2: range rises to 200 (at target) → still charging
+        # Step 2: range rises to 200 (at target) → still charging (< 203)
         need_active = self._eval_need(200.0, effective, need_active)
         assert need_active is True
 
-        # Step 3: range rises to 204 (4km above) → still charging
-        need_active = self._eval_need(204.0, effective, need_active)
+        # Step 3: range rises to 202 (2km above) → still charging (< 203)
+        need_active = self._eval_need(202.0, effective, need_active)
         assert need_active is True
 
-        # Step 4: range rises to 206 (6km above, = hysteresis boundary) → stops
-        need_active = self._eval_need(206.0, effective, need_active)
+        # Step 4: range rises to 203 (= upper hysteresis boundary) → stops
+        need_active = self._eval_need(203.0, effective, need_active)
         assert need_active is False
 
-        # Step 5: range drops to 201 (1km above, but need_active=False) → no restart
-        need_active = self._eval_need(201.0, effective, need_active)
+        # Step 5: range drops to 198 (below effective, but above start threshold 197) → no restart
+        need_active = self._eval_need(198.0, effective, need_active)
         assert need_active is False
 
-        # Step 6: range drops to 199 (below target) → restarts
-        need_active = self._eval_need(199.0, effective, need_active)
+        # Step 6: range drops to 196 (below start threshold 197) → restarts
+        need_active = self._eval_need(196.0, effective, need_active)
         assert need_active is True
 
     def test_none_range_always_false(self):
@@ -2322,40 +2343,42 @@ class TestRangeHysteresis:
         assert self._eval_need(None, 200.0, need_active=True) is False
 
     def test_hysteresis_with_buffer(self):
-        """Buffer and hysteresis are decoupled.
+        """Buffer and hysteresis with symmetric band.
         desired=200, buffer=10% → effective=220.
-        hysteresis = 3% of desired(200) = 6km, stop at 226.
+        hysteresis = 3% of desired(200) = 6km, half = 3km.
+        Start threshold ≈ 217, stop threshold ≈ 223.
         """
         desired_range = 200.0
         charge_buffer = 10.0  # effective = 220
         effective = desired_range * (1.0 + charge_buffer / 100.0)
         assert abs(effective - 220.0) < 0.01
 
-        # Start: 215 < 220 → need
+        # Start: 215 < ~217 → need
         need_active = self._eval_need(215.0, effective, need_active=False, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 224 < 226 (220 + 6) → still active
-        need_active = self._eval_need(224.0, effective, need_active, desired_range=desired_range)
+        # Charging: 222 < ~223 → still active
+        need_active = self._eval_need(222.0, effective, need_active, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 227 > 226 → stops
-        need_active = self._eval_need(227.0, effective, need_active, desired_range=desired_range)
+        # Charging: 224 > ~223 → stops
+        need_active = self._eval_need(224.0, effective, need_active, desired_range=desired_range)
         assert need_active is False
 
     def test_tonight_uses_hysteresis_to_keep_charging(self):
-        """Charge tonight should keep charging until hysteresis band above effective_range.
-        3% of 200 = 6km, so stops at 206.
+        """Charge tonight should keep charging until upper hysteresis band.
+        3% of 200 = 6km, half = 3km, stop at 203.
         """
         effective_range = 200.0
         hysteresis_km = effective_range * (self.HYSTERESIS_PCT / 100.0)  # 6.0
+        half_hyst = hysteresis_km / 2.0  # 3.0
         need_active = True  # already charging
-        current_range = 202.0  # 2km above effective, but within 6km band
+        current_range = 202.0  # 2km above effective, but within +3km upper band
 
         if need_active:
-            need = current_range < (effective_range + hysteresis_km)
+            need = current_range < (effective_range + half_hyst)
         else:
-            need = current_range < effective_range
+            need = current_range < (effective_range - half_hyst)
 
         tonight_condition = (
             True  # charge_tonight
@@ -2367,16 +2390,18 @@ class TestRangeHysteresis:
         assert tonight_condition is True  # keeps charging due to hysteresis
 
     def test_custom_hysteresis_percentage(self):
-        """Custom hysteresis percentage: 5% of 200 = 10km band."""
+        """Custom hysteresis percentage: 5% of 200 = 10km, half = 5km.
+        Start threshold = 195, stop threshold = 205.
+        """
         effective = 200.0
 
-        # With 5%: band = 10km, stops at 210
-        # 208 < 210 → still charging
-        need = self._eval_need(208.0, effective, need_active=True, hysteresis_pct=5.0)
+        # With 5%: half band = 5km, stops at 205
+        # 204 < 205 → still charging
+        need = self._eval_need(204.0, effective, need_active=True, hysteresis_pct=5.0)
         assert need is True
 
-        # 210 >= 210 → stops
-        need = self._eval_need(210.0, effective, need_active=True, hysteresis_pct=5.0)
+        # 205 >= 205 → stops
+        need = self._eval_need(205.0, effective, need_active=True, hysteresis_pct=5.0)
         assert need is False
 
     def test_zero_hysteresis_disables_band(self):
@@ -2389,14 +2414,14 @@ class TestRangeHysteresis:
 
     def test_hysteresis_scales_with_range(self):
         """Larger effective_range → larger hysteresis band in km.
-        3% of 400 = 12km band.
+        3% of 400 = 12km, half = 6km. Stop at 406.
         """
         effective = 400.0
-        # 410 < 412 → still active
-        need = self._eval_need(410.0, effective, need_active=True)
+        # 405 < 406 → still active
+        need = self._eval_need(405.0, effective, need_active=True)
         assert need is True
-        # 412 >= 412 → stops
-        need = self._eval_need(412.0, effective, need_active=True)
+        # 406 >= 406 → stops
+        need = self._eval_need(406.0, effective, need_active=True)
         assert need is False
 
 
@@ -3206,6 +3231,8 @@ class TestOptionsFlowAllEntities:
             "current_range_sensor",
             "battery_sensor",
             "desired_range",
+            "charge_buffer",
+            "range_hysteresis_pct",
             "solar_sensor",
             "charge_switch",
             "charge_current_number",
@@ -3218,7 +3245,7 @@ class TestOptionsFlowAllEntities:
             "modulate_min_interval",
         }
         # Verify all expected keys exist (consumption/production flow is alternative)
-        assert len(expected_keys) == 19
+        assert len(expected_keys) == 21
 
     def test_empty_optional_values_filtered(self):
         """Empty optional values should be filtered out on submission."""
@@ -3247,6 +3274,36 @@ class TestOptionsFlowAllEntities:
         }
         assert current.get("ev_power_sensor") == "sensor.ev_power"
         assert current.get("smoothing_window") == 120
+
+
+class TestHysteresisBufferValidation:
+    """Test that hysteresis must be ≤ buffer percentage (config flow validation)."""
+
+    def _validate_range_step(self, buffer_val: float, hyst_val: float) -> str | None:
+        """Simulate range step validation. Returns error key or None."""
+        if hyst_val > buffer_val:
+            return "hysteresis_exceeds_buffer"
+        return None
+
+    def test_hysteresis_below_buffer_ok(self):
+        """Hysteresis < buffer → no error."""
+        assert self._validate_range_step(10.0, 3.0) is None
+
+    def test_hysteresis_equal_buffer_ok(self):
+        """Hysteresis == buffer → no error."""
+        assert self._validate_range_step(5.0, 5.0) is None
+
+    def test_hysteresis_above_buffer_error(self):
+        """Hysteresis > buffer → error."""
+        assert self._validate_range_step(3.0, 5.0) == "hysteresis_exceeds_buffer"
+
+    def test_both_zero_ok(self):
+        """Both zero → no error."""
+        assert self._validate_range_step(0.0, 0.0) is None
+
+    def test_hysteresis_nonzero_buffer_zero_error(self):
+        """Hysteresis > 0 with buffer = 0 → error."""
+        assert self._validate_range_step(0.0, 3.0) == "hysteresis_exceeds_buffer"
 
 
 # ---------------------------------------------------------------------------

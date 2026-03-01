@@ -25,6 +25,8 @@ CONF_SOLAR_DONE_DURATION = "solar_done_duration"
 CONF_START_DELAY = "start_delay"
 CONF_STOP_DELAY = "stop_delay"
 CONF_MODULATE_MIN_INTERVAL = "modulate_min_interval"
+CONF_CHARGE_BUFFER = "charge_buffer"
+CONF_RANGE_HYSTERESIS_PCT = "range_hysteresis_pct"
 
 # --- Net Power Mode Values ---
 MODE_NET_ONLY = "net_only"
