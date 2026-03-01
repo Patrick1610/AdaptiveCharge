@@ -14,11 +14,15 @@ from .const import (
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
+    CONF_CHARGE_WINDOW_END,
+    CONF_CHARGE_WINDOW_START,
     CONF_CONSUMPTION_SENSOR,
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_MAX_CURRENT_LIMIT,
     CONF_MODULATE_MIN_INTERVAL,
+    CONF_NET_POWER_INVERT,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
     CONF_PRESENCE_ENTITY,
@@ -32,7 +36,10 @@ from .const import (
     CONF_STOP_DELAY,
     CONF_VOLTAGE_FALLBACK,
     CONF_VOLTAGE_SENSOR,
+    DEFAULT_CHARGE_WINDOW_END,
+    DEFAULT_CHARGE_WINDOW_START,
     DEFAULT_DESIRED_RANGE,
+    DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SMOOTHING_WINDOW,
@@ -96,7 +103,10 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_NET_POWER_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
-                )
+                ),
+                vol.Required(CONF_NET_POWER_INVERT, default=False): selector.selector(
+                    {"boolean": {}}
+                ),
             }
         )
         return self.async_show_form(step_id="net_power", data_schema=schema)
@@ -161,7 +171,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Step 4: vehicle entities."""
         if user_input is not None:
             self._data = {**self._data, **user_input}
-            return await self.async_step_range()
+            return await self.async_step_night_charging()
 
         schema = vol.Schema(
             {
@@ -178,10 +188,10 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="vehicle", data_schema=schema)
 
-    async def async_step_range(
+    async def async_step_night_charging(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 5: desired range."""
+        """Step 5: night charging window and target range."""
         if user_input is not None:
             self._data = {**self._data, **user_input}
             return await self.async_step_solar_optional()
@@ -198,10 +208,16 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             "mode": "box",
                         }
                     }
-                )
+                ),
+                vol.Required(CONF_CHARGE_WINDOW_START, default=DEFAULT_CHARGE_WINDOW_START): selector.selector(
+                    {"time": {}}
+                ),
+                vol.Required(CONF_CHARGE_WINDOW_END, default=DEFAULT_CHARGE_WINDOW_END): selector.selector(
+                    {"time": {}}
+                ),
             }
         )
-        return self.async_show_form(step_id="range", data_schema=schema)
+        return self.async_show_form(step_id="night_charging", data_schema=schema)
 
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
@@ -223,9 +239,13 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_actuators_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 7: optional charge switch and current number."""
+        """Step 7: optional charge switch, current number and max current limit."""
         if user_input is not None:
-            self._data = {**self._data, **{k: v for k, v in user_input.items() if v}}
+            filtered = {k: v for k, v in user_input.items() if v != "" and v is not None}
+            # Always keep max_current_limit even if zero
+            if CONF_MAX_CURRENT_LIMIT in user_input:
+                filtered[CONF_MAX_CURRENT_LIMIT] = user_input[CONF_MAX_CURRENT_LIMIT]
+            self._data = {**self._data, **filtered}
             return await self.async_step_advanced()
 
         schema = vol.Schema(
@@ -235,6 +255,17 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional(CONF_CHARGE_CURRENT_NUMBER): selector.selector(
                     {"entity": {"domain": "number"}}
+                ),
+                vol.Required(CONF_MAX_CURRENT_LIMIT, default=DEFAULT_MAX_CURRENT_LIMIT): selector.selector(
+                    {
+                        "number": {
+                            "min": 1,
+                            "max": 32,
+                            "step": 1,
+                            "unit_of_measurement": "A",
+                            "mode": "box",
+                        }
+                    }
                 ),
             }
         )

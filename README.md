@@ -4,7 +4,7 @@
 [![GitHub release](https://img.shields.io/github/release/Patrick1610/AdaptiveCharge.svg)](https://github.com/Patrick1610/AdaptiveCharge/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Version 2.2.0**
+> **Version 3.0.0**
 
 A Home Assistant custom integration that intelligently controls EV charging based on solar surplus power. It maximises self-consumption of solar energy by dynamically adjusting the charge current and automatically starting/stopping charging when surplus is available.
 
@@ -106,6 +106,8 @@ Choose how your household net power is measured:
 
 Select a `sensor` entity. **Sign convention**: positive = importing from grid, negative = exporting.
 
+- **Invert sensor sign**: enable this toggle if your meter reports the opposite sign (positive = export, negative = import). AdaptiveCharge will multiply the reading by −1.
+
 ### Step 2b – Consumption & Production _(consumption_production mode)_
 
 - **Consumption Sensor**: total house load (W or kW, always positive)
@@ -127,20 +129,25 @@ The integration computes `net = consumption − production`.
 - **Cable Sensor**: `binary_sensor` — on when cable is plugged in
 - **Current Range Sensor**: `sensor` reporting current battery range in km
 
-### Step 5 – Target Range
+### Step 5 – Night Charging
 
-Set the desired range in km for overnight charging (default: 100 km).
+Configure the overnight charge schedule:
+
+- **Target Range (km)**: the battery range target for the Charge Tonight feature (default: 100 km).
+- **Charging Window Start**: time (hh:mm) when the night charging window opens (default: 22:00).
+- **Charging Window End**: time (hh:mm) when the Charge Tonight switch is automatically turned off (default: 07:00).
 
 ### Step 6 – Solar Sensor _(optional)_
 
 A `sensor` for total solar yield (W or kW). Used to detect _Solar Done_ state.
 
-### Step 7 – Actuators _(optional)_
+### Step 7 – Actuators
 
-- **Charge Switch**: `switch` entity to enable/disable the EVSE
-- **Charge Current Number**: `number` entity to set the charge current (A)
+- **Charge Switch** *(optional)*: `switch` entity to enable/disable the EVSE
+- **Charge Current Number** *(optional)*: `number` entity to set the charge current (A)
+- **Max Charge Current (A)**: the maximum current AdaptiveCharge will ever send to the charger (default: 16 A). Set this to your charger's or cable's rated maximum. This can also be adjusted at runtime via the `number.max_current_limit_a` entity.
 
-If left empty the integration tracks state internally but does not issue actual commands.
+If the switch and current number are left empty, the integration tracks state internally but does not issue actual commands.
 
 ### Step 8 – Advanced Settings
 

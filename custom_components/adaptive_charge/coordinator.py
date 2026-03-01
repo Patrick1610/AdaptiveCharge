@@ -51,6 +51,10 @@ from .const import (
     CONF_STOP_DELAY,
     CONF_VOLTAGE_FALLBACK,
     CONF_VOLTAGE_SENSOR,
+    CONF_NET_POWER_INVERT,
+    CONF_CHARGE_WINDOW_START,
+    CONF_CHARGE_WINDOW_END,
+    CONF_MAX_CURRENT_LIMIT,
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
     CONFIDENCE_MEDIUM,
@@ -84,6 +88,8 @@ from .const import (
     DEFAULT_START_DELAY,
     DEFAULT_STOP_DELAY,
     DEFAULT_VOLTAGE_FALLBACK,
+    DEFAULT_CHARGE_WINDOW_START,
+    DEFAULT_CHARGE_WINDOW_END,
     DOMAIN,
     IMPORT_GUARD_OK,
     IMPORT_GUARD_REDUCING,
@@ -153,6 +159,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         self._net_power_mode: str = options.get(CONF_NET_POWER_MODE, MODE_NET_ONLY)
         self._net_power_sensor: str | None = options.get(CONF_NET_POWER_SENSOR)
+        self._net_power_invert: bool = bool(options.get(CONF_NET_POWER_INVERT, False))
         self._consumption_sensor: str | None = options.get(CONF_CONSUMPTION_SENSOR)
         self._production_sensor: str | None = options.get(CONF_PRODUCTION_SENSOR)
         self._ev_power_sensor: str | None = options.get(CONF_EV_POWER_SENSOR)
@@ -164,6 +171,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
+        self._charge_window_start: str = options.get(CONF_CHARGE_WINDOW_START, DEFAULT_CHARGE_WINDOW_START)
+        self._charge_window_end: str = options.get(CONF_CHARGE_WINDOW_END, DEFAULT_CHARGE_WINDOW_END)
 
         self._smoothing_window: int = int(options.get(CONF_SMOOTHING_WINDOW, DEFAULT_SMOOTHING_WINDOW))
         self._sample_interval: int = int(options.get(CONF_SAMPLE_INTERVAL, DEFAULT_SAMPLE_INTERVAL))
@@ -190,7 +199,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
-        self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
+        self._max_current_limit: float = float(options.get(CONF_MAX_CURRENT_LIMIT, DEFAULT_MAX_CURRENT_LIMIT))
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -293,21 +302,27 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._schedule_night_off()
 
     def _schedule_night_off(self) -> None:
-        """Schedule the nightly 05:00 charge_tonight reset."""
+        """Schedule the charge_tonight reset at the configured charge window end time."""
         if self._unsub_night_off:
             self._unsub_night_off()
+        parts = self._charge_window_end.split(":")
+        end_hour = int(parts[0])
+        end_minute = int(parts[1])
         self._unsub_night_off = async_track_time_change(
             self.hass,
             self._async_night_off,
-            hour=5,
-            minute=0,
+            hour=end_hour,
+            minute=end_minute,
             second=0,
         )
 
     @callback
     def _async_night_off(self, _now) -> None:
-        """Turn off charge_tonight at 05:00."""
-        _LOGGER.info("AdaptiveCharge: Night-Off — disabling charge_tonight at 05:00")
+        """Turn off charge_tonight at the configured charge window end time."""
+        _LOGGER.info(
+            "AdaptiveCharge: Night-Off — disabling charge_tonight at %s",
+            self._charge_window_end,
+        )
         self._charge_tonight = False
         self._schedule_night_off()
 
@@ -396,6 +411,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Compute net_w ---
         if self._net_power_mode == MODE_NET_ONLY:
             computed_net_w = net_w if net_w is not None else 0.0
+            if self._net_power_invert:
+                computed_net_w = -computed_net_w
         else:
             if consumption_w is not None and production_w is not None:
                 computed_net_w = consumption_w - production_w

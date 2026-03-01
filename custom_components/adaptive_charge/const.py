@@ -6,6 +6,7 @@ DOMAIN = "adaptive_charge"
 # --- Configuration Keys ---
 CONF_NET_POWER_MODE = "net_power_mode"
 CONF_NET_POWER_SENSOR = "net_power_sensor"
+CONF_NET_POWER_INVERT = "net_power_invert"
 CONF_CONSUMPTION_SENSOR = "consumption_sensor"
 CONF_PRODUCTION_SENSOR = "production_sensor"
 CONF_EV_POWER_SENSOR = "ev_power_sensor"
@@ -15,9 +16,12 @@ CONF_PRESENCE_ENTITY = "presence_entity"
 CONF_CABLE_SENSOR = "cable_sensor"
 CONF_CURRENT_RANGE_SENSOR = "current_range_sensor"
 CONF_DESIRED_RANGE = "desired_range"
+CONF_CHARGE_WINDOW_START = "charge_window_start"
+CONF_CHARGE_WINDOW_END = "charge_window_end"
 CONF_SOLAR_SENSOR = "solar_sensor"
 CONF_CHARGE_SWITCH = "charge_switch"
 CONF_CHARGE_CURRENT_NUMBER = "charge_current_number"
+CONF_MAX_CURRENT_LIMIT = "max_current_limit"
 CONF_SMOOTHING_WINDOW = "smoothing_window"
 CONF_SAMPLE_INTERVAL = "sample_interval"
 CONF_SOLAR_DONE_THRESHOLD = "solar_done_threshold"
@@ -44,6 +48,9 @@ CONFIDENCE_LOW = "low"
 # --- Defaults ---
 DEFAULT_DESIRED_RANGE = 100.0
 DEFAULT_VOLTAGE_FALLBACK = 230.0
+DEFAULT_CHARGE_WINDOW_START = "22:00:00"
+DEFAULT_CHARGE_WINDOW_END = "07:00:00"
+DEFAULT_MAX_CURRENT_LIMIT = 16
 DEFAULT_SMOOTHING_WINDOW = 120
 DEFAULT_SAMPLE_INTERVAL = 10
 DEFAULT_SOLAR_DONE_THRESHOLD = 50
@@ -51,7 +58,6 @@ DEFAULT_SOLAR_DONE_DURATION = 600
 DEFAULT_START_DELAY = 30
 DEFAULT_STOP_DELAY = 30
 DEFAULT_MODULATE_MIN_INTERVAL = 30
-DEFAULT_MAX_CURRENT_LIMIT = 16
 
 # --- Import guard (configurable fail-safe) ---
 CONF_IMPORT_GUARD_THRESHOLD = "import_guard_threshold_w"

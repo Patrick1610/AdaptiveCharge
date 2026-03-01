@@ -38,7 +38,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
         name="AdaptiveCharge",
         manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
-        sw_version="2.0.0",
+        sw_version="3.0.0",
     )
 
 
