@@ -33,6 +33,8 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_MAX_CURRENT_LIMIT,
+    CONF_MIN_CURRENT_LIMIT,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_HYSTERESIS_W,
@@ -210,8 +212,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
-        self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
-        self._min_current_limit: float = DEFAULT_MIN_CURRENT_LIMIT
+        self._max_current_limit: float = float(options.get(CONF_MAX_CURRENT_LIMIT, DEFAULT_MAX_CURRENT_LIMIT))
+        self._min_current_limit: float = float(options.get(CONF_MIN_CURRENT_LIMIT, DEFAULT_MIN_CURRENT_LIMIT))
         self._surplus_start_threshold_a: float = float(
             options.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A)
         )

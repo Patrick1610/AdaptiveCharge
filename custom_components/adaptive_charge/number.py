@@ -5,12 +5,11 @@ import logging
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DEFAULT_DESIRED_RANGE, DEFAULT_MAX_CURRENT_LIMIT, DOMAIN
+from .const import DEFAULT_DESIRED_RANGE, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info
 
@@ -27,7 +26,6 @@ async def async_setup_entry(
     async_add_entities(
         [
             DesiredRangeNumber(coordinator, entry),
-            MaxCurrentLimitNumber(coordinator, entry),
         ]
     )
 
@@ -68,42 +66,4 @@ class DesiredRangeNumber(RestoreEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         self._coordinator.set_desired_range(value)
-        self.async_write_ha_state()
-
-
-class MaxCurrentLimitNumber(RestoreEntity, NumberEntity):
-    """Number entity for the maximum charge current in A."""
-
-    _attr_name = "Max Current Limit (A)"
-    _attr_has_entity_name = True
-    _attr_native_min_value = 0
-    _attr_native_max_value = 16
-    _attr_native_step = 1
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_mode = NumberMode.BOX
-
-    def __init__(
-        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
-    ) -> None:
-        self._coordinator = coordinator
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_max_current_limit_a"
-        self._attr_device_info = device_info(entry)
-
-    async def async_added_to_hass(self) -> None:
-        """Restore previous state."""
-        await super().async_added_to_hass()
-        state = await self.async_get_last_state()
-        if state is not None:
-            try:
-                self._coordinator.set_max_current_limit(float(state.state))
-            except (ValueError, TypeError):
-                self._coordinator.set_max_current_limit(DEFAULT_MAX_CURRENT_LIMIT)
-
-    @property
-    def native_value(self) -> float:
-        return self._coordinator._max_current_limit
-
-    async def async_set_native_value(self, value: float) -> None:
-        self._coordinator.set_max_current_limit(value)
         self.async_write_ha_state()

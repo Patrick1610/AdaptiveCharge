@@ -18,7 +18,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 import homeassistant.util.dt as dt_util
 
-from .const import CONF_ENABLE_UTILITY_METERS, DOMAIN
+from .const import CONF_ENABLE_UTILITY_METERS, CONF_UTILITY_DAILY, CONF_UTILITY_MONTHLY, CONF_UTILITY_YEARLY, CONF_SPLIT_MISSED_SOLAR, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info
 
@@ -59,25 +59,46 @@ async def async_setup_entry(
     ]
 
     if options.get(CONF_ENABLE_UTILITY_METERS, False):
-        entities.extend([
-            # Utility meter sensors
-            EnergyChargedDailySensor(coordinator, entry),
-            EnergyChargedMonthlySensor(coordinator, entry),
-            EnergyChargedYearlySensor(coordinator, entry),
-            MissedSolarDailySensor(coordinator, entry),
-            MissedSolarMonthlySensor(coordinator, entry),
-            MissedSolarYearlySensor(coordinator, entry),
-            # Utility meters for missed solar sub-categories
-            MissedSolarAbsenceDailySensor(coordinator, entry),
-            MissedSolarAbsenceMonthlySensor(coordinator, entry),
-            MissedSolarAbsenceYearlySensor(coordinator, entry),
-            MissedSolarCableDailySensor(coordinator, entry),
-            MissedSolarCableMonthlySensor(coordinator, entry),
-            MissedSolarCableYearlySensor(coordinator, entry),
-            MissedSolarLowSurplusDailySensor(coordinator, entry),
-            MissedSolarLowSurplusMonthlySensor(coordinator, entry),
-            MissedSolarLowSurplusYearlySensor(coordinator, entry),
-        ])
+        # Default True for backward compatibility with existing installs
+        daily = options.get(CONF_UTILITY_DAILY, True)
+        monthly = options.get(CONF_UTILITY_MONTHLY, True)
+        yearly = options.get(CONF_UTILITY_YEARLY, True)
+        split = options.get(CONF_SPLIT_MISSED_SOLAR, True)
+
+        if daily:
+            entities.extend([
+                EnergyChargedDailySensor(coordinator, entry),
+                MissedSolarDailySensor(coordinator, entry),
+            ])
+        if monthly:
+            entities.extend([
+                EnergyChargedMonthlySensor(coordinator, entry),
+                MissedSolarMonthlySensor(coordinator, entry),
+            ])
+        if yearly:
+            entities.extend([
+                EnergyChargedYearlySensor(coordinator, entry),
+                MissedSolarYearlySensor(coordinator, entry),
+            ])
+        if split:
+            if daily:
+                entities.extend([
+                    MissedSolarAbsenceDailySensor(coordinator, entry),
+                    MissedSolarCableDailySensor(coordinator, entry),
+                    MissedSolarLowSurplusDailySensor(coordinator, entry),
+                ])
+            if monthly:
+                entities.extend([
+                    MissedSolarAbsenceMonthlySensor(coordinator, entry),
+                    MissedSolarCableMonthlySensor(coordinator, entry),
+                    MissedSolarLowSurplusMonthlySensor(coordinator, entry),
+                ])
+            if yearly:
+                entities.extend([
+                    MissedSolarAbsenceYearlySensor(coordinator, entry),
+                    MissedSolarCableYearlySensor(coordinator, entry),
+                    MissedSolarLowSurplusYearlySensor(coordinator, entry),
+                ])
 
     async_add_entities(entities)
 
@@ -583,7 +604,7 @@ class _UtilityMeterSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_entity_registry_enabled_default = False
+    _attr_entity_registry_enabled_default = True
 
     _source_key: str = ""
     _period: str = ""  # "daily", "monthly", "yearly"

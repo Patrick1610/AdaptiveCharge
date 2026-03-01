@@ -42,20 +42,21 @@
         }
       },
       "range": {
-        "title": "Target Range & Buffer",
-        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
+        "title": "Charge Buffer & Hysteresis",
+        "description": "Set the charge buffer and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)",
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
       "surplus_settings": {
-        "title": "Surplus Charging Thresholds",
-        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "title": "Surplus Charging Thresholds & Current Limits",
+        "description": "Set surplus start/stop thresholds and the min/max charge current. Min current must be ≤ max current.",
         "data": {
-          "surplus_start_threshold_a": "Start Threshold (A)",
-          "surplus_stop_threshold_a": "Stop Threshold (A)"
+          "surplus_start_threshold_a": "Surplus Start Threshold (A)",
+          "surplus_stop_threshold_a": "Surplus Stop Threshold (A)",
+          "min_current_limit": "Minimum Current (A)",
+          "max_current_limit": "Maximum Current (A)"
         }
       },
       "charge_window": {
@@ -96,14 +97,25 @@
           "modulate_min_interval": "Modulate Min Interval (s)",
           "import_guard_threshold_w": "Import Guard Threshold (W)",
           "import_guard_duration_s": "Import Guard Duration (s)",
-          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
+          "enable_utility_meters": "Enable Utility Meters"
+        }
+      },
+      "utility_meters": {
+        "title": "Utility Meter Periods",
+        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "data": {
+          "utility_daily": "Daily",
+          "utility_monthly": "Monthly",
+          "utility_yearly": "Yearly",
+          "split_missed_solar": "Split Missed Solar Sensors"
         }
       }
     },
     "error": {
       "unknown": "Unexpected error.",
       "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
-      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold.",
+      "min_exceeds_max": "Minimum current must be ≤ maximum current."
     },
     "abort": {
       "already_configured": "Integration is already configured."
@@ -157,20 +169,21 @@
         }
       },
       "range": {
-        "title": "Target Range & Buffer",
-        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
+        "title": "Charge Buffer & Hysteresis",
+        "description": "Set the charge buffer and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)",
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
       "surplus_settings": {
-        "title": "Surplus Charging Thresholds",
-        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "title": "Surplus Charging Thresholds & Current Limits",
+        "description": "Set surplus start/stop thresholds and the min/max charge current. Min current must be ≤ max current.",
         "data": {
-          "surplus_start_threshold_a": "Start Threshold (A)",
-          "surplus_stop_threshold_a": "Stop Threshold (A)"
+          "surplus_start_threshold_a": "Surplus Start Threshold (A)",
+          "surplus_stop_threshold_a": "Surplus Stop Threshold (A)",
+          "min_current_limit": "Minimum Current (A)",
+          "max_current_limit": "Maximum Current (A)"
         }
       },
       "charge_window": {
@@ -211,7 +224,17 @@
           "modulate_min_interval": "Modulate Min Interval (s)",
           "import_guard_threshold_w": "Import Guard Threshold (W)",
           "import_guard_duration_s": "Import Guard Duration (s)",
-          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
+          "enable_utility_meters": "Enable Utility Meters"
+        }
+      },
+      "utility_meters": {
+        "title": "Utility Meter Periods",
+        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "data": {
+          "utility_daily": "Daily",
+          "utility_monthly": "Monthly",
+          "utility_yearly": "Yearly",
+          "split_missed_solar": "Split Missed Solar Sensors"
         }
       }
     }
@@ -254,8 +277,7 @@
       "charging_active": {"name": "Charging Active"}
     },
     "number": {
-      "desired_range_km": {"name": "Desired Range (km)"},
-      "max_current_limit_a": {"name": "Max Current Limit (A)"}
+      "desired_range_km": {"name": "Desired Range (km)"}
     },
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},
