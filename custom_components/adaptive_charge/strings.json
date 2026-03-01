@@ -127,7 +127,8 @@
     "error": {
       "unknown": "Unexpected error.",
       "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
-      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold.",
+      "min_exceeds_max": "Minimum current must be ≤ maximum current."
     },
     "step": {
       "init": {
