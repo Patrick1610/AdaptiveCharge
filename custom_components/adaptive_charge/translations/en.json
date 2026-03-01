@@ -38,24 +38,26 @@
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
-          "battery_sensor": "Battery Level Sensor (optional)"
+          "battery_sensor": "Battery Level Sensor (optional)",
+          "charge_limit_sensor": "Charge Limit Sensor (optional)"
         }
       },
       "range": {
-        "title": "Target Range & Buffer",
-        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
+        "title": "Charge Buffer & Hysteresis",
+        "description": "Set the charge buffer and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)",
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
       "surplus_settings": {
-        "title": "Surplus Charging Thresholds",
-        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "title": "Surplus Charging Thresholds & Current Limits",
+        "description": "Set surplus start/stop thresholds and the min/max charge current. Min current must be ≤ max current.",
         "data": {
-          "surplus_start_threshold_a": "Start Threshold (A)",
-          "surplus_stop_threshold_a": "Stop Threshold (A)"
+          "surplus_start_threshold_a": "Surplus Start Threshold (A)",
+          "surplus_stop_threshold_a": "Surplus Stop Threshold (A)",
+          "min_current_limit": "Minimum Current (A)",
+          "max_current_limit": "Maximum Current (A)"
         }
       },
       "charge_window": {
@@ -70,9 +72,10 @@
       },
       "solar_optional": {
         "title": "Solar Sensor (Optional)",
-        "description": "Optionally select a sensor for solar generation to track solar done state.",
+        "description": "Optionally select a solar generation sensor and/or one or more forecast sensors (e.g. Solcast, Open-Meteo Solar). Multiple forecast sensors are summed.",
         "data": {
-          "solar_sensor": "Solar Sensor"
+          "solar_sensor": "Solar Sensor",
+          "forecast_sensors": "Solar Forecast Sensor(s)"
         }
       },
       "actuators_optional": {
@@ -96,14 +99,25 @@
           "modulate_min_interval": "Modulate Min Interval (s)",
           "import_guard_threshold_w": "Import Guard Threshold (W)",
           "import_guard_duration_s": "Import Guard Duration (s)",
-          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
+          "enable_utility_meters": "Enable Utility Meters"
+        }
+      },
+      "utility_meters": {
+        "title": "Utility Meter Periods",
+        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "data": {
+          "utility_daily": "Daily",
+          "utility_monthly": "Monthly",
+          "utility_yearly": "Yearly",
+          "split_missed_solar": "Split Missed Solar Sensors"
         }
       }
     },
     "error": {
       "unknown": "Unexpected error.",
       "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
-      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold.",
+      "min_exceeds_max": "Minimum current must be ≤ maximum current."
     },
     "abort": {
       "already_configured": "Integration is already configured."
@@ -113,7 +127,8 @@
     "error": {
       "unknown": "Unexpected error.",
       "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
-      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold.",
+      "min_exceeds_max": "Minimum current must be ≤ maximum current."
     },
     "step": {
       "init": {
@@ -157,20 +172,21 @@
         }
       },
       "range": {
-        "title": "Target Range & Buffer",
-        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
+        "title": "Charge Buffer & Hysteresis",
+        "description": "Set the charge buffer and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)",
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
       "surplus_settings": {
-        "title": "Surplus Charging Thresholds",
-        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "title": "Surplus Charging Thresholds & Current Limits",
+        "description": "Set surplus start/stop thresholds and the min/max charge current. Min current must be ≤ max current.",
         "data": {
-          "surplus_start_threshold_a": "Start Threshold (A)",
-          "surplus_stop_threshold_a": "Stop Threshold (A)"
+          "surplus_start_threshold_a": "Surplus Start Threshold (A)",
+          "surplus_stop_threshold_a": "Surplus Stop Threshold (A)",
+          "min_current_limit": "Minimum Current (A)",
+          "max_current_limit": "Maximum Current (A)"
         }
       },
       "charge_window": {
@@ -185,9 +201,10 @@
       },
       "solar_optional": {
         "title": "Solar Sensor (Optional)",
-        "description": "Optionally select a sensor for solar generation to track solar done state.",
+        "description": "Optionally select a solar generation sensor and/or one or more forecast sensors (e.g. Solcast, Open-Meteo Solar). Multiple forecast sensors are summed.",
         "data": {
-          "solar_sensor": "Solar Sensor"
+          "solar_sensor": "Solar Sensor",
+          "forecast_sensors": "Solar Forecast Sensor(s)"
         }
       },
       "actuators_optional": {
@@ -211,56 +228,137 @@
           "modulate_min_interval": "Modulate Min Interval (s)",
           "import_guard_threshold_w": "Import Guard Threshold (W)",
           "import_guard_duration_s": "Import Guard Duration (s)",
-          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
+          "enable_utility_meters": "Enable Utility Meters"
+        }
+      },
+      "utility_meters": {
+        "title": "Utility Meter Periods",
+        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "data": {
+          "utility_daily": "Daily",
+          "utility_monthly": "Monthly",
+          "utility_yearly": "Yearly",
+          "split_missed_solar": "Split Missed Solar Sensors"
         }
       }
     }
   },
   "entity": {
     "sensor": {
-      "net_surplus_excl_ev_w": {"name": "Net Surplus Excl EV (W)"},
-      "mode": {"name": "Mode"},
-      "input_skew_seconds": {"name": "Input Skew (s)"},
-      "import_guard_state": {"name": "Import Guard State"},
-      "last_action": {"name": "Last Action"},
-      "last_reason": {"name": "Last Reason"},
-      "current_setting": {"name": "Current Setting (A)"},
-      "available_current_decision": {"name": "Available Current Decision (A)"},
-      "alignment_diagnostics": {"name": "Alignment Diagnostics"},
-      "energy_charged_kwh": {"name": "Energy Charged (kWh)"},
-      "missed_solar_kwh": {"name": "Missed Solar (kWh)"},
-      "missed_solar_absence_kwh": {"name": "Missed Solar Absence (kWh)"},
-      "missed_solar_cable_kwh": {"name": "Missed Solar Cable (kWh)"},
-      "missed_solar_low_surplus_kwh": {"name": "Missed Solar Low Surplus (kWh)"},
-      "definitive_range_km": {"name": "Definitive Range (km)"},
-      "energy_charged_daily": {"name": "Energy Charged Daily (kWh)"},
-      "energy_charged_monthly": {"name": "Energy Charged Monthly (kWh)"},
-      "energy_charged_yearly": {"name": "Energy Charged Yearly (kWh)"},
-      "missed_solar_daily": {"name": "Missed Solar Daily (kWh)"},
-      "missed_solar_monthly": {"name": "Missed Solar Monthly (kWh)"},
-      "missed_solar_yearly": {"name": "Missed Solar Yearly (kWh)"},
-      "missed_solar_absence_daily": {"name": "Missed Solar Absence Daily (kWh)"},
-      "missed_solar_absence_monthly": {"name": "Missed Solar Absence Monthly (kWh)"},
-      "missed_solar_absence_yearly": {"name": "Missed Solar Absence Yearly (kWh)"},
-      "missed_solar_cable_daily": {"name": "Missed Solar Cable Daily (kWh)"},
-      "missed_solar_cable_monthly": {"name": "Missed Solar Cable Monthly (kWh)"},
-      "missed_solar_cable_yearly": {"name": "Missed Solar Cable Yearly (kWh)"},
-      "missed_solar_low_surplus_daily": {"name": "Missed Solar Low Surplus Daily (kWh)"},
-      "missed_solar_low_surplus_monthly": {"name": "Missed Solar Low Surplus Monthly (kWh)"},
-      "missed_solar_low_surplus_yearly": {"name": "Missed Solar Low Surplus Yearly (kWh)"}
+      "net_surplus_excl_ev_w": {
+        "name": "Net Surplus Excl EV (W)"
+      },
+      "mode": {
+        "name": "Mode"
+      },
+      "input_skew_seconds": {
+        "name": "Input Skew (s)"
+      },
+      "import_guard_state": {
+        "name": "Import Guard State"
+      },
+      "last_action": {
+        "name": "Last Action"
+      },
+      "last_reason": {
+        "name": "Last Reason"
+      },
+      "current_setting": {
+        "name": "Current Setting (A)"
+      },
+      "available_current_decision": {
+        "name": "Available Current Decision (A)"
+      },
+      "alignment_diagnostics": {
+        "name": "Alignment Diagnostics"
+      },
+      "energy_charged_kwh": {
+        "name": "Energy Charged (kWh)"
+      },
+      "missed_solar_kwh": {
+        "name": "Missed Solar (kWh)"
+      },
+      "missed_solar_absence_kwh": {
+        "name": "Missed Solar Absence (kWh)"
+      },
+      "missed_solar_cable_kwh": {
+        "name": "Missed Solar Cable (kWh)"
+      },
+      "missed_solar_low_surplus_kwh": {
+        "name": "Missed Solar Low Surplus (kWh)"
+      },
+      "definitive_range_km": {
+        "name": "Definitive Range (km)"
+      },
+      "energy_charged_daily": {
+        "name": "Energy Charged Daily (kWh)"
+      },
+      "energy_charged_monthly": {
+        "name": "Energy Charged Monthly (kWh)"
+      },
+      "energy_charged_yearly": {
+        "name": "Energy Charged Yearly (kWh)"
+      },
+      "missed_solar_daily": {
+        "name": "Missed Solar Daily (kWh)"
+      },
+      "missed_solar_monthly": {
+        "name": "Missed Solar Monthly (kWh)"
+      },
+      "missed_solar_yearly": {
+        "name": "Missed Solar Yearly (kWh)"
+      },
+      "missed_solar_absence_daily": {
+        "name": "Missed Solar Absence Daily (kWh)"
+      },
+      "missed_solar_absence_monthly": {
+        "name": "Missed Solar Absence Monthly (kWh)"
+      },
+      "missed_solar_absence_yearly": {
+        "name": "Missed Solar Absence Yearly (kWh)"
+      },
+      "missed_solar_cable_daily": {
+        "name": "Missed Solar Cable Daily (kWh)"
+      },
+      "missed_solar_cable_monthly": {
+        "name": "Missed Solar Cable Monthly (kWh)"
+      },
+      "missed_solar_cable_yearly": {
+        "name": "Missed Solar Cable Yearly (kWh)"
+      },
+      "missed_solar_low_surplus_daily": {
+        "name": "Missed Solar Low Surplus Daily (kWh)"
+      },
+      "missed_solar_low_surplus_monthly": {
+        "name": "Missed Solar Low Surplus Monthly (kWh)"
+      },
+      "missed_solar_low_surplus_yearly": {
+        "name": "Missed Solar Low Surplus Yearly (kWh)"
+      }
     },
     "binary_sensor": {
-      "force_charge": {"name": "Force Charge"},
-      "charging_active": {"name": "Charging Active"}
+      "force_charge": {
+        "name": "Force Charge"
+      },
+      "charging_active": {
+        "name": "Charging Active"
+      }
     },
     "number": {
-      "desired_range_km": {"name": "Desired Range (km)"},
-      "max_current_limit_a": {"name": "Max Current Limit (A)"}
+      "desired_range_km": {
+        "name": "Desired Range (km)"
+      }
     },
     "switch": {
-      "controller_enabled": {"name": "Controller Enabled"},
-      "charge_now": {"name": "Charge Now"},
-      "charge_tonight": {"name": "Charge Tonight"}
+      "controller_enabled": {
+        "name": "Controller Enabled"
+      },
+      "charge_now": {
+        "name": "Charge Now"
+      },
+      "charge_tonight": {
+        "name": "Charge Tonight"
+      }
     }
   }
 }

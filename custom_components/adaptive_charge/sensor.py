@@ -18,7 +18,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 import homeassistant.util.dt as dt_util
 
-from .const import CONF_ENABLE_UTILITY_METERS, DOMAIN
+from .const import CONF_ENABLE_UTILITY_METERS, CONF_UTILITY_DAILY, CONF_UTILITY_MONTHLY, CONF_UTILITY_YEARLY, CONF_SPLIT_MISSED_SOLAR, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info
 
@@ -54,30 +54,56 @@ async def async_setup_entry(
         MissedSolarAbsenceSensor(coordinator, entry),
         MissedSolarCableSensor(coordinator, entry),
         MissedSolarLowSurplusSensor(coordinator, entry),
-        # Range target
-        DefinitiveRangeSensor(coordinator, entry),
+        MissedSolarQuantizationSensor(coordinator, entry),
+        # Range thresholds
+        RangeUpperLimitSensor(coordinator, entry),
+        RangeLowerLimitSensor(coordinator, entry),
     ]
 
     if options.get(CONF_ENABLE_UTILITY_METERS, False):
-        entities.extend([
-            # Utility meter sensors
-            EnergyChargedDailySensor(coordinator, entry),
-            EnergyChargedMonthlySensor(coordinator, entry),
-            EnergyChargedYearlySensor(coordinator, entry),
-            MissedSolarDailySensor(coordinator, entry),
-            MissedSolarMonthlySensor(coordinator, entry),
-            MissedSolarYearlySensor(coordinator, entry),
-            # Utility meters for missed solar sub-categories
-            MissedSolarAbsenceDailySensor(coordinator, entry),
-            MissedSolarAbsenceMonthlySensor(coordinator, entry),
-            MissedSolarAbsenceYearlySensor(coordinator, entry),
-            MissedSolarCableDailySensor(coordinator, entry),
-            MissedSolarCableMonthlySensor(coordinator, entry),
-            MissedSolarCableYearlySensor(coordinator, entry),
-            MissedSolarLowSurplusDailySensor(coordinator, entry),
-            MissedSolarLowSurplusMonthlySensor(coordinator, entry),
-            MissedSolarLowSurplusYearlySensor(coordinator, entry),
-        ])
+        # Default True for backward compatibility with existing installs
+        daily = options.get(CONF_UTILITY_DAILY, True)
+        monthly = options.get(CONF_UTILITY_MONTHLY, True)
+        yearly = options.get(CONF_UTILITY_YEARLY, True)
+        split = options.get(CONF_SPLIT_MISSED_SOLAR, True)
+
+        if daily:
+            entities.extend([
+                EnergyChargedDailySensor(coordinator, entry),
+                MissedSolarDailySensor(coordinator, entry),
+            ])
+        if monthly:
+            entities.extend([
+                EnergyChargedMonthlySensor(coordinator, entry),
+                MissedSolarMonthlySensor(coordinator, entry),
+            ])
+        if yearly:
+            entities.extend([
+                EnergyChargedYearlySensor(coordinator, entry),
+                MissedSolarYearlySensor(coordinator, entry),
+            ])
+        if split:
+            if daily:
+                entities.extend([
+                    MissedSolarAbsenceDailySensor(coordinator, entry),
+                    MissedSolarCableDailySensor(coordinator, entry),
+                    MissedSolarLowSurplusDailySensor(coordinator, entry),
+                    MissedSolarQuantizationDailySensor(coordinator, entry),
+                ])
+            if monthly:
+                entities.extend([
+                    MissedSolarAbsenceMonthlySensor(coordinator, entry),
+                    MissedSolarCableMonthlySensor(coordinator, entry),
+                    MissedSolarLowSurplusMonthlySensor(coordinator, entry),
+                    MissedSolarQuantizationMonthlySensor(coordinator, entry),
+                ])
+            if yearly:
+                entities.extend([
+                    MissedSolarAbsenceYearlySensor(coordinator, entry),
+                    MissedSolarCableYearlySensor(coordinator, entry),
+                    MissedSolarLowSurplusYearlySensor(coordinator, entry),
+                    MissedSolarQuantizationYearlySensor(coordinator, entry),
+                ])
 
     async_add_entities(entities)
 
@@ -460,6 +486,7 @@ class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
                     float(attrs.get("missed_absence_kwh", 0)) * 1000.0,
                     float(attrs.get("missed_cable_kwh", 0)) * 1000.0,
                     float(attrs.get("missed_low_surplus_kwh", 0)) * 1000.0,
+                    float(attrs.get("missed_quantization_kwh", 0)) * 1000.0,
                 )
             except (ValueError, TypeError):
                 pass
@@ -482,6 +509,7 @@ class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             "missed_absence_kwh": data.get("missed_solar_absence_kwh", 0.0),
             "missed_cable_kwh": data.get("missed_solar_cable_kwh", 0.0),
             "missed_low_surplus_kwh": data.get("missed_solar_low_surplus_kwh", 0.0),
+            "missed_quantization_kwh": data.get("missed_solar_quantization_kwh", 0.0),
         }
 
 
@@ -538,39 +566,90 @@ class MissedSolarLowSurplusSensor(_MissedSolarSubSensor):
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_kwh"
 
 
+class MissedSolarQuantizationSensor(_MissedSolarSubSensor):
+    """Missed solar due to integer current steps while charging (fractional surplus)."""
+
+    _attr_name = "Missed Solar Quantization (kWh)"
+    _data_key = "missed_solar_quantization_kwh"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_kwh"
+
+
 # ---------------------------------------------------------------------------
-# Definitive range sensor (desired + buffer, with hysteresis attributes)
+# Range threshold sensors: upper limit (stop) and lower limit (start)
 # ---------------------------------------------------------------------------
 
-class DefinitiveRangeSensor(_BaseAdaptiveChargeSensor):
-    """Definitive target range = desired range + charge buffer, with hysteresis."""
+def _range_threshold_attributes(data: dict[str, Any]) -> dict[str, Any]:
+    """Common attributes for range threshold sensors."""
+    return {
+        "desired_range": data.get("desired_range"),
+        "charge_buffer_pct": data.get("charge_buffer"),
+        "effective_range": data.get("effective_range"),
+        "range_hysteresis_pct": data.get("range_hysteresis_pct"),
+        "range_hysteresis_km": data.get("range_hysteresis_km"),
+        "current_range": data.get("current_range"),
+        "need": data.get("need"),
+    }
 
-    _attr_name = "Definitive Range (km)"
+
+class RangeUpperLimitSensor(_BaseAdaptiveChargeSensor):
+    """Upper charge threshold: charging stops when current range reaches this value.
+
+    upper_limit = effective_range + hysteresis_km / 2
+    """
+
+    _attr_name = "Range Upper Limit (km)"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "km"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_definitive_range_km"
+        self._attr_unique_id = f"{entry.entry_id}_range_upper_limit_km"
 
     @property
     def native_value(self) -> float | None:
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.get("effective_range")
+        effective = self.coordinator.data.get("effective_range")
+        hyst = self.coordinator.data.get("range_hysteresis_km")
+        if effective is None or hyst is None:
+            return None
+        return round(effective + hyst / 2.0, 1)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        data = self.coordinator.data or {}
-        return {
-            "desired_range": data.get("desired_range"),
-            "charge_buffer_pct": data.get("charge_buffer"),
-            "effective_range": data.get("effective_range"),
-            "range_hysteresis_pct": data.get("range_hysteresis_pct"),
-            "range_hysteresis_km": data.get("range_hysteresis_km"),
-            "current_range": data.get("current_range"),
-            "need": data.get("need"),
-        }
+        return _range_threshold_attributes(self.coordinator.data or {})
+
+
+class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
+    """Lower charge threshold: charging starts when current range drops below this value.
+
+    lower_limit = effective_range - hysteresis_km / 2
+    """
+
+    _attr_name = "Range Lower Limit (km)"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "km"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_range_lower_limit_km"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        effective = self.coordinator.data.get("effective_range")
+        hyst = self.coordinator.data.get("range_hysteresis_km")
+        if effective is None or hyst is None:
+            return None
+        return round(effective - hyst / 2.0, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return _range_threshold_attributes(self.coordinator.data or {})
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +662,7 @@ class _UtilityMeterSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_entity_registry_enabled_default = False
+    _attr_entity_registry_enabled_default = True
 
     _source_key: str = ""
     _period: str = ""  # "daily", "monthly", "yearly"
@@ -849,3 +928,41 @@ class MissedSolarLowSurplusYearlySensor(_UtilityMeterSensor):
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_yearly"
+
+
+# --- Missed Solar Quantization utility meters ---
+
+class MissedSolarQuantizationDailySensor(_UtilityMeterSensor):
+    """Daily missed solar quantization utility meter."""
+
+    _attr_name = "Missed Solar Quantization Daily (kWh)"
+    _source_key = "missed_solar_quantization_kwh"
+    _period = "daily"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_daily"
+
+
+class MissedSolarQuantizationMonthlySensor(_UtilityMeterSensor):
+    """Monthly missed solar quantization utility meter."""
+
+    _attr_name = "Missed Solar Quantization Monthly (kWh)"
+    _source_key = "missed_solar_quantization_kwh"
+    _period = "monthly"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_monthly"
+
+
+class MissedSolarQuantizationYearlySensor(_UtilityMeterSensor):
+    """Yearly missed solar quantization utility meter."""
+
+    _attr_name = "Missed Solar Quantization Yearly (kWh)"
+    _source_key = "missed_solar_quantization_kwh"
+    _period = "yearly"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_yearly"

@@ -26,6 +26,8 @@ from .helpers import format_duration
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_LIMIT_SENSOR,
+    CONF_FORECAST_SENSORS,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -33,6 +35,8 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_MAX_CURRENT_LIMIT,
+    CONF_MIN_CURRENT_LIMIT,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_HYSTERESIS_W,
@@ -181,6 +185,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._cable_sensor: str | None = options.get(CONF_CABLE_SENSOR)
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
+        self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
+        self._forecast_sensors: list[str] = options.get(CONF_FORECAST_SENSORS, []) or []
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
@@ -210,8 +216,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
-        self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
-        self._min_current_limit: float = DEFAULT_MIN_CURRENT_LIMIT
+        self._max_current_limit: float = float(options.get(CONF_MAX_CURRENT_LIMIT, DEFAULT_MAX_CURRENT_LIMIT))
+        self._min_current_limit: float = float(options.get(CONF_MIN_CURRENT_LIMIT, DEFAULT_MIN_CURRENT_LIMIT))
         self._surplus_start_threshold_a: float = float(
             options.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A)
         )
@@ -288,6 +294,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_below_since: float | None = None
         self._import_guard_last_reduce_time: float | None = None
         self._import_guard_zero_since: float | None = None  # when we first held at 0A
+        self._ev_zero_since: float | None = None  # when EV power first read 0 while _charging_on
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
@@ -311,6 +318,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_absence_wh: float = 0.0
         self._missed_solar_cable_wh: float = 0.0
         self._missed_solar_low_surplus_wh: float = 0.0
+        self._missed_solar_quantization_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
         # Unsub for interval tracker and night-off timer
@@ -443,6 +451,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Phase 7b: Energy accumulation ---
         self._accumulate_energy(sensor_data, mono_now)
 
+        # --- Phase 7c: Stale charge detection ---
+        self._detect_stale_charge(sensor_data["ev_w"], mono_now)
+
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
             await self._run_control_logic(
@@ -491,6 +502,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         cable_connected = _get_bool_state(self.hass, self._cable_sensor)
         current_range = _get_float_state(self.hass, self._current_range_sensor)
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
+        charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
+
+        # Sum all forecast sensor values (each typically reports kWh remaining today)
+        forecast_kwh: float | None = None
+        for fid in self._forecast_sensors:
+            val = _get_float_state(self.hass, fid)
+            if val is not None:
+                forecast_kwh = (forecast_kwh or 0.0) + val
 
         net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
         consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
@@ -518,6 +537,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "cable_connected": cable_connected,
             "current_range": current_range,
             "battery_pct": battery_pct,
+            "charge_limit_pct": charge_limit_pct,
+            "forecast_kwh": forecast_kwh,
         }
 
     # ------------------------------------------------------------------
@@ -802,6 +823,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             elif surplus_a < self._surplus_start_threshold_a:
                 self._missed_solar_low_surplus_wh += missed_wh
 
+        # --- Quantization missed solar (fractional surplus lost to integer current steps) ---
+        if self._charging_on and self._current_mode == MODE_SURPLUS and surplus_w > 0:
+            ev_w_val = sensor_data.get("ev_w", 0.0) or 0.0
+            fractional_w = surplus_w - ev_w_val
+            if fractional_w > 0:
+                fractional_wh = fractional_w * dt_h
+                self._missed_solar_wh += fractional_wh
+                self._missed_solar_quantization_wh += fractional_wh
+
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
         self._energy_session_wh = 0.0
@@ -818,7 +848,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         force_charge: bool,
         ema_current_a: float,
     ) -> None:
-        """Detect cable plug-in events and schedule delayed action."""
+        """Detect cable plug-in/disconnect events and schedule delayed action."""
         if (
             self._controller_enabled
             and cable_connected is not None
@@ -832,8 +862,57 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     self._action_plug_in_delayed(force_charge, ema_current_a),
                     eager_start=False,
                 )
+            elif not cable_connected and self._cable_prev and self._charging_on:
+                # Cable disconnected while charging — stop immediately so that
+                # subsequent ticks correctly attribute missed solar to cable/absence.
+                self._cancel_pending()
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(0, self._action_stop_surplus),
+                    eager_start=False,
+                )
         if cable_connected is not None:
             self._cable_prev = cable_connected
+
+    # EV_ZERO_STALE_S: seconds of zero EV power (while charging_on) before
+    # the coordinator declares the car stopped independently.
+    _EV_ZERO_STALE_S: float = 60.0
+
+    def _detect_stale_charge(self, ev_w: float, mono_now: float) -> None:
+        """Reset _charging_on if the car has stopped drawing power for a sustained period.
+
+        Covers the case where the car independently stops charging (e.g. reaches
+        its charge limit, user disables charging via the car app) — the coordinator
+        would otherwise keep _charging_on=True indefinitely.
+        """
+        if not self._charging_on:
+            self._ev_zero_since = None
+            return
+
+        if ev_w > 0:
+            self._ev_zero_since = None
+            return
+
+        # ev_w == 0 while we think we're charging
+        if self._ev_zero_since is None:
+            self._ev_zero_since = mono_now
+            return
+
+        if (mono_now - self._ev_zero_since) >= self._EV_ZERO_STALE_S:
+            _LOGGER.info(
+                "AdaptiveCharge: EV power has been 0 for %.0fs while charging_on=True "
+                "— resetting to stopped (car stopped independently)",
+                mono_now - self._ev_zero_since,
+            )
+            self._charging_on = False
+            self._ev_zero_since = None
+            self._set_mode(MODE_STOPPED, "car_stopped_independently", "auto_rule")
+            self._last_action = "stale_charge_reset"
+            self._last_reason = "car_stopped_independently"
+            self._last_action_ts = mono_now
+            self._last_off_time = mono_now
+            self._committed_current = None
+            self._last_committed_int = None
+            self._last_commit_reason = "stale_charge_reset"
 
     # ------------------------------------------------------------------
     # Build data dict
@@ -867,6 +946,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "cable_connected": sensor_data["cable_connected"],
             "current_range": sensor_data["current_range"],
             "battery_pct": sensor_data.get("battery_pct"),
+            "charge_limit_pct": sensor_data.get("charge_limit_pct"),
+            "forecast_kwh": sensor_data.get("forecast_kwh"),
             "desired_range": self._desired_range,
             "effective_range": force_data["effective_range"],
             "range_hysteresis_pct": self._range_hysteresis_pct,
@@ -986,6 +1067,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "missed_solar_absence_kwh": round(self._missed_solar_absence_wh / 1000.0, 3),
             "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
             "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
+            "missed_solar_quantization_kwh": round(self._missed_solar_quantization_wh / 1000.0, 3),
         }
 
     # ------------------------------------------------------------------
@@ -1387,6 +1469,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
+        # Immediately set current to 0A so the EVSE cannot charge at any rate
+        # during the evaluation delay, regardless of its parked/default setting.
+        await self._set_charge_current(0)
         await asyncio.sleep(2)
         # Reset per-session energy counters on cable plug-in
         self.reset_session_energy()
@@ -1548,12 +1633,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_wh = missed_wh
 
     def restore_missed_solar_split(
-        self, absence_wh: float, cable_wh: float, low_surplus_wh: float
+        self, absence_wh: float, cable_wh: float, low_surplus_wh: float, quantization_wh: float = 0.0
     ) -> None:
         """Restore missed solar sub-category counters from persistent state."""
         self._missed_solar_absence_wh = absence_wh
         self._missed_solar_cable_wh = cable_wh
         self._missed_solar_low_surplus_wh = low_surplus_wh
+        self._missed_solar_quantization_wh = quantization_wh
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).
