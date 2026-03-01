@@ -670,7 +670,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         Symmetric hysteresis (Option B): the hysteresis band is centered on
         effective_range.  start threshold = effective_range - hyst/2,
         stop threshold = effective_range + hyst/2.
-        Hysteresis is always ≤ buffer (enforced in the config flow).
+
+        Both buffer and hysteresis are percentages of desired_range:
+          effective_range = desired_range × (1 + buffer%)
+          hysteresis_km   = desired_range × hysteresis%
+        This keeps them directly comparable so the constraint hyst ≤ buffer
+        (enforced in the config flow) guarantees the start threshold never
+        drops below desired_range.
         """
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
