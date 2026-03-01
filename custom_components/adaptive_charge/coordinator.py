@@ -49,6 +49,7 @@ from .const import (
     CONF_SOLAR_SENSOR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
+    CONF_VOLTAGE_FALLBACK,
     CONF_VOLTAGE_SENSOR,
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
@@ -82,6 +83,7 @@ from .const import (
     DEFAULT_SOLAR_DONE_THRESHOLD,
     DEFAULT_START_DELAY,
     DEFAULT_STOP_DELAY,
+    DEFAULT_VOLTAGE_FALLBACK,
     DOMAIN,
     IMPORT_GUARD_OK,
     IMPORT_GUARD_REDUCING,
@@ -155,6 +157,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._production_sensor: str | None = options.get(CONF_PRODUCTION_SENSOR)
         self._ev_power_sensor: str | None = options.get(CONF_EV_POWER_SENSOR)
         self._voltage_sensor: str | None = options.get(CONF_VOLTAGE_SENSOR)
+        self._voltage_fallback: float = float(options.get(CONF_VOLTAGE_FALLBACK, DEFAULT_VOLTAGE_FALLBACK))
         self._presence_entity: str | None = options.get(CONF_PRESENCE_ENTITY)
         self._cable_sensor: str | None = options.get(CONF_CABLE_SENSOR)
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
@@ -383,7 +386,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         else:
             ev_w = 0.0
 
-        voltage = voltage_raw if voltage_raw is not None else 230.0
+        voltage = voltage_raw if voltage_raw is not None else self._voltage_fallback
 
         if solar_raw is not None:
             solar_w = _to_watts(solar_raw, self._solar_sensor, self.hass)

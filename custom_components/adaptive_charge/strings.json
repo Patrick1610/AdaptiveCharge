@@ -25,10 +25,11 @@
       },
       "charger": {
         "title": "Charger Sensors",
-        "description": "Select sensors for EV power consumption and grid voltage.",
+        "description": "Select sensors for EV power consumption and grid voltage. The voltage sensor is optional; the fallback voltage is used when the sensor is unavailable or not provided.",
         "data": {
           "ev_power_sensor": "EV Power Sensor",
-          "voltage_sensor": "Voltage Sensor"
+          "voltage_sensor": "Voltage Sensor (optional)",
+          "voltage_fallback": "Voltage Fallback (V)"
         }
       },
       "vehicle": {

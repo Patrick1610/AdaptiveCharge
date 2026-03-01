@@ -1839,3 +1839,60 @@ class TestImportGuardLongRunData:
         assert import_guard_last_reduce_time is None
         assert import_below_since is None
         assert import_exceed_since is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: voltage fallback logic
+# ---------------------------------------------------------------------------
+
+class TestVoltageFallback:
+    """Test that the voltage fallback value is used correctly."""
+
+    DEFAULT_FALLBACK = 230.0
+
+    def _resolve_voltage(self, sensor_value: float | None, fallback: float) -> float:
+        """Mirror of coordinator voltage resolution logic."""
+        return sensor_value if sensor_value is not None else fallback
+
+    def test_sensor_value_used_when_available(self):
+        """When sensor returns a value, that value should be used."""
+        voltage = self._resolve_voltage(240.0, self.DEFAULT_FALLBACK)
+        assert voltage == 240.0
+
+    def test_fallback_used_when_sensor_unavailable(self):
+        """When sensor returns None, fallback should be used."""
+        voltage = self._resolve_voltage(None, self.DEFAULT_FALLBACK)
+        assert voltage == self.DEFAULT_FALLBACK
+
+    def test_fallback_used_when_no_sensor_configured(self):
+        """When no sensor is configured, fallback should be used (sensor is None)."""
+        sensor_value = None  # sensor not configured
+        voltage = self._resolve_voltage(sensor_value, 220.0)
+        assert voltage == 220.0
+
+    def test_custom_fallback_value_used(self):
+        """A custom configured fallback (not 230) should be respected."""
+        voltage = self._resolve_voltage(None, 120.0)
+        assert voltage == 120.0
+
+    def test_sensor_zero_not_replaced_by_fallback(self):
+        """A sensor returning 0.0 (valid reading) should NOT be replaced by fallback."""
+        voltage = self._resolve_voltage(0.0, self.DEFAULT_FALLBACK)
+        assert voltage == 0.0
+
+    def test_raw_current_uses_fallback_voltage(self):
+        """Current calculation uses the resolved (fallback) voltage correctly."""
+        # 3000 W surplus, fallback 230V, 3-phase
+        surplus_w = 3000.0
+        voltage = self._resolve_voltage(None, self.DEFAULT_FALLBACK)
+        raw_a = compute_raw_current(surplus_w, voltage)
+        expected = 3000.0 / (230.0 * 3.0)
+        assert abs(raw_a - expected) < 0.001
+
+    def test_raw_current_uses_sensor_voltage(self):
+        """Current calculation uses sensor voltage when sensor is available."""
+        surplus_w = 3000.0
+        voltage = self._resolve_voltage(240.0, self.DEFAULT_FALLBACK)
+        raw_a = compute_raw_current(surplus_w, voltage)
+        expected = 3000.0 / (240.0 * 3.0)
+        assert abs(raw_a - expected) < 0.001

@@ -30,6 +30,7 @@ from .const import (
     CONF_SOLAR_SENSOR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
+    CONF_VOLTAGE_FALLBACK,
     CONF_VOLTAGE_SENSOR,
     DEFAULT_DESIRED_RANGE,
     DEFAULT_MODULATE_MIN_INTERVAL,
@@ -39,6 +40,7 @@ from .const import (
     DEFAULT_SOLAR_DONE_THRESHOLD,
     DEFAULT_START_DELAY,
     DEFAULT_STOP_DELAY,
+    DEFAULT_VOLTAGE_FALLBACK,
     DOMAIN,
     MODE_CONSUMPTION_PRODUCTION,
     MODE_NET_ONLY,
@@ -124,7 +126,10 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 3: charger sensors."""
         if user_input is not None:
-            self._data = {**self._data, **user_input}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v != "" and v is not None}}
+            # Always store voltage_fallback (it may be the only voltage source)
+            if CONF_VOLTAGE_FALLBACK in user_input:
+                self._data[CONF_VOLTAGE_FALLBACK] = user_input[CONF_VOLTAGE_FALLBACK]
             return await self.async_step_vehicle()
 
         schema = vol.Schema(
@@ -132,8 +137,19 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_EV_POWER_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
                 ),
-                vol.Required(CONF_VOLTAGE_SENSOR): selector.selector(
+                vol.Optional(CONF_VOLTAGE_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
+                ),
+                vol.Required(CONF_VOLTAGE_FALLBACK, default=DEFAULT_VOLTAGE_FALLBACK): selector.selector(
+                    {
+                        "number": {
+                            "min": 100,
+                            "max": 260,
+                            "step": 1,
+                            "unit_of_measurement": "V",
+                            "mode": "box",
+                        }
+                    }
                 ),
             }
         )
