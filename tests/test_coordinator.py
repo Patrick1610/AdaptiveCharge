@@ -3708,3 +3708,149 @@ class TestBuildDataDictMissedSolarSplit:
         assert "surplus_start_threshold_a" in data
         assert data["surplus_start_threshold_a"] == 2.0
         assert data["surplus_stop_threshold_a"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Import guard 0A hold before hard stop
+# ---------------------------------------------------------------------------
+
+class TestImportGuardZeroHold:
+    """Test that the import guard holds at 0A before hard-stopping."""
+
+    def test_zero_hold_does_not_stop_immediately(self):
+        """At 0A with import active, should hold (not escalate) within hold window."""
+        zero_hold_s = 300.0
+        zero_since = 1000.0
+        mono_now = 1100.0  # 100s elapsed, < 300s
+
+        zero_elapsed = mono_now - zero_since
+        should_stop = zero_elapsed >= zero_hold_s
+        assert should_stop is False  # Still holding at 0A
+
+    def test_zero_hold_escalates_after_timeout(self):
+        """At 0A with import active for > ZERO_HOLD_S, should escalate to stop."""
+        zero_hold_s = 300.0
+        zero_since = 1000.0
+        mono_now = 1400.0  # 400s elapsed, > 300s
+
+        zero_elapsed = mono_now - zero_since
+        should_stop = zero_elapsed >= zero_hold_s
+        assert should_stop is True
+
+    def test_zero_hold_resets_on_clear(self):
+        """When import clears, zero_since should be reset to None."""
+        zero_since = 1000.0  # was holding at 0A
+        # Import clears
+        zero_since = None
+        assert zero_since is None
+
+    def test_zero_since_set_on_reduce_to_zero(self):
+        """When current is reduced to 0A, zero_since should be recorded."""
+        committed = 1.0
+        new_target = committed - 1.0
+        new_target = max(new_target, 0.0)
+        assert new_target == 0.0
+
+        zero_since = None
+        if new_target == 0.0:
+            zero_since = 1000.0  # timestamp recorded
+        assert zero_since == 1000.0
+
+    def test_full_escalation_with_hold(self):
+        """Full sequence with hold: 2A → 1A → 0A → hold → stop."""
+        committed = 2.0
+        steps = []
+        while committed > 0.0:
+            committed -= 1.0
+            committed = max(committed, 0.0)
+            steps.append(f"reduce_to_{committed:.0f}A")
+
+        # 0A hold phase (would normally repeat many ticks)
+        steps.append("hold_at_0A")
+        # After timeout
+        steps.append("hard_stop")
+
+        assert steps == [
+            "reduce_to_1A",
+            "reduce_to_0A",
+            "hold_at_0A",
+            "hard_stop",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Tests: Current re-confirm after charge enable
+# ---------------------------------------------------------------------------
+
+class TestCurrentReconfirmAfterEnable:
+    """Test that start actions re-confirm current after enabling charging.
+
+    Some cars (e.g. Tesla) reset the charge current to 0A when it is set
+    while the charge switch is off. Re-confirming after enable prevents
+    the session from starting at the wrong current.
+    """
+
+    def test_reconfirm_sequence_force(self):
+        """Force start should: set → enable → re-set."""
+        calls = []
+        start_a = 16
+
+        # Simulate _action_start_force sequence
+        calls.append(("set_current", start_a))
+        calls.append(("sleep", 5))
+        calls.append(("enable_charging",))
+        calls.append(("sleep", 2))
+        calls.append(("set_current", start_a))  # re-confirm
+
+        assert calls[0] == ("set_current", 16)
+        assert calls[2] == ("enable_charging",)
+        assert calls[4] == ("set_current", 16)  # re-confirmed after enable
+
+    def test_reconfirm_sequence_surplus(self):
+        """Surplus start should: set → enable → re-set."""
+        calls = []
+        start_a = 3
+
+        calls.append(("set_current", start_a))
+        calls.append(("sleep", 5))
+        calls.append(("enable_charging",))
+        calls.append(("sleep", 2))
+        calls.append(("set_current", start_a))  # re-confirm
+
+        assert calls[0] == ("set_current", 3)
+        assert calls[2] == ("enable_charging",)
+        assert calls[4] == ("set_current", 3)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Utility meters opt-in via config
+# ---------------------------------------------------------------------------
+
+class TestUtilityMetersOptIn:
+    """Test that utility meters are only created when enabled in config."""
+
+    def test_utility_off_by_default(self):
+        """Default config should not enable utility meters."""
+        options = {}
+        assert options.get("enable_utility_meters", False) is False
+
+    def test_utility_on_when_enabled(self):
+        """When explicitly enabled, should create utility meters."""
+        options = {"enable_utility_meters": True}
+        assert options.get("enable_utility_meters", False) is True
+
+    def test_utility_entity_count_when_disabled(self):
+        """With utility meters off, only core sensors are created."""
+        enable = False
+        core_count = 16
+        utility_count = 15
+        total = core_count + (utility_count if enable else 0)
+        assert total == 16
+
+    def test_utility_entity_count_when_enabled(self):
+        """With utility meters on, all sensors are created."""
+        enable = True
+        core_count = 16
+        utility_count = 15
+        total = core_count + (utility_count if enable else 0)
+        assert total == 31

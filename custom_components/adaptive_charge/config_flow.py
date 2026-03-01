@@ -19,6 +19,7 @@ from .const import (
     CONF_CONSUMPTION_SENSOR,
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
+    CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
@@ -374,6 +375,9 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
+                vol.Optional(
+                    CONF_ENABLE_UTILITY_METERS, default=False
+                ): selector.selector({"boolean": {}}),
             }
         )
         return self.async_show_form(step_id="advanced", data_schema=schema)
@@ -731,6 +735,10 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
+                vol.Optional(
+                    CONF_ENABLE_UTILITY_METERS,
+                    default=bool(current.get(CONF_ENABLE_UTILITY_METERS, False)),
+                ): selector.selector({"boolean": {}}),
             }
         )
         return self.async_show_form(step_id="advanced", data_schema=schema)

@@ -18,7 +18,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 import homeassistant.util.dt as dt_util
 
-from .const import DOMAIN
+from .const import CONF_ENABLE_UTILITY_METERS, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info
 
@@ -32,30 +32,34 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensor entities."""
     coordinator: AdaptiveChargeCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            SurplusExclEvSensor(coordinator, entry),
-            # Mode state machine
-            ModeSensor(coordinator, entry),
-            # Alignment / skew (disabled by default, data available as attribute)
-            InputSkewSensor(coordinator, entry),
-            # Import guard
-            ImportGuardStateSensor(coordinator, entry),
-            # Diagnostics
-            LastActionSensor(coordinator, entry),
-            LastReasonSensor(coordinator, entry),
-            CurrentSettingSensor(coordinator, entry),
-            AvailableCurrentDecisionSensor(coordinator, entry),
-            AlignmentDiagnosticSensor(coordinator, entry),
-            # Energy tracking
-            EnergyChargedSensor(coordinator, entry),
-            MissedSolarSensor(coordinator, entry),
-            # Missed solar sub-categories
-            MissedSolarAbsenceSensor(coordinator, entry),
-            MissedSolarCableSensor(coordinator, entry),
-            MissedSolarLowSurplusSensor(coordinator, entry),
-            # Range target
-            DefinitiveRangeSensor(coordinator, entry),
+    options = {**entry.data, **entry.options}
+    entities: list[SensorEntity] = [
+        SurplusExclEvSensor(coordinator, entry),
+        # Mode state machine
+        ModeSensor(coordinator, entry),
+        # Alignment / skew (disabled by default, data available as attribute)
+        InputSkewSensor(coordinator, entry),
+        # Import guard
+        ImportGuardStateSensor(coordinator, entry),
+        # Diagnostics
+        LastActionSensor(coordinator, entry),
+        LastReasonSensor(coordinator, entry),
+        CurrentSettingSensor(coordinator, entry),
+        AvailableCurrentDecisionSensor(coordinator, entry),
+        AlignmentDiagnosticSensor(coordinator, entry),
+        # Energy tracking
+        EnergyChargedSensor(coordinator, entry),
+        MissedSolarSensor(coordinator, entry),
+        # Missed solar sub-categories
+        MissedSolarAbsenceSensor(coordinator, entry),
+        MissedSolarCableSensor(coordinator, entry),
+        MissedSolarLowSurplusSensor(coordinator, entry),
+        # Range target
+        DefinitiveRangeSensor(coordinator, entry),
+    ]
+
+    if options.get(CONF_ENABLE_UTILITY_METERS, False):
+        entities.extend([
             # Utility meter sensors
             EnergyChargedDailySensor(coordinator, entry),
             EnergyChargedMonthlySensor(coordinator, entry),
@@ -73,8 +77,9 @@ async def async_setup_entry(
             MissedSolarLowSurplusDailySensor(coordinator, entry),
             MissedSolarLowSurplusMonthlySensor(coordinator, entry),
             MissedSolarLowSurplusYearlySensor(coordinator, entry),
-        ]
-    )
+        ])
+
+    async_add_entities(entities)
 
 
 class _BaseAdaptiveChargeSensor(CoordinatorEntity, SensorEntity):

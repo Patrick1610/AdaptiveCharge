@@ -29,6 +29,7 @@ CONF_CHARGE_BUFFER = "charge_buffer"
 CONF_RANGE_HYSTERESIS_PCT = "range_hysteresis_pct"
 CONF_SURPLUS_START_THRESHOLD_A = "surplus_start_threshold_a"
 CONF_SURPLUS_STOP_THRESHOLD_A = "surplus_stop_threshold_a"
+CONF_ENABLE_UTILITY_METERS = "enable_utility_meters"
 CONF_TONIGHT_START_HOUR = "tonight_start_hour"
 CONF_TONIGHT_START_MINUTE = "tonight_start_minute"
 CONF_NIGHT_OFF_HOUR = "night_off_hour"
@@ -83,6 +84,7 @@ CONF_IMPORT_GUARD_SETTLE_S = "import_guard_settle_s"
 DEFAULT_IMPORT_GUARD_HYSTERESIS_W = 50.0
 DEFAULT_IMPORT_GUARD_CLEAR_DURATION_S = 20.0
 DEFAULT_IMPORT_GUARD_SETTLE_S = 30.0
+DEFAULT_IMPORT_GUARD_ZERO_HOLD_S = 300.0  # hold at 0A for 5 min before hard stop
 
 # Import guard states
 IMPORT_GUARD_OK = "ok"

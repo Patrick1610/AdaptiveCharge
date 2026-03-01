@@ -93,7 +93,8 @@
           "solar_done_duration": "Solar Done Duration (s)",
           "start_delay": "Start Delay (s)",
           "stop_delay": "Stop Delay (s)",
-          "modulate_min_interval": "Modulate Min Interval (s)"
+          "modulate_min_interval": "Modulate Min Interval (s)",
+          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
         }
       }
     },
@@ -200,7 +201,8 @@
           "solar_done_duration": "Solar Done Duration (s)",
           "start_delay": "Start Delay (s)",
           "stop_delay": "Stop Delay (s)",
-          "modulate_min_interval": "Modulate Min Interval (s)"
+          "modulate_min_interval": "Modulate Min Interval (s)",
+          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
         }
       }
     }

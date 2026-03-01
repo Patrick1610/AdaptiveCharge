@@ -76,6 +76,7 @@ from .const import (
     DEFAULT_IMPORT_GUARD_HYSTERESIS_W,
     DEFAULT_IMPORT_GUARD_SETTLE_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
+    DEFAULT_IMPORT_GUARD_ZERO_HOLD_S,
     DEFAULT_IMPORT_SAFETY_DURATION_S,
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
@@ -286,6 +287,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_state_since: float | None = None
         self._import_below_since: float | None = None
         self._import_guard_last_reduce_time: float | None = None
+        self._import_guard_zero_since: float | None = None  # when we first held at 0A
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
@@ -1029,6 +1031,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 self._import_guard_state_since = mono_now
                 self._import_below_since = None
                 self._import_guard_last_reduce_time = None
+                self._import_guard_zero_since = None
         else:
             # Between clear_threshold and threshold — hold current state (dead zone)
             self._import_exceed_since = None
@@ -1061,6 +1064,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
+        self._import_guard_zero_since = None
         await asyncio.sleep(10)
         await self._set_charge_current(int(self._max_current_limit))
 
@@ -1104,8 +1108,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Import safety: escalation ladder ---
         # Step 1: Reduce current by 1A (soft mitigation)
         # Step 2: Hold / settle window to observe net import improvement
-        # Step 3: Reduce to 0A (minimum current, charger stays on)
-        # Step 4: Only then hard stop / charger off (hard mitigation)
+        # Step 3: Reduce to 0A (keep session alive, no power draw)
+        # Step 4: Hold at 0A for up to ZERO_HOLD_S before hard stop
+        # Step 5: Only then hard stop / charger off (hard mitigation)
         if import_safety and self._charging_on and self._current_mode == MODE_SURPLUS:
             # Respect settle window after last reduction
             if (
@@ -1121,21 +1126,30 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 new_target = max(new_target, 0.0)
                 self._import_guard_last_reduce_time = mono_now
                 self._import_guard_state = IMPORT_GUARD_REDUCING
+                if new_target == 0.0:
+                    self._import_guard_zero_since = mono_now
                 await self._commit_current(
                     new_target, mono_now, reason="import_guard_reduce"
                 )
                 self._last_reason = "import_guard_reduce"
             else:
-                # Already at 0A — escalate to hard stop after settle window
-                self._cancel_pending()
-                self._pending_task = self.hass.async_create_task(
-                    self._debounced(0, self._action_stop_surplus),
-                    eager_start=False,
-                )
-                self._import_guard_state = IMPORT_GUARD_STOPPED
-                self._last_commit_reason = "import_guard_escalate_stop"
-                self._last_reason = "import_guard_escalate_stop"
-                self._last_action_ts = time.monotonic()
+                # At 0A — hold for ZERO_HOLD_S before escalating to hard stop
+                if self._import_guard_zero_since is None:
+                    self._import_guard_zero_since = mono_now
+                zero_elapsed = mono_now - self._import_guard_zero_since
+                if zero_elapsed >= DEFAULT_IMPORT_GUARD_ZERO_HOLD_S:
+                    # Held at 0A long enough — escalate to hard stop
+                    self._cancel_pending()
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(0, self._action_stop_surplus),
+                        eager_start=False,
+                    )
+                    self._import_guard_state = IMPORT_GUARD_STOPPED
+                    self._last_commit_reason = "import_guard_escalate_stop"
+                    self._last_reason = "import_guard_escalate_stop"
+                    self._last_action_ts = time.monotonic()
+                    self._import_guard_zero_since = None
+                # else: continue holding at 0A (session alive, no power)
             return
 
         # --- Start surplus charging ---
@@ -1300,6 +1314,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         await self._set_charge_current(start_a)
         await asyncio.sleep(5)
         await self._enable_charging()
+        await asyncio.sleep(2)
+        # Re-confirm current after enabling — some cars (e.g. Tesla) reset
+        # the current to 0 when it is set while the charge switch is off.
+        await self._set_charge_current(start_a)
         self._charging_on = True
         self._set_mode(MODE_FORCE, "force_charge_active", source)
         self._last_action = "start_force"
@@ -1331,6 +1349,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         await self._set_charge_current(current_a)
         await asyncio.sleep(5)
         await self._enable_charging()
+        await asyncio.sleep(2)
+        # Re-confirm current after enabling — some cars reset the current
+        # when it is set while the charge switch is off.
+        await self._set_charge_current(current_a)
         self._charging_on = True
         self._set_mode(MODE_SURPLUS, "surplus_above_threshold", "auto_rule")
         self._last_action = f"start_surplus_{current_a}A"
@@ -1358,6 +1380,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_active = False
         self._import_guard_state = IMPORT_GUARD_OK
         self._import_guard_last_reduce_time = None
+        self._import_guard_zero_since = None
         self._import_below_since = None
         self._import_exceed_since = None
         await asyncio.sleep(10)
