@@ -27,6 +27,12 @@ CONF_STOP_DELAY = "stop_delay"
 CONF_MODULATE_MIN_INTERVAL = "modulate_min_interval"
 CONF_CHARGE_BUFFER = "charge_buffer"
 CONF_RANGE_HYSTERESIS_PCT = "range_hysteresis_pct"
+CONF_SURPLUS_START_THRESHOLD_A = "surplus_start_threshold_a"
+CONF_SURPLUS_STOP_THRESHOLD_A = "surplus_stop_threshold_a"
+CONF_TONIGHT_START_HOUR = "tonight_start_hour"
+CONF_TONIGHT_START_MINUTE = "tonight_start_minute"
+CONF_NIGHT_OFF_HOUR = "night_off_hour"
+CONF_NIGHT_OFF_MINUTE = "night_off_minute"
 
 # --- Net Power Mode Values ---
 MODE_NET_ONLY = "net_only"
@@ -54,6 +60,8 @@ DEFAULT_STOP_DELAY = 30
 DEFAULT_MODULATE_MIN_INTERVAL = 30
 DEFAULT_MAX_CURRENT_LIMIT = 16
 DEFAULT_MIN_CURRENT_LIMIT = 0
+DEFAULT_SURPLUS_START_THRESHOLD_A = 2
+DEFAULT_SURPLUS_STOP_THRESHOLD_A = 1
 DEFAULT_CHARGE_BUFFER = 0
 DEFAULT_RANGE_HYSTERESIS_PCT = 3.0
 DEFAULT_TONIGHT_REENTRY_CURRENT_A = 5
@@ -103,7 +111,7 @@ DEFAULT_SETTLING_DURATION_S = 10.0
 DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S = 10.0
 
 # --- Platforms ---
-PLATFORMS = ["sensor", "binary_sensor", "number", "switch", "time"]
+PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]
 
 # --- Service names ---
 SERVICE_FORCE_START = "force_start"

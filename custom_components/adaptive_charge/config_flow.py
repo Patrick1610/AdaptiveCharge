@@ -23,6 +23,8 @@ from .const import (
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
+    CONF_NIGHT_OFF_HOUR,
+    CONF_NIGHT_OFF_MINUTE,
     CONF_PRESENCE_ENTITY,
     CONF_PRODUCTION_SENSOR,
     CONF_RANGE_HYSTERESIS_PCT,
@@ -33,10 +35,16 @@ from .const import (
     CONF_SOLAR_SENSOR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
+    CONF_SURPLUS_START_THRESHOLD_A,
+    CONF_SURPLUS_STOP_THRESHOLD_A,
+    CONF_TONIGHT_START_HOUR,
+    CONF_TONIGHT_START_MINUTE,
     CONF_VOLTAGE_SENSOR,
     DEFAULT_CHARGE_BUFFER,
     DEFAULT_DESIRED_RANGE,
     DEFAULT_MODULATE_MIN_INTERVAL,
+    DEFAULT_NIGHT_OFF_HOUR,
+    DEFAULT_NIGHT_OFF_MINUTE,
     DEFAULT_RANGE_HYSTERESIS_PCT,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SMOOTHING_WINDOW,
@@ -44,6 +52,10 @@ from .const import (
     DEFAULT_SOLAR_DONE_THRESHOLD,
     DEFAULT_START_DELAY,
     DEFAULT_STOP_DELAY,
+    DEFAULT_SURPLUS_START_THRESHOLD_A,
+    DEFAULT_SURPLUS_STOP_THRESHOLD_A,
+    DEFAULT_TONIGHT_START_HOUR,
+    DEFAULT_TONIGHT_START_MINUTE,
     DOMAIN,
     MODE_CONSUMPTION_PRODUCTION,
     MODE_NET_ONLY,
@@ -182,7 +194,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_RANGE_HYSTERESIS_PCT] = "hysteresis_exceeds_buffer"
             else:
                 self._data = {**self._data, **user_input}
-                return await self.async_step_solar_optional()
+                return await self.async_step_surplus_settings()
 
         schema = vol.Schema(
             {
@@ -223,10 +235,62 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="range", data_schema=schema, errors=errors)
 
+    async def async_step_surplus_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 6: surplus charging thresholds."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            start_val = float(user_input.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A))
+            stop_val = float(user_input.get(CONF_SURPLUS_STOP_THRESHOLD_A, DEFAULT_SURPLUS_STOP_THRESHOLD_A))
+            if stop_val > start_val:
+                errors[CONF_SURPLUS_STOP_THRESHOLD_A] = "stop_exceeds_start"
+            else:
+                self._data = {**self._data, **user_input}
+                return await self.async_step_charge_window()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_SURPLUS_START_THRESHOLD_A, default=DEFAULT_SURPLUS_START_THRESHOLD_A): selector.selector(
+                    {"number": {"min": 1, "max": 16, "step": 1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(CONF_SURPLUS_STOP_THRESHOLD_A, default=DEFAULT_SURPLUS_STOP_THRESHOLD_A): selector.selector(
+                    {"number": {"min": 1, "max": 16, "step": 1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+            }
+        )
+        return self.async_show_form(step_id="surplus_settings", data_schema=schema, errors=errors)
+
+    async def async_step_charge_window(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 7: charge time window (earliest start, night off)."""
+        if user_input is not None:
+            self._data = {**self._data, **user_input}
+            return await self.async_step_solar_optional()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_TONIGHT_START_HOUR, default=DEFAULT_TONIGHT_START_HOUR): selector.selector(
+                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
+                ),
+                vol.Required(CONF_TONIGHT_START_MINUTE, default=DEFAULT_TONIGHT_START_MINUTE): selector.selector(
+                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
+                ),
+                vol.Required(CONF_NIGHT_OFF_HOUR, default=DEFAULT_NIGHT_OFF_HOUR): selector.selector(
+                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
+                ),
+                vol.Required(CONF_NIGHT_OFF_MINUTE, default=DEFAULT_NIGHT_OFF_MINUTE): selector.selector(
+                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
+                ),
+            }
+        )
+        return self.async_show_form(step_id="charge_window", data_schema=schema)
+
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 6: optional solar sensor."""
+        """Step 8: optional solar sensor."""
         if user_input is not None:
             self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_actuators_optional()
@@ -474,7 +538,7 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_RANGE_HYSTERESIS_PCT] = "hysteresis_exceeds_buffer"
             else:
                 self._data.update(user_input)
-                return await self.async_step_solar_optional()
+                return await self.async_step_surplus_settings()
 
         schema = vol.Schema(
             {
@@ -499,6 +563,78 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="range", data_schema=schema, errors=errors)
+
+    async def async_step_surplus_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 6: surplus charging thresholds."""
+        current = self._current()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            start_val = float(user_input.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A))
+            stop_val = float(user_input.get(CONF_SURPLUS_STOP_THRESHOLD_A, DEFAULT_SURPLUS_STOP_THRESHOLD_A))
+            if stop_val > start_val:
+                errors[CONF_SURPLUS_STOP_THRESHOLD_A] = "stop_exceeds_start"
+            else:
+                self._data.update(user_input)
+                return await self.async_step_charge_window()
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SURPLUS_START_THRESHOLD_A,
+                    default=int(current.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A)),
+                ): selector.selector(
+                    {"number": {"min": 1, "max": 16, "step": 1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_SURPLUS_STOP_THRESHOLD_A,
+                    default=int(current.get(CONF_SURPLUS_STOP_THRESHOLD_A, DEFAULT_SURPLUS_STOP_THRESHOLD_A)),
+                ): selector.selector(
+                    {"number": {"min": 1, "max": 16, "step": 1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+            }
+        )
+        return self.async_show_form(step_id="surplus_settings", data_schema=schema, errors=errors)
+
+    async def async_step_charge_window(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Step 7: charge time window (earliest start, night off)."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_solar_optional()
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_TONIGHT_START_HOUR,
+                    default=int(current.get(CONF_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_HOUR)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_TONIGHT_START_MINUTE,
+                    default=int(current.get(CONF_TONIGHT_START_MINUTE, DEFAULT_TONIGHT_START_MINUTE)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_NIGHT_OFF_HOUR,
+                    default=int(current.get(CONF_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_HOUR)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_NIGHT_OFF_MINUTE,
+                    default=int(current.get(CONF_NIGHT_OFF_MINUTE, DEFAULT_NIGHT_OFF_MINUTE)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
+                ),
+            }
+        )
+        return self.async_show_form(step_id="charge_window", data_schema=schema)
 
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None

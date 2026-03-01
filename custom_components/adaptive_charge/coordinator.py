@@ -41,6 +41,8 @@ from .const import (
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
+    CONF_NIGHT_OFF_HOUR,
+    CONF_NIGHT_OFF_MINUTE,
     CONF_PRESENCE_ENTITY,
     CONF_PRODUCTION_SENSOR,
     CONF_RANGE_HYSTERESIS_PCT,
@@ -51,6 +53,10 @@ from .const import (
     CONF_SOLAR_SENSOR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
+    CONF_SURPLUS_START_THRESHOLD_A,
+    CONF_SURPLUS_STOP_THRESHOLD_A,
+    CONF_TONIGHT_START_HOUR,
+    CONF_TONIGHT_START_MINUTE,
     CONF_VOLTAGE_SENSOR,
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
@@ -76,6 +82,8 @@ from .const import (
     DEFAULT_MAX_STEP_A,
     DEFAULT_MIN_CURRENT_LIMIT,
     DEFAULT_RANGE_HYSTERESIS_PCT,
+    DEFAULT_SURPLUS_START_THRESHOLD_A,
+    DEFAULT_SURPLUS_STOP_THRESHOLD_A,
     DEFAULT_TONIGHT_REENTRY_CURRENT_A,
     DEFAULT_TONIGHT_START_HOUR,
     DEFAULT_TONIGHT_START_MINUTE,
@@ -203,12 +211,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
         self._min_current_limit: float = DEFAULT_MIN_CURRENT_LIMIT
+        self._surplus_start_threshold_a: float = float(
+            options.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A)
+        )
+        self._surplus_stop_threshold_a: float = float(
+            options.get(CONF_SURPLUS_STOP_THRESHOLD_A, DEFAULT_SURPLUS_STOP_THRESHOLD_A)
+        )
         self._charge_buffer: float = float(options.get(CONF_CHARGE_BUFFER, DEFAULT_CHARGE_BUFFER))
         self._range_hysteresis_pct: float = float(options.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT))
-        self._tonight_start_hour: int = DEFAULT_TONIGHT_START_HOUR
-        self._tonight_start_minute: int = DEFAULT_TONIGHT_START_MINUTE
-        self._night_off_hour: int = DEFAULT_NIGHT_OFF_HOUR
-        self._night_off_minute: int = DEFAULT_NIGHT_OFF_MINUTE
+        self._tonight_start_hour: int = int(options.get(CONF_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_HOUR))
+        self._tonight_start_minute: int = int(options.get(CONF_TONIGHT_START_MINUTE, DEFAULT_TONIGHT_START_MINUTE))
+        self._night_off_hour: int = int(options.get(CONF_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_HOUR))
+        self._night_off_minute: int = int(options.get(CONF_NIGHT_OFF_MINUTE, DEFAULT_NIGHT_OFF_MINUTE))
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -777,7 +791,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 self._missed_solar_absence_wh += missed_wh
             elif not cable_connected:
                 self._missed_solar_cable_wh += missed_wh
-            elif surplus_a < 1.0:
+            elif surplus_a < self._surplus_start_threshold_a:
                 self._missed_solar_low_surplus_wh += missed_wh
 
     def reset_session_energy(self) -> None:
@@ -852,6 +866,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
             "min_current_limit": self._min_current_limit,
+            "surplus_start_threshold_a": self._surplus_start_threshold_a,
+            "surplus_stop_threshold_a": self._surplus_stop_threshold_a,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
             "tonight_condition": force_data["tonight_condition"],
@@ -1117,8 +1133,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return
 
         # --- Start surplus charging ---
-        min_start = max(self._min_current_limit, 1.0)
-        if ema_current >= min_start and not self._charging_on:
+        if ema_current >= self._surplus_start_threshold_a and not self._charging_on:
             # Respect min-off time
             if self._last_off_time is not None:
                 off_elapsed = mono_now - self._last_off_time
@@ -1128,7 +1143,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             # debounce timer every tick which would prevent it from completing.
             if self._pending_task is None or self._pending_task.done():
                 capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
-                start_a = max(int(min_start), min(int(ema_current), int(capped_limit)))
+                start_a = max(int(self._surplus_start_threshold_a), min(int(ema_current), int(capped_limit)))
                 self._pending_task = self.hass.async_create_task(
                     self._debounced(self._start_delay, self._action_start_surplus, start_a),
                     eager_start=False,
@@ -1136,7 +1151,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return
 
         # --- Stop surplus charging ---
-        if ema_current < min_start and self._charging_on and self._current_mode == MODE_SURPLUS:
+        if ema_current < self._surplus_stop_threshold_a and self._charging_on and self._current_mode == MODE_SURPLUS:
             # Respect min-on time
             if self._last_on_time is not None:
                 on_elapsed = mono_now - self._last_on_time
@@ -1470,26 +1485,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # Public properties (used by time/number/switch entities)
     # ------------------------------------------------------------------
 
-    @property
-    def tonight_start_hour(self) -> int:
-        """Return the configured earliest charge start hour."""
-        return self._tonight_start_hour
-
-    @property
-    def tonight_start_minute(self) -> int:
-        """Return the configured earliest charge start minute."""
-        return self._tonight_start_minute
-
-    @property
-    def night_off_hour(self) -> int:
-        """Return the configured night-off hour."""
-        return self._night_off_hour
-
-    @property
-    def night_off_minute(self) -> int:
-        """Return the configured night-off minute."""
-        return self._night_off_minute
-
     # ------------------------------------------------------------------
     # Public setters (used by switch/number entities)
     # ------------------------------------------------------------------
@@ -1511,10 +1506,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Set the max current limit in A."""
         self._max_current_limit = value
 
-    def set_min_current_limit(self, value: float) -> None:
-        """Set the min current limit in A."""
-        self._min_current_limit = value
-
     def restore_energy_state(
         self, total_wh: float, solar_wh: float, import_wh: float
     ) -> None:
@@ -1534,17 +1525,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_absence_wh = absence_wh
         self._missed_solar_cable_wh = cable_wh
         self._missed_solar_low_surplus_wh = low_surplus_wh
-
-    def set_tonight_start_time(self, hour: int, minute: int) -> None:
-        """Set the earliest charge tonight start time."""
-        self._tonight_start_hour = hour
-        self._tonight_start_minute = minute
-
-    def set_night_off_time(self, hour: int, minute: int) -> None:
-        """Set the nightly charge_tonight reset time and reschedule."""
-        self._night_off_hour = hour
-        self._night_off_minute = minute
-        self._schedule_night_off()
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).

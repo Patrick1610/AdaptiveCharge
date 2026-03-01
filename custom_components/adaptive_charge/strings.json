@@ -50,6 +50,24 @@
           "range_hysteresis_pct": "Range Hysteresis (%)"
         }
       },
+      "surplus_settings": {
+        "title": "Surplus Charging Thresholds",
+        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "data": {
+          "surplus_start_threshold_a": "Start Threshold (A)",
+          "surplus_stop_threshold_a": "Stop Threshold (A)"
+        }
+      },
+      "charge_window": {
+        "title": "Charge Time Window",
+        "description": "Set the earliest time to start 'charge tonight' and the time to auto-reset the charge tonight switch.",
+        "data": {
+          "tonight_start_hour": "Earliest Start Hour",
+          "tonight_start_minute": "Earliest Start Minute",
+          "night_off_hour": "Night Off Hour",
+          "night_off_minute": "Night Off Minute"
+        }
+      },
       "solar_optional": {
         "title": "Solar Sensor (Optional)",
         "description": "Optionally select a sensor for solar generation to track solar done state.",
@@ -81,7 +99,8 @@
     },
     "error": {
       "unknown": "Unexpected error.",
-      "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage."
+      "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
     },
     "abort": {
       "already_configured": "Integration is already configured."
@@ -136,6 +155,24 @@
           "desired_range": "Desired Range (km)",
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)"
+        }
+      },
+      "surplus_settings": {
+        "title": "Surplus Charging Thresholds",
+        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "data": {
+          "surplus_start_threshold_a": "Start Threshold (A)",
+          "surplus_stop_threshold_a": "Stop Threshold (A)"
+        }
+      },
+      "charge_window": {
+        "title": "Charge Time Window",
+        "description": "Set the earliest time to start 'charge tonight' and the time to auto-reset the charge tonight switch.",
+        "data": {
+          "tonight_start_hour": "Earliest Start Hour",
+          "tonight_start_minute": "Earliest Start Minute",
+          "night_off_hour": "Night Off Hour",
+          "night_off_minute": "Night Off Minute"
         }
       },
       "solar_optional": {
@@ -207,17 +244,12 @@
     },
     "number": {
       "desired_range_km": {"name": "Desired Range (km)"},
-      "max_current_limit_a": {"name": "Max Current Limit (A)"},
-      "min_current_limit_a": {"name": "Min Current Limit (A)"}
+      "max_current_limit_a": {"name": "Max Current Limit (A)"}
     },
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},
       "charge_now": {"name": "Charge Now"},
       "charge_tonight": {"name": "Charge Tonight"}
-    },
-    "time": {
-      "earliest_charge_start": {"name": "Earliest Charge Start"},
-      "night_off_time": {"name": "Night Off Time"}
     }
   }
 }

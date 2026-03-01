@@ -3233,6 +3233,12 @@ class TestOptionsFlowAllEntities:
             "desired_range",
             "charge_buffer",
             "range_hysteresis_pct",
+            "surplus_start_threshold_a",
+            "surplus_stop_threshold_a",
+            "tonight_start_hour",
+            "tonight_start_minute",
+            "night_off_hour",
+            "night_off_minute",
             "solar_sensor",
             "charge_switch",
             "charge_current_number",
@@ -3245,7 +3251,7 @@ class TestOptionsFlowAllEntities:
             "modulate_min_interval",
         }
         # Verify all expected keys exist (consumption/production flow is alternative)
-        assert len(expected_keys) == 21
+        assert len(expected_keys) == 27
 
     def test_empty_optional_values_filtered(self):
         """Empty optional values should be filtered out on submission."""
@@ -3430,62 +3436,80 @@ class TestFormatDuration:
 # Tests: Min current limit
 # ---------------------------------------------------------------------------
 
-class TestMinCurrentLimit:
-    """Test minimum current limit functionality."""
+class TestSurplusStartStopThresholds:
+    """Test split surplus start/stop threshold functionality."""
 
-    def test_default_min_current_limit_is_zero(self):
-        """Default min current limit should be 0."""
-        # Matches DEFAULT_MIN_CURRENT_LIMIT in const.py
-        DEFAULT_MIN_CURRENT_LIMIT = 0
-        assert DEFAULT_MIN_CURRENT_LIMIT == 0
+    def test_default_start_threshold(self):
+        """Default start threshold should be 2A."""
+        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_START_THRESHOLD_A
+        assert DEFAULT_SURPLUS_START_THRESHOLD_A == 2
 
-    def test_min_start_threshold_with_zero_min(self):
-        """With min=0, start threshold is max(0, 1.0) = 1.0."""
-        min_current_limit = 0.0
-        min_start = max(min_current_limit, 1.0)
-        assert min_start == 1.0
+    def test_default_stop_threshold(self):
+        """Default stop threshold should be 1A."""
+        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_STOP_THRESHOLD_A
+        assert DEFAULT_SURPLUS_STOP_THRESHOLD_A == 1
 
-    def test_min_start_threshold_with_custom_min(self):
-        """With min=6, start threshold is max(6, 1.0) = 6.0."""
-        min_current_limit = 6.0
-        min_start = max(min_current_limit, 1.0)
-        assert min_start == 6.0
-
-    def test_surplus_below_min_does_not_start(self):
-        """If EMA < min_start, charging should not start."""
-        min_current_limit = 6.0
-        min_start = max(min_current_limit, 1.0)
-        ema_current = 4.0
+    def test_surplus_below_start_does_not_start(self):
+        """If EMA < start threshold, charging should not start."""
+        start_threshold = 2.0
+        ema_current = 1.5
         charging_on = False
-        should_start = ema_current >= min_start and not charging_on
+        should_start = ema_current >= start_threshold and not charging_on
         assert should_start is False
 
-    def test_surplus_above_min_starts(self):
-        """If EMA >= min_start, charging can start."""
-        min_current_limit = 6.0
-        min_start = max(min_current_limit, 1.0)
-        ema_current = 7.0
+    def test_surplus_above_start_starts(self):
+        """If EMA >= start threshold, charging can start."""
+        start_threshold = 2.0
+        ema_current = 2.5
         charging_on = False
-        should_start = ema_current >= min_start and not charging_on
+        should_start = ema_current >= start_threshold and not charging_on
         assert should_start is True
 
-    def test_start_a_clamps_to_min(self):
-        """start_a should be at least min_start."""
-        min_current_limit = 6.0
-        min_start = max(min_current_limit, 1.0)
-        ema_current = 7.0
-        max_current_limit = 16
-        start_a = max(int(min_start), min(int(ema_current), max_current_limit))
-        assert start_a == 7
+    def test_surplus_between_start_stop_keeps_charging(self):
+        """If EMA is between stop and start threshold while charging, keep going."""
+        start_threshold = 3.0
+        stop_threshold = 1.0
+        ema_current = 2.0  # below start but above stop
+        charging_on = True
+        should_stop = ema_current < stop_threshold
+        assert should_stop is False  # keep charging
 
-    def test_start_a_with_low_ema(self):
-        """If ema is just above min_start, start_a = min_start."""
-        min_current_limit = 6.0
-        min_start = max(min_current_limit, 1.0)
-        ema_current = 6.5  # just above min, int(6.5) = 6
+    def test_surplus_below_stop_stops(self):
+        """If EMA < stop threshold while charging, stop."""
+        stop_threshold = 1.0
+        ema_current = 0.8
+        charging_on = True
+        should_stop = ema_current < stop_threshold and charging_on
+        assert should_stop is True
+
+    def test_start_a_clamps_to_start_threshold(self):
+        """start_a should be at least start_threshold."""
+        start_threshold = 3.0
+        ema_current = 4.0
         max_current_limit = 16
-        start_a = max(int(min_start), min(int(ema_current), max_current_limit))
-        assert start_a == 6
+        start_a = max(int(start_threshold), min(int(ema_current), max_current_limit))
+        assert start_a == 4
+
+    def test_validation_stop_less_than_start(self):
+        """Config validation: stop must be ≤ start."""
+        start_val = 3.0
+        stop_val = 1.0
+        error = "stop_exceeds_start" if stop_val > start_val else None
+        assert error is None
+
+    def test_validation_stop_equals_start(self):
+        """Config validation: stop == start is valid."""
+        start_val = 2.0
+        stop_val = 2.0
+        error = "stop_exceeds_start" if stop_val > start_val else None
+        assert error is None
+
+    def test_validation_stop_exceeds_start(self):
+        """Config validation: stop > start is invalid."""
+        start_val = 2.0
+        stop_val = 3.0
+        error = "stop_exceeds_start" if stop_val > start_val else None
+        assert error == "stop_exceeds_start"
 
 
 # ---------------------------------------------------------------------------
@@ -3496,7 +3520,8 @@ class TestMissedSolarSubCategories:
     """Test missed solar split into absence, cable, and low surplus."""
 
     def _classify_missed(
-        self, surplus_w: float, presence: bool, cable_connected: bool, voltage: float = 230.0
+        self, surplus_w: float, presence: bool, cable_connected: bool,
+        voltage: float = 230.0, start_threshold_a: float = 2.0
     ) -> str:
         """Return category of missed solar, mirroring coordinator logic."""
         surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
@@ -3504,7 +3529,7 @@ class TestMissedSolarSubCategories:
             return "absence"
         if not cable_connected:
             return "cable"
-        if surplus_a < 1.0:
+        if surplus_a < start_threshold_a:
             return "low_surplus"
         return "none"
 
@@ -3517,14 +3542,14 @@ class TestMissedSolarSubCategories:
         assert self._classify_missed(2000.0, presence=True, cable_connected=False) == "cable"
 
     def test_missed_due_to_low_surplus(self):
-        """Vehicle home, cable connected, but surplus < 1A threshold."""
-        # surplus < 1A: 230 * 3 * 1 = 690W
+        """Vehicle home, cable connected, but surplus < start threshold (2A)."""
+        # surplus < 2A: 230 * 3 * 2 = 1380W
         assert self._classify_missed(500.0, presence=True, cable_connected=True) == "low_surplus"
 
     def test_surplus_above_threshold_no_category(self):
-        """Surplus >= 1A → not classified (charging should be active)."""
-        # surplus > 1A: 230 * 3 * 1 = 690W
-        assert self._classify_missed(1000.0, presence=True, cable_connected=True) == "none"
+        """Surplus >= start threshold (2A) → not classified (charging should be active)."""
+        # surplus > 2A: 230 * 3 * 2 = 1380W, so 1500W > 1380W → "none"
+        assert self._classify_missed(1500.0, presence=True, cable_connected=True) == "none"
 
     def test_accumulation_per_category(self):
         """Missed solar should accumulate into the correct sub-category."""
@@ -3677,8 +3702,9 @@ class TestBuildDataDictMissedSolarSplit:
         data = {k: 0.0 for k in expected_keys}
         assert expected_keys.issubset(set(data.keys()))
 
-    def test_min_current_limit_in_data_dict(self):
-        """Data dict should include min_current_limit."""
-        data = {"min_current_limit": 6.0, "max_current_limit": 16.0}
-        assert "min_current_limit" in data
-        assert data["min_current_limit"] == 6.0
+    def test_surplus_thresholds_in_data_dict(self):
+        """Data dict should include surplus thresholds."""
+        data = {"surplus_start_threshold_a": 2.0, "surplus_stop_threshold_a": 1.0, "max_current_limit": 16.0}
+        assert "surplus_start_threshold_a" in data
+        assert data["surplus_start_threshold_a"] == 2.0
+        assert data["surplus_stop_threshold_a"] == 1.0
