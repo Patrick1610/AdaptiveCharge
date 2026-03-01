@@ -2961,7 +2961,7 @@ class TestSharedDeviceInfo:
             "name": "AdaptiveCharge",
             "manufacturer": "AdaptiveCharge",
             "model": "EV Charge Controller",
-            "sw_version": "2.0.0",
+            "sw_version": "3.0.0",
         }
 
     def test_device_info_returns_correct_structure(self):
@@ -2975,7 +2975,7 @@ class TestSharedDeviceInfo:
         assert info["name"] == "AdaptiveCharge"
         assert info["manufacturer"] == "AdaptiveCharge"
         assert info["model"] == "EV Charge Controller"
-        assert info["sw_version"] == "2.0.0"
+        assert info["sw_version"] == "3.0.0"
 
 
 # ---------------------------------------------------------------------------
