@@ -1424,7 +1424,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_committed_int = None
         self._last_commit_reason = "stop_force"
         await asyncio.sleep(10)
-        await self._set_charge_current(int(self._min_current_limit))
+        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_start_surplus(self, current_a: int) -> None:
         _LOGGER.info("AdaptiveCharge: start_surplus at %dA", current_a)
@@ -1466,12 +1466,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_below_since = None
         self._import_exceed_since = None
         await asyncio.sleep(10)
-        await self._set_charge_current(int(self._min_current_limit))
+        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
-        # Immediately clamp to minimum current so the EVSE does not charge at
-        # its parked/default rate (often max) during the evaluation delay.
-        await self._set_charge_current(int(self._min_current_limit))
+        # Immediately set current to 0A so the EVSE cannot charge at any rate
+        # during the evaluation delay, regardless of its parked/default setting.
+        await self._set_charge_current(0)
         await asyncio.sleep(2)
         # Reset per-session energy counters on cable plug-in
         self.reset_session_energy()
