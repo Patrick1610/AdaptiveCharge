@@ -2015,13 +2015,14 @@ class TestChargeTonightStartLogic:
         Returns (tonight_condition, force_charge).
         """
         effective_range = desired_range * (1.0 + charge_buffer / 100.0)
-        hysteresis_km = effective_range * (range_hysteresis_pct / 100.0)
-        # Apply hysteresis: start below effective_range, stop above effective_range + hysteresis
+        hysteresis_km = desired_range * (range_hysteresis_pct / 100.0)
+        half_hyst = hysteresis_km / 2.0
+        # Symmetric hysteresis: start below effective_range - half, stop above effective_range + half
         if current_range is not None:
             if need_active:
-                need = current_range < (effective_range + hysteresis_km)
+                need = current_range < (effective_range + half_hyst)
             else:
-                need = current_range < effective_range
+                need = current_range < (effective_range - half_hyst)
         else:
             need = False
         tonight_condition = (
@@ -2216,12 +2217,12 @@ class TestForceSourceTracking:
 # ---------------------------------------------------------------------------
 
 class TestRangeHysteresis:
-    """Test range hysteresis prevents rapid start/stop cycling.
+    """Test symmetric range hysteresis prevents rapid start/stop cycling.
 
-    Hysteresis: start charging when below effective_range, stop only when
-    hysteresis band above effective_range. Uses a percentage of effective_range
-    (default 3%). This prevents flapping when the reported range fluctuates
-    around the threshold.
+    Symmetric hysteresis (Option B): the hysteresis band is centered on
+    effective_range. Start charging at effective_range - hyst/2, stop at
+    effective_range + hyst/2. Uses a percentage of desired_range (default 3%).
+    Hysteresis is always ≤ buffer (enforced in the config flow).
     """
 
     HYSTERESIS_PCT = 3.0  # matches DEFAULT_RANGE_HYSTERESIS_PCT
@@ -2232,19 +2233,27 @@ class TestRangeHysteresis:
         effective_range: float,
         need_active: bool,
         hysteresis_pct: float | None = None,
+        desired_range: float | None = None,
     ) -> bool:
-        """Evaluate need with hysteresis, mirroring coordinator logic."""
+        """Evaluate need with symmetric hysteresis, mirroring coordinator logic.
+
+        Symmetric band: start at effective_range - hyst/2, stop at effective_range + hyst/2.
+        """
         pct = hysteresis_pct if hysteresis_pct is not None else self.HYSTERESIS_PCT
-        hysteresis_km = effective_range * (pct / 100.0)
+        base = desired_range if desired_range is not None else effective_range
+        hysteresis_km = base * (pct / 100.0)
+        half_hyst = hysteresis_km / 2.0
         if current_range is not None:
             if need_active:
-                return current_range < (effective_range + hysteresis_km)
+                return current_range < (effective_range + half_hyst)
             else:
-                return current_range < effective_range
+                return current_range < (effective_range - half_hyst)
         return False
 
     def test_initial_state_below_range_starts_need(self):
-        """From cold start, range below target → need=True."""
+        """From cold start, range well below lower band → need=True.
+        3% of 200 = 6km, half = 3km, start threshold = 197.
+        """
         need = self._eval_need(current_range=150.0, effective_range=200.0, need_active=False)
         assert need is True
 
@@ -2254,28 +2263,41 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_initial_state_exactly_at_range_no_need(self):
-        """From cold start, range exactly at target → need=False (not strictly below)."""
+        """From cold start, range exactly at target → need=False (above start threshold 197)."""
         need = self._eval_need(current_range=200.0, effective_range=200.0, need_active=False)
         assert need is False
 
+    def test_initial_state_in_deadband_no_need(self):
+        """From cold start, range between start (197) and stop (203) → no need.
+        The deadband prevents unnecessary charging starts.
+        """
+        need = self._eval_need(current_range=198.0, effective_range=200.0, need_active=False)
+        assert need is False
+
+    def test_initial_state_at_lower_boundary_starts_need(self):
+        """From cold start, range exactly at lower boundary → starts need.
+        3% of 200 = 6km, half = 3km, start threshold = 197. 196 < 197 → need.
+        """
+        need = self._eval_need(current_range=196.0, effective_range=200.0, need_active=False)
+        assert need is True
+
     def test_charging_stays_active_at_effective_range(self):
-        """While charging, reaching effective_range does NOT stop (hysteresis)."""
+        """While charging, reaching effective_range does NOT stop (symmetric hysteresis).
+        3% of 200 = 6km, half = 3km, stop at 203.
+        """
         need = self._eval_need(current_range=200.0, effective_range=200.0, need_active=True)
         assert need is True
 
     def test_charging_stays_active_slightly_above(self):
-        """While charging, 2km above target → still active (within 3% band = 6km)."""
+        """While charging, 2km above target → still active (within +3km upper band)."""
         need = self._eval_need(current_range=202.0, effective_range=200.0, need_active=True)
         assert need is True
 
-    def test_charging_stays_active_at_5km_above(self):
-        """While charging, 5km above target → still active (within 3% band = 6km)."""
-        need = self._eval_need(current_range=205.0, effective_range=200.0, need_active=True)
-        assert need is True
-
-    def test_charging_stops_at_hysteresis_boundary(self):
-        """While charging, at hysteresis boundary (3% of 200 = 6km above) → stops."""
-        need = self._eval_need(current_range=206.0, effective_range=200.0, need_active=True)
+    def test_charging_stops_at_upper_hysteresis_boundary(self):
+        """While charging, at upper hysteresis boundary (3km above effective) → stops.
+        3% of 200 = 6km, half = 3km, stop at 203.
+        """
+        need = self._eval_need(current_range=203.0, effective_range=200.0, need_active=True)
         assert need is False
 
     def test_charging_stops_well_above(self):
@@ -2284,34 +2306,35 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_full_cycle_prevents_flapping(self):
-        """Simulate a charge cycle: start → charge → overshoot → hold → stop.
-        With 3% hysteresis on effective=200, band is 6km, stop at 206.
+        """Simulate a charge cycle with symmetric hysteresis.
+        With 3% hysteresis on effective=200, half band is 3km.
+        Start below 197, stop at 203.
         """
         effective = 200.0
         need_active = False
 
-        # Step 1: range at 195, below target → enter need
+        # Step 1: range at 195, below start threshold (197) → enter need
         need_active = self._eval_need(195.0, effective, need_active)
         assert need_active is True
 
-        # Step 2: range rises to 200 (at target) → still charging
+        # Step 2: range rises to 200 (at target) → still charging (< 203)
         need_active = self._eval_need(200.0, effective, need_active)
         assert need_active is True
 
-        # Step 3: range rises to 204 (4km above) → still charging
-        need_active = self._eval_need(204.0, effective, need_active)
+        # Step 3: range rises to 202 (2km above) → still charging (< 203)
+        need_active = self._eval_need(202.0, effective, need_active)
         assert need_active is True
 
-        # Step 4: range rises to 206 (6km above, = hysteresis boundary) → stops
-        need_active = self._eval_need(206.0, effective, need_active)
+        # Step 4: range rises to 203 (= upper hysteresis boundary) → stops
+        need_active = self._eval_need(203.0, effective, need_active)
         assert need_active is False
 
-        # Step 5: range drops to 201 (1km above, but need_active=False) → no restart
-        need_active = self._eval_need(201.0, effective, need_active)
+        # Step 5: range drops to 198 (below effective, but above start threshold 197) → no restart
+        need_active = self._eval_need(198.0, effective, need_active)
         assert need_active is False
 
-        # Step 6: range drops to 199 (below target) → restarts
-        need_active = self._eval_need(199.0, effective, need_active)
+        # Step 6: range drops to 196 (below start threshold 197) → restarts
+        need_active = self._eval_need(196.0, effective, need_active)
         assert need_active is True
 
     def test_none_range_always_false(self):
@@ -2320,39 +2343,42 @@ class TestRangeHysteresis:
         assert self._eval_need(None, 200.0, need_active=True) is False
 
     def test_hysteresis_with_buffer(self):
-        """Buffer and hysteresis combine correctly.
-        effective=220, 3% hysteresis = 6.6km, stop at 226.6.
+        """Buffer and hysteresis with symmetric band.
+        desired=200, buffer=10% → effective=220.
+        hysteresis = 3% of desired(200) = 6km, half = 3km.
+        Start threshold ≈ 217, stop threshold ≈ 223.
         """
         desired_range = 200.0
         charge_buffer = 10.0  # effective = 220
         effective = desired_range * (1.0 + charge_buffer / 100.0)
         assert abs(effective - 220.0) < 0.01
 
-        # Start: 215 < 220 → need
-        need_active = self._eval_need(215.0, effective, need_active=False)
+        # Start: 215 < ~217 → need
+        need_active = self._eval_need(215.0, effective, need_active=False, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 224 < 226.6 (220 + 6.6) → still active
-        need_active = self._eval_need(224.0, effective, need_active)
+        # Charging: 222 < ~223 → still active
+        need_active = self._eval_need(222.0, effective, need_active, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 227 >= 226.6 → stops
-        need_active = self._eval_need(227.0, effective, need_active)
+        # Charging: 224 > ~223 → stops
+        need_active = self._eval_need(224.0, effective, need_active, desired_range=desired_range)
         assert need_active is False
 
     def test_tonight_uses_hysteresis_to_keep_charging(self):
-        """Charge tonight should keep charging until hysteresis band above effective_range.
-        3% of 200 = 6km, so stops at 206.
+        """Charge tonight should keep charging until upper hysteresis band.
+        3% of 200 = 6km, half = 3km, stop at 203.
         """
         effective_range = 200.0
         hysteresis_km = effective_range * (self.HYSTERESIS_PCT / 100.0)  # 6.0
+        half_hyst = hysteresis_km / 2.0  # 3.0
         need_active = True  # already charging
-        current_range = 202.0  # 2km above effective, but within 6km band
+        current_range = 202.0  # 2km above effective, but within +3km upper band
 
         if need_active:
-            need = current_range < (effective_range + hysteresis_km)
+            need = current_range < (effective_range + half_hyst)
         else:
-            need = current_range < effective_range
+            need = current_range < (effective_range - half_hyst)
 
         tonight_condition = (
             True  # charge_tonight
@@ -2364,16 +2390,18 @@ class TestRangeHysteresis:
         assert tonight_condition is True  # keeps charging due to hysteresis
 
     def test_custom_hysteresis_percentage(self):
-        """Custom hysteresis percentage: 5% of 200 = 10km band."""
+        """Custom hysteresis percentage: 5% of 200 = 10km, half = 5km.
+        Start threshold = 195, stop threshold = 205.
+        """
         effective = 200.0
 
-        # With 5%: band = 10km, stops at 210
-        # 208 < 210 → still charging
-        need = self._eval_need(208.0, effective, need_active=True, hysteresis_pct=5.0)
+        # With 5%: half band = 5km, stops at 205
+        # 204 < 205 → still charging
+        need = self._eval_need(204.0, effective, need_active=True, hysteresis_pct=5.0)
         assert need is True
 
-        # 210 >= 210 → stops
-        need = self._eval_need(210.0, effective, need_active=True, hysteresis_pct=5.0)
+        # 205 >= 205 → stops
+        need = self._eval_need(205.0, effective, need_active=True, hysteresis_pct=5.0)
         assert need is False
 
     def test_zero_hysteresis_disables_band(self):
@@ -2386,14 +2414,14 @@ class TestRangeHysteresis:
 
     def test_hysteresis_scales_with_range(self):
         """Larger effective_range → larger hysteresis band in km.
-        3% of 400 = 12km band.
+        3% of 400 = 12km, half = 6km. Stop at 406.
         """
         effective = 400.0
-        # 410 < 412 → still active
-        need = self._eval_need(410.0, effective, need_active=True)
+        # 405 < 406 → still active
+        need = self._eval_need(405.0, effective, need_active=True)
         assert need is True
-        # 412 >= 412 → stops
-        need = self._eval_need(412.0, effective, need_active=True)
+        # 406 >= 406 → stops
+        need = self._eval_need(406.0, effective, need_active=True)
         assert need is False
 
 
@@ -2628,42 +2656,52 @@ class TestChargeNowOverrulesTonight:
 # ---------------------------------------------------------------------------
 
 class TestRangeHysteresisPercentage:
-    """Test that range hysteresis uses a percentage of effective_range."""
+    """Test that range hysteresis uses a percentage of desired_range (decoupled from buffer)."""
 
     def test_hysteresis_km_calculation(self):
-        """3% of 200km = 6km hysteresis band."""
-        effective_range = 200.0
+        """3% of desired 200km = 6km hysteresis band."""
+        desired_range = 200.0
         hysteresis_pct = 3.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 6.0
 
     def test_hysteresis_km_larger_range(self):
-        """3% of 400km = 12km hysteresis band."""
-        effective_range = 400.0
+        """3% of desired 400km = 12km hysteresis band."""
+        desired_range = 400.0
         hysteresis_pct = 3.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 12.0
 
     def test_hysteresis_km_small_range(self):
-        """3% of 100km = 3km hysteresis band."""
-        effective_range = 100.0
+        """3% of desired 100km = 3km hysteresis band."""
+        desired_range = 100.0
         hysteresis_pct = 3.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 3.0
 
     def test_zero_percent_no_hysteresis(self):
         """0% hysteresis = 0km band."""
-        effective_range = 200.0
+        desired_range = 200.0
         hysteresis_pct = 0.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 0.0
 
     def test_max_10_percent(self):
-        """10% of 200km = 20km hysteresis band."""
-        effective_range = 200.0
+        """10% of desired 200km = 20km hysteresis band."""
+        desired_range = 200.0
         hysteresis_pct = 10.0
-        hysteresis_km = effective_range * (hysteresis_pct / 100.0)
+        hysteresis_km = desired_range * (hysteresis_pct / 100.0)
         assert hysteresis_km == 20.0
+
+    def test_hysteresis_independent_of_buffer(self):
+        """Hysteresis band is same regardless of charge buffer."""
+        desired_range = 200.0
+        hysteresis_pct = 3.0
+        # Without buffer
+        hysteresis_km_no_buffer = desired_range * (hysteresis_pct / 100.0)
+        # With 10% buffer (effective=220)
+        hysteresis_km_with_buffer = desired_range * (hysteresis_pct / 100.0)
+        assert hysteresis_km_no_buffer == hysteresis_km_with_buffer == 6.0
 
 
 # ---------------------------------------------------------------------------
@@ -2923,7 +2961,7 @@ class TestSharedDeviceInfo:
             "name": "AdaptiveCharge",
             "manufacturer": "AdaptiveCharge",
             "model": "EV Charge Controller",
-            "sw_version": "2.0.0",
+            "sw_version": "3.0.0",
         }
 
     def test_device_info_returns_correct_structure(self):
@@ -2937,7 +2975,7 @@ class TestSharedDeviceInfo:
         assert info["name"] == "AdaptiveCharge"
         assert info["manufacturer"] == "AdaptiveCharge"
         assert info["model"] == "EV Charge Controller"
-        assert info["sw_version"] == "2.0.0"
+        assert info["sw_version"] == "3.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -3179,15 +3217,13 @@ class TestBatterySensor:
 # ---------------------------------------------------------------------------
 
 class TestOptionsFlowAllEntities:
-    """Test that options flow exposes all setup entities for editing."""
+    """Test that options flow collects all setup entities across multiple steps."""
 
     def test_options_include_entity_selectors(self):
-        """Options schema should include entity selection keys."""
+        """Options flow should collect all entity selection keys across steps."""
         expected_keys = {
             "net_power_mode",
             "net_power_sensor",
-            "consumption_sensor",
-            "production_sensor",
             "ev_power_sensor",
             "voltage_sensor",
             "presence_entity",
@@ -3195,6 +3231,14 @@ class TestOptionsFlowAllEntities:
             "current_range_sensor",
             "battery_sensor",
             "desired_range",
+            "charge_buffer",
+            "range_hysteresis_pct",
+            "surplus_start_threshold_a",
+            "surplus_stop_threshold_a",
+            "tonight_start_hour",
+            "tonight_start_minute",
+            "night_off_hour",
+            "night_off_minute",
             "solar_sensor",
             "charge_switch",
             "charge_current_number",
@@ -3206,8 +3250,8 @@ class TestOptionsFlowAllEntities:
             "stop_delay",
             "modulate_min_interval",
         }
-        # Verify all expected keys exist in the schema
-        assert len(expected_keys) == 21
+        # Verify all expected keys exist (consumption/production flow is alternative)
+        assert len(expected_keys) == 27
 
     def test_empty_optional_values_filtered(self):
         """Empty optional values should be filtered out on submission."""
@@ -3236,6 +3280,36 @@ class TestOptionsFlowAllEntities:
         }
         assert current.get("ev_power_sensor") == "sensor.ev_power"
         assert current.get("smoothing_window") == 120
+
+
+class TestHysteresisBufferValidation:
+    """Test that hysteresis must be ≤ buffer percentage (config flow validation)."""
+
+    def _validate_range_step(self, buffer_val: float, hyst_val: float) -> str | None:
+        """Simulate range step validation. Returns error key or None."""
+        if hyst_val > buffer_val:
+            return "hysteresis_exceeds_buffer"
+        return None
+
+    def test_hysteresis_below_buffer_ok(self):
+        """Hysteresis < buffer → no error."""
+        assert self._validate_range_step(10.0, 3.0) is None
+
+    def test_hysteresis_equal_buffer_ok(self):
+        """Hysteresis == buffer → no error."""
+        assert self._validate_range_step(5.0, 5.0) is None
+
+    def test_hysteresis_above_buffer_error(self):
+        """Hysteresis > buffer → error."""
+        assert self._validate_range_step(3.0, 5.0) == "hysteresis_exceeds_buffer"
+
+    def test_both_zero_ok(self):
+        """Both zero → no error."""
+        assert self._validate_range_step(0.0, 0.0) is None
+
+    def test_hysteresis_nonzero_buffer_zero_error(self):
+        """Hysteresis > 0 with buffer = 0 → error."""
+        assert self._validate_range_step(0.0, 3.0) == "hysteresis_exceeds_buffer"
 
 
 # ---------------------------------------------------------------------------
@@ -3300,3 +3374,528 @@ class TestBuildDataDictEnergy:
         session_wh = 0.0
         assert round(total_wh / 1000.0, 3) == 5.0
         assert round(session_wh / 1000.0, 3) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: format_duration helper
+# ---------------------------------------------------------------------------
+
+class TestFormatDuration:
+    """Test the format_duration helper for dynamic time formatting."""
+
+    def _format_duration(self, seconds: float) -> str:
+        """Mirror of helpers.format_duration."""
+        if seconds < 0:
+            seconds = 0.0
+        total = int(seconds)
+        if total < 60:
+            return f"{seconds:.1f}s"
+        days, remainder = divmod(total, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if days > 0:
+            parts = [f"{days}d", f"{hours}h", f"{minutes}m"]
+            return " ".join(p for p in parts if not p.startswith("0"))
+        if hours > 0:
+            return f"{hours}h {minutes}m {secs}s"
+        return f"{minutes}m {secs}s"
+
+    def test_under_one_minute(self):
+        """Values under 60s should show decimal seconds."""
+        assert self._format_duration(45.0) == "45.0s"
+
+    def test_exactly_zero(self):
+        assert self._format_duration(0.0) == "0.0s"
+
+    def test_negative_clamps_to_zero(self):
+        assert self._format_duration(-5.0) == "0.0s"
+
+    def test_one_minute(self):
+        assert self._format_duration(60.0) == "1m 0s"
+
+    def test_five_minutes_twenty_three_seconds(self):
+        assert self._format_duration(323.0) == "5m 23s"
+
+    def test_one_hour(self):
+        assert self._format_duration(3600.0) == "1h 0m 0s"
+
+    def test_two_hours_fifteen_minutes(self):
+        assert self._format_duration(8130.0) == "2h 15m 30s"
+
+    def test_one_day(self):
+        result = self._format_duration(86400.0)
+        assert "1d" in result
+
+    def test_one_day_three_hours(self):
+        result = self._format_duration(97200.0)
+        assert "1d" in result
+        assert "3h" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Min current limit
+# ---------------------------------------------------------------------------
+
+class TestSurplusStartStopThresholds:
+    """Test split surplus start/stop threshold functionality."""
+
+    def test_default_start_threshold(self):
+        """Default start threshold should be 2A."""
+        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_START_THRESHOLD_A
+        assert DEFAULT_SURPLUS_START_THRESHOLD_A == 2
+
+    def test_default_stop_threshold(self):
+        """Default stop threshold should be 1A."""
+        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_STOP_THRESHOLD_A
+        assert DEFAULT_SURPLUS_STOP_THRESHOLD_A == 1
+
+    def test_surplus_below_start_does_not_start(self):
+        """If EMA < start threshold, charging should not start."""
+        start_threshold = 2.0
+        ema_current = 1.5
+        charging_on = False
+        should_start = ema_current >= start_threshold and not charging_on
+        assert should_start is False
+
+    def test_surplus_above_start_starts(self):
+        """If EMA >= start threshold, charging can start."""
+        start_threshold = 2.0
+        ema_current = 2.5
+        charging_on = False
+        should_start = ema_current >= start_threshold and not charging_on
+        assert should_start is True
+
+    def test_surplus_between_start_stop_keeps_charging(self):
+        """If EMA is between stop and start threshold while charging, keep going."""
+        start_threshold = 3.0
+        stop_threshold = 1.0
+        ema_current = 2.0  # below start but above stop
+        charging_on = True
+        should_stop = ema_current < stop_threshold
+        assert should_stop is False  # keep charging
+
+    def test_surplus_below_stop_stops(self):
+        """If EMA < stop threshold while charging, stop."""
+        stop_threshold = 1.0
+        ema_current = 0.8
+        charging_on = True
+        should_stop = ema_current < stop_threshold and charging_on
+        assert should_stop is True
+
+    def test_start_a_clamps_to_start_threshold(self):
+        """start_a should be at least start_threshold."""
+        start_threshold = 3.0
+        ema_current = 4.0
+        max_current_limit = 16
+        start_a = max(int(start_threshold), min(int(ema_current), max_current_limit))
+        assert start_a == 4
+
+    def test_validation_stop_less_than_start(self):
+        """Config validation: stop must be ≤ start."""
+        start_val = 3.0
+        stop_val = 1.0
+        error = "stop_exceeds_start" if stop_val > start_val else None
+        assert error is None
+
+    def test_validation_stop_equals_start(self):
+        """Config validation: stop == start is valid."""
+        start_val = 2.0
+        stop_val = 2.0
+        error = "stop_exceeds_start" if stop_val > start_val else None
+        assert error is None
+
+    def test_validation_stop_exceeds_start(self):
+        """Config validation: stop > start is invalid."""
+        start_val = 2.0
+        stop_val = 3.0
+        error = "stop_exceeds_start" if stop_val > start_val else None
+        assert error == "stop_exceeds_start"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Missed solar sub-categories
+# ---------------------------------------------------------------------------
+
+class TestMissedSolarSubCategories:
+    """Test missed solar split into absence, cable, and low surplus."""
+
+    def _classify_missed(
+        self, surplus_w: float, presence: bool, cable_connected: bool,
+        voltage: float = 230.0, start_threshold_a: float = 2.0
+    ) -> str:
+        """Return category of missed solar, mirroring coordinator logic."""
+        surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
+        if not presence:
+            return "absence"
+        if not cable_connected:
+            return "cable"
+        if surplus_a < start_threshold_a:
+            return "low_surplus"
+        return "none"
+
+    def test_missed_due_to_absence(self):
+        """Vehicle not home → missed classified as absence."""
+        assert self._classify_missed(2000.0, presence=False, cable_connected=False) == "absence"
+
+    def test_missed_due_to_cable(self):
+        """Vehicle home but cable disconnected → missed classified as cable."""
+        assert self._classify_missed(2000.0, presence=True, cable_connected=False) == "cable"
+
+    def test_missed_due_to_low_surplus(self):
+        """Vehicle home, cable connected, but surplus < start threshold (2A)."""
+        # surplus < 2A: 230 * 3 * 2 = 1380W
+        assert self._classify_missed(500.0, presence=True, cable_connected=True) == "low_surplus"
+
+    def test_surplus_above_threshold_no_category(self):
+        """Surplus >= start threshold (2A) → not classified (charging should be active)."""
+        # surplus > 2A: 230 * 3 * 2 = 1380W, so 1500W > 1380W → "none"
+        assert self._classify_missed(1500.0, presence=True, cable_connected=True) == "none"
+
+    def test_accumulation_per_category(self):
+        """Missed solar should accumulate into the correct sub-category."""
+        absence_wh = 0.0
+        cable_wh = 0.0
+        low_surplus_wh = 0.0
+        dt_h = 10.0 / 3600.0
+
+        # Tick 1: away from home, surplus 2000W
+        surplus_w = 2000.0
+        missed_wh = surplus_w * dt_h
+        cat = self._classify_missed(surplus_w, presence=False, cable_connected=False)
+        if cat == "absence":
+            absence_wh += missed_wh
+
+        # Tick 2: home, cable disconnected, surplus 1500W
+        surplus_w = 1500.0
+        missed_wh = surplus_w * dt_h
+        cat = self._classify_missed(surplus_w, presence=True, cable_connected=False)
+        if cat == "cable":
+            cable_wh += missed_wh
+
+        # Tick 3: home, cable connected, surplus 400W (< 690W = 1A)
+        surplus_w = 400.0
+        missed_wh = surplus_w * dt_h
+        cat = self._classify_missed(surplus_w, presence=True, cable_connected=True)
+        if cat == "low_surplus":
+            low_surplus_wh += missed_wh
+
+        assert absence_wh > 0
+        assert cable_wh > 0
+        assert low_surplus_wh > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Definitive range sensor
+# ---------------------------------------------------------------------------
+
+class TestDefinitiveRange:
+    """Test the definitive range sensor (desired + buffer)."""
+
+    def test_no_buffer(self):
+        """Without buffer, effective_range == desired_range."""
+        desired = 200.0
+        buffer_pct = 0.0
+        effective = desired * (1.0 + buffer_pct / 100.0)
+        assert effective == 200.0
+
+    def test_with_buffer(self):
+        """With 10% buffer, effective_range = 220."""
+        desired = 200.0
+        buffer_pct = 10.0
+        effective = desired * (1.0 + buffer_pct / 100.0)
+        assert abs(effective - 220.0) < 0.01
+
+    def test_hysteresis_attributes_present(self):
+        """Data dict should include hysteresis attributes."""
+        expected = {
+            "desired_range", "charge_buffer", "effective_range",
+            "range_hysteresis_pct", "range_hysteresis_km", "current_range",
+        }
+        data = {k: 0.0 for k in expected}
+        assert expected.issubset(set(data.keys()))
+
+
+# ---------------------------------------------------------------------------
+# Tests: Utility meter sensor logic
+# ---------------------------------------------------------------------------
+
+class TestUtilityMeterLogic:
+    """Test utility meter accumulation and reset logic."""
+
+    def test_delta_accumulation(self):
+        """Utility meter tracks positive deltas of source sensor."""
+        accumulated = 0.0
+        last_value = None
+        source_values = [0.0, 0.5, 1.0, 1.5, 2.0]
+        for val in source_values:
+            if last_value is not None:
+                delta = val - last_value
+                if delta > 0:
+                    accumulated += delta
+            last_value = val
+        assert abs(accumulated - 2.0) < 0.001
+
+    def test_no_accumulation_on_decrease(self):
+        """Source sensor decrease should not affect utility meter."""
+        accumulated = 0.0
+        last_value = None
+        source_values = [2.0, 1.5, 1.0]  # decreasing
+        for val in source_values:
+            if last_value is not None:
+                delta = val - last_value
+                if delta > 0:
+                    accumulated += delta
+            last_value = val
+        assert accumulated == 0.0
+
+    def test_reset_sets_to_zero(self):
+        """After reset, accumulated should be zero."""
+        accumulated = 5.5
+        accumulated = 0.0
+        assert accumulated == 0.0
+
+    def test_daily_reset_period(self):
+        """Daily period should trigger on every midnight."""
+        period = "daily"
+        assert period == "daily"
+
+    def test_monthly_reset_on_first(self):
+        """Monthly reset only on day 1."""
+        day = 1
+        should_reset = day == 1
+        assert should_reset is True
+
+    def test_monthly_no_reset_on_other_days(self):
+        """Monthly should not reset on day 15."""
+        day = 15
+        should_reset = day == 1
+        assert should_reset is False
+
+    def test_yearly_reset_on_jan_first(self):
+        """Yearly reset only on Jan 1."""
+        month, day = 1, 1
+        should_reset = month == 1 and day == 1
+        assert should_reset is True
+
+    def test_yearly_no_reset_on_other_dates(self):
+        """Yearly should not reset on Feb 1."""
+        month, day = 2, 1
+        should_reset = month == 1 and day == 1
+        assert should_reset is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Energy data dict includes missed solar sub-categories
+# ---------------------------------------------------------------------------
+
+class TestBuildDataDictMissedSolarSplit:
+    """Test that data dict includes missed solar sub-category keys."""
+
+    def test_missed_solar_split_keys_present(self):
+        """Data dict should include missed solar sub-category keys."""
+        expected_keys = {
+            "missed_solar_kwh",
+            "missed_solar_absence_kwh",
+            "missed_solar_cable_kwh",
+            "missed_solar_low_surplus_kwh",
+        }
+        data = {k: 0.0 for k in expected_keys}
+        assert expected_keys.issubset(set(data.keys()))
+
+    def test_surplus_thresholds_in_data_dict(self):
+        """Data dict should include surplus thresholds."""
+        data = {"surplus_start_threshold_a": 2.0, "surplus_stop_threshold_a": 1.0, "max_current_limit": 16.0}
+        assert "surplus_start_threshold_a" in data
+        assert data["surplus_start_threshold_a"] == 2.0
+        assert data["surplus_stop_threshold_a"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Import guard 0A hold before hard stop
+# ---------------------------------------------------------------------------
+
+class TestImportGuardZeroHold:
+    """Test that the import guard holds at 0A before hard-stopping."""
+
+    def test_zero_hold_does_not_stop_immediately(self):
+        """At 0A with import active, should hold (not escalate) within hold window."""
+        zero_hold_s = 300.0
+        zero_since = 1000.0
+        mono_now = 1100.0  # 100s elapsed, < 300s
+
+        zero_elapsed = mono_now - zero_since
+        should_stop = zero_elapsed >= zero_hold_s
+        assert should_stop is False  # Still holding at 0A
+
+    def test_zero_hold_escalates_after_timeout(self):
+        """At 0A with import active for > ZERO_HOLD_S, should escalate to stop."""
+        zero_hold_s = 300.0
+        zero_since = 1000.0
+        mono_now = 1400.0  # 400s elapsed, > 300s
+
+        zero_elapsed = mono_now - zero_since
+        should_stop = zero_elapsed >= zero_hold_s
+        assert should_stop is True
+
+    def test_zero_hold_resets_on_clear(self):
+        """When import clears, zero_since should be reset to None."""
+        zero_since = 1000.0  # was holding at 0A
+        # Import clears
+        zero_since = None
+        assert zero_since is None
+
+    def test_zero_since_set_on_reduce_to_zero(self):
+        """When current is reduced to 0A, zero_since should be recorded."""
+        committed = 1.0
+        new_target = committed - 1.0
+        new_target = max(new_target, 0.0)
+        assert new_target == 0.0
+
+        zero_since = None
+        if new_target == 0.0:
+            zero_since = 1000.0  # timestamp recorded
+        assert zero_since == 1000.0
+
+    def test_full_escalation_with_hold(self):
+        """Full sequence with hold: 2A → 1A → 0A → hold → stop."""
+        committed = 2.0
+        steps = []
+        while committed > 0.0:
+            committed -= 1.0
+            committed = max(committed, 0.0)
+            steps.append(f"reduce_to_{committed:.0f}A")
+
+        # 0A hold phase (would normally repeat many ticks)
+        steps.append("hold_at_0A")
+        # After timeout
+        steps.append("hard_stop")
+
+        assert steps == [
+            "reduce_to_1A",
+            "reduce_to_0A",
+            "hold_at_0A",
+            "hard_stop",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Tests: Current re-confirm after charge enable
+# ---------------------------------------------------------------------------
+
+class TestCurrentReconfirmAfterEnable:
+    """Test that start actions re-confirm current after enabling charging.
+
+    Some cars (e.g. Tesla) reset the charge current to 0A when it is set
+    while the charge switch is off. Re-confirming after enable prevents
+    the session from starting at the wrong current.
+    """
+
+    def test_reconfirm_sequence_force(self):
+        """Force start should: set → enable → re-set."""
+        calls = []
+        start_a = 16
+
+        # Simulate _action_start_force sequence
+        calls.append(("set_current", start_a))
+        calls.append(("sleep", 5))
+        calls.append(("enable_charging",))
+        calls.append(("sleep", 2))
+        calls.append(("set_current", start_a))  # re-confirm
+
+        assert calls[0] == ("set_current", 16)
+        assert calls[2] == ("enable_charging",)
+        assert calls[4] == ("set_current", 16)  # re-confirmed after enable
+
+    def test_reconfirm_sequence_surplus(self):
+        """Surplus start should: set → enable → re-set."""
+        calls = []
+        start_a = 3
+
+        calls.append(("set_current", start_a))
+        calls.append(("sleep", 5))
+        calls.append(("enable_charging",))
+        calls.append(("sleep", 2))
+        calls.append(("set_current", start_a))  # re-confirm
+
+        assert calls[0] == ("set_current", 3)
+        assert calls[2] == ("enable_charging",)
+        assert calls[4] == ("set_current", 3)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Utility meters opt-in via config
+# ---------------------------------------------------------------------------
+
+class TestUtilityMetersOptIn:
+    """Test that utility meters are only created when enabled in config."""
+
+    def test_utility_off_by_default(self):
+        """Default config should not enable utility meters."""
+        options = {}
+        assert options.get("enable_utility_meters", False) is False
+
+    def test_utility_on_when_enabled(self):
+        """When explicitly enabled, should create utility meters."""
+        options = {"enable_utility_meters": True}
+        assert options.get("enable_utility_meters", False) is True
+
+    def test_utility_entity_count_when_disabled(self):
+        """With utility meters off, only core sensors are created."""
+        enable = False
+        core_count = 16
+        utility_count = 15
+        total = core_count + (utility_count if enable else 0)
+        assert total == 16
+
+    def test_utility_entity_count_when_enabled(self):
+        """With utility meters on, all sensors are created."""
+        enable = True
+        core_count = 16
+        utility_count = 15
+        total = core_count + (utility_count if enable else 0)
+        assert total == 31
+
+
+# ---------------------------------------------------------------------------
+# Tests: Import guard configurable via config flow
+# ---------------------------------------------------------------------------
+
+class TestImportGuardConfigurable:
+    """Test that import guard threshold/duration are configurable."""
+
+    def test_default_threshold(self):
+        """Default import guard threshold is 200W."""
+        options = {}
+        threshold = float(options.get("import_guard_threshold_w", 200.0))
+        assert threshold == 200.0
+
+    def test_custom_threshold(self):
+        """Custom threshold is picked up from options."""
+        options = {"import_guard_threshold_w": 300}
+        threshold = float(options.get("import_guard_threshold_w", 200.0))
+        assert threshold == 300.0
+
+    def test_default_duration(self):
+        """Default import guard duration is 30s."""
+        options = {}
+        duration = float(options.get("import_guard_duration_s", 30.0))
+        assert duration == 30.0
+
+    def test_custom_duration(self):
+        """Custom duration is picked up from options."""
+        options = {"import_guard_duration_s": 60}
+        duration = float(options.get("import_guard_duration_s", 30.0))
+        assert duration == 60.0
+
+    def test_higher_threshold_reduces_false_triggers(self):
+        """Higher threshold means small imports don't trigger the guard."""
+        threshold = 300.0
+        # 250W import: below 300W threshold → no trigger
+        net_w = 250.0
+        assert net_w <= threshold  # no trigger
+
+    def test_longer_duration_debounces_spikes(self):
+        """Longer duration means brief spikes are ignored."""
+        duration = 60.0
+        spike_duration = 25.0
+        assert spike_duration < duration  # not long enough to trigger

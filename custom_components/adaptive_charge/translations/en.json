@@ -42,10 +42,30 @@
         }
       },
       "range": {
-        "title": "Target Range",
-        "description": "Set the target range in km for overnight charging.",
+        "title": "Target Range & Buffer",
+        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
         "data": {
-          "desired_range": "Desired Range (km)"
+          "desired_range": "Desired Range (km)",
+          "charge_buffer": "Charge Buffer (%)",
+          "range_hysteresis_pct": "Range Hysteresis (%)"
+        }
+      },
+      "surplus_settings": {
+        "title": "Surplus Charging Thresholds",
+        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "data": {
+          "surplus_start_threshold_a": "Start Threshold (A)",
+          "surplus_stop_threshold_a": "Stop Threshold (A)"
+        }
+      },
+      "charge_window": {
+        "title": "Charge Time Window",
+        "description": "Set the earliest time to start 'charge tonight' and the time to auto-reset the charge tonight switch.",
+        "data": {
+          "tonight_start_hour": "Earliest Start Hour",
+          "tonight_start_minute": "Earliest Start Minute",
+          "night_off_hour": "Night Off Hour",
+          "night_off_minute": "Night Off Minute"
         }
       },
       "solar_optional": {
@@ -73,44 +93,125 @@
           "solar_done_duration": "Solar Done Duration (s)",
           "start_delay": "Start Delay (s)",
           "stop_delay": "Stop Delay (s)",
-          "modulate_min_interval": "Modulate Min Interval (s)"
+          "modulate_min_interval": "Modulate Min Interval (s)",
+          "import_guard_threshold_w": "Import Guard Threshold (W)",
+          "import_guard_duration_s": "Import Guard Duration (s)",
+          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
         }
       }
     },
     "error": {
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
     },
     "abort": {
       "already_configured": "Integration is already configured."
     }
   },
   "options": {
+    "error": {
+      "unknown": "Unexpected error.",
+      "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
+    },
     "step": {
       "init": {
-        "title": "AdaptiveCharge Settings",
-        "description": "Edit all entity selections and timing parameters.",
+        "title": "AdaptiveCharge — Net Power Mode",
+        "description": "Choose how your net power is measured.",
         "data": {
-          "net_power_mode": "Net Power Mode",
-          "net_power_sensor": "Net Power Sensor",
+          "net_power_mode": "Net Power Mode"
+        }
+      },
+      "net_power": {
+        "title": "Net Power Sensor",
+        "description": "Select the sensor that measures net grid power (positive = import, negative = export).",
+        "data": {
+          "net_power_sensor": "Net Power Sensor"
+        }
+      },
+      "consumption_production": {
+        "title": "Consumption & Production Sensors",
+        "description": "Select the sensors for house consumption and solar production.",
+        "data": {
           "consumption_sensor": "Consumption Sensor",
-          "production_sensor": "Production Sensor",
+          "production_sensor": "Production Sensor"
+        }
+      },
+      "charger": {
+        "title": "Charger Sensors",
+        "description": "Select sensors for EV power consumption and grid voltage.",
+        "data": {
           "ev_power_sensor": "EV Power Sensor",
-          "voltage_sensor": "Voltage Sensor",
+          "voltage_sensor": "Voltage Sensor"
+        }
+      },
+      "vehicle": {
+        "title": "Vehicle Entities",
+        "description": "Select entities for vehicle presence, cable connection, and current range.",
+        "data": {
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
-          "battery_sensor": "Battery Level Sensor",
+          "battery_sensor": "Battery Level Sensor (optional)"
+        }
+      },
+      "range": {
+        "title": "Target Range & Buffer",
+        "description": "Set the target range, charge buffer, and range hysteresis. Hysteresis must be ≤ buffer.",
+        "data": {
           "desired_range": "Desired Range (km)",
-          "solar_sensor": "Solar Sensor",
+          "charge_buffer": "Charge Buffer (%)",
+          "range_hysteresis_pct": "Range Hysteresis (%)"
+        }
+      },
+      "surplus_settings": {
+        "title": "Surplus Charging Thresholds",
+        "description": "Set the minimum current to start and stop surplus charging. The start threshold must be ≥ stop threshold to prevent flickering.",
+        "data": {
+          "surplus_start_threshold_a": "Start Threshold (A)",
+          "surplus_stop_threshold_a": "Stop Threshold (A)"
+        }
+      },
+      "charge_window": {
+        "title": "Charge Time Window",
+        "description": "Set the earliest time to start 'charge tonight' and the time to auto-reset the charge tonight switch.",
+        "data": {
+          "tonight_start_hour": "Earliest Start Hour",
+          "tonight_start_minute": "Earliest Start Minute",
+          "night_off_hour": "Night Off Hour",
+          "night_off_minute": "Night Off Minute"
+        }
+      },
+      "solar_optional": {
+        "title": "Solar Sensor (Optional)",
+        "description": "Optionally select a sensor for solar generation to track solar done state.",
+        "data": {
+          "solar_sensor": "Solar Sensor"
+        }
+      },
+      "actuators_optional": {
+        "title": "Actuators (Optional)",
+        "description": "Optionally select the charge switch and charge current number entities.",
+        "data": {
           "charge_switch": "Charge Switch",
-          "charge_current_number": "Charge Current Number",
+          "charge_current_number": "Charge Current Number"
+        }
+      },
+      "advanced": {
+        "title": "Advanced Settings",
+        "description": "Fine-tune timing parameters for the charging control algorithm.",
+        "data": {
           "smoothing_window": "Smoothing Window (s)",
           "sample_interval": "Sample Interval (s)",
           "solar_done_threshold": "Solar Done Threshold (W)",
           "solar_done_duration": "Solar Done Duration (s)",
           "start_delay": "Start Delay (s)",
           "stop_delay": "Stop Delay (s)",
-          "modulate_min_interval": "Modulate Min Interval (s)"
+          "modulate_min_interval": "Modulate Min Interval (s)",
+          "import_guard_threshold_w": "Import Guard Threshold (W)",
+          "import_guard_duration_s": "Import Guard Duration (s)",
+          "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
         }
       }
     }
@@ -127,7 +228,26 @@
       "available_current_decision": {"name": "Available Current Decision (A)"},
       "alignment_diagnostics": {"name": "Alignment Diagnostics"},
       "energy_charged_kwh": {"name": "Energy Charged (kWh)"},
-      "missed_solar_kwh": {"name": "Missed Solar (kWh)"}
+      "missed_solar_kwh": {"name": "Missed Solar (kWh)"},
+      "missed_solar_absence_kwh": {"name": "Missed Solar Absence (kWh)"},
+      "missed_solar_cable_kwh": {"name": "Missed Solar Cable (kWh)"},
+      "missed_solar_low_surplus_kwh": {"name": "Missed Solar Low Surplus (kWh)"},
+      "definitive_range_km": {"name": "Definitive Range (km)"},
+      "energy_charged_daily": {"name": "Energy Charged Daily (kWh)"},
+      "energy_charged_monthly": {"name": "Energy Charged Monthly (kWh)"},
+      "energy_charged_yearly": {"name": "Energy Charged Yearly (kWh)"},
+      "missed_solar_daily": {"name": "Missed Solar Daily (kWh)"},
+      "missed_solar_monthly": {"name": "Missed Solar Monthly (kWh)"},
+      "missed_solar_yearly": {"name": "Missed Solar Yearly (kWh)"},
+      "missed_solar_absence_daily": {"name": "Missed Solar Absence Daily (kWh)"},
+      "missed_solar_absence_monthly": {"name": "Missed Solar Absence Monthly (kWh)"},
+      "missed_solar_absence_yearly": {"name": "Missed Solar Absence Yearly (kWh)"},
+      "missed_solar_cable_daily": {"name": "Missed Solar Cable Daily (kWh)"},
+      "missed_solar_cable_monthly": {"name": "Missed Solar Cable Monthly (kWh)"},
+      "missed_solar_cable_yearly": {"name": "Missed Solar Cable Yearly (kWh)"},
+      "missed_solar_low_surplus_daily": {"name": "Missed Solar Low Surplus Daily (kWh)"},
+      "missed_solar_low_surplus_monthly": {"name": "Missed Solar Low Surplus Monthly (kWh)"},
+      "missed_solar_low_surplus_yearly": {"name": "Missed Solar Low Surplus Yearly (kWh)"}
     },
     "binary_sensor": {
       "force_charge": {"name": "Force Charge"},
@@ -135,18 +255,12 @@
     },
     "number": {
       "desired_range_km": {"name": "Desired Range (km)"},
-      "max_current_limit_a": {"name": "Max Current Limit (A)"},
-      "charge_buffer_pct": {"name": "Charge Buffer (%)"},
-      "range_hysteresis_pct": {"name": "Range Hysteresis (%)"}
+      "max_current_limit_a": {"name": "Max Current Limit (A)"}
     },
     "switch": {
       "controller_enabled": {"name": "Controller Enabled"},
       "charge_now": {"name": "Charge Now"},
       "charge_tonight": {"name": "Charge Tonight"}
-    },
-    "time": {
-      "earliest_charge_start": {"name": "Earliest Charge Start"},
-      "night_off_time": {"name": "Night Off Time"}
     }
   }
 }

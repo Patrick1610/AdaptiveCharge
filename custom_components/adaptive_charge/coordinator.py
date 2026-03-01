@@ -22,9 +22,11 @@ from .alignment import (
     compute_confidence,
     compute_skew,
 )
+from .helpers import format_duration
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
     CONF_CONSUMPTION_SENSOR,
@@ -39,8 +41,11 @@ from .const import (
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
+    CONF_NIGHT_OFF_HOUR,
+    CONF_NIGHT_OFF_MINUTE,
     CONF_PRESENCE_ENTITY,
     CONF_PRODUCTION_SENSOR,
+    CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
@@ -48,12 +53,17 @@ from .const import (
     CONF_SOLAR_SENSOR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
+    CONF_SURPLUS_START_THRESHOLD_A,
+    CONF_SURPLUS_STOP_THRESHOLD_A,
+    CONF_TONIGHT_START_HOUR,
+    CONF_TONIGHT_START_MINUTE,
     CONF_VOLTAGE_SENSOR,
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
     CONFIDENCE_MEDIUM,
     DEFAULT_ALIGNMENT_TIMEOUT_MAX,
     DEFAULT_ALIGNMENT_TIMEOUT_MIN,
+    DEFAULT_CHARGE_BUFFER,
     DEFAULT_COOLDOWN_DOWN_S,
     DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
@@ -66,11 +76,15 @@ from .const import (
     DEFAULT_IMPORT_GUARD_HYSTERESIS_W,
     DEFAULT_IMPORT_GUARD_SETTLE_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
+    DEFAULT_IMPORT_GUARD_ZERO_HOLD_S,
     DEFAULT_IMPORT_SAFETY_DURATION_S,
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MAX_STEP_A,
+    DEFAULT_MIN_CURRENT_LIMIT,
     DEFAULT_RANGE_HYSTERESIS_PCT,
+    DEFAULT_SURPLUS_START_THRESHOLD_A,
+    DEFAULT_SURPLUS_STOP_THRESHOLD_A,
     DEFAULT_TONIGHT_REENTRY_CURRENT_A,
     DEFAULT_TONIGHT_START_HOUR,
     DEFAULT_TONIGHT_START_MINUTE,
@@ -197,12 +211,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
         self._max_current_limit: float = DEFAULT_MAX_CURRENT_LIMIT
-        self._charge_buffer: float = 0.0
-        self._range_hysteresis_pct: float = DEFAULT_RANGE_HYSTERESIS_PCT
-        self._tonight_start_hour: int = DEFAULT_TONIGHT_START_HOUR
-        self._tonight_start_minute: int = DEFAULT_TONIGHT_START_MINUTE
-        self._night_off_hour: int = DEFAULT_NIGHT_OFF_HOUR
-        self._night_off_minute: int = DEFAULT_NIGHT_OFF_MINUTE
+        self._min_current_limit: float = DEFAULT_MIN_CURRENT_LIMIT
+        self._surplus_start_threshold_a: float = float(
+            options.get(CONF_SURPLUS_START_THRESHOLD_A, DEFAULT_SURPLUS_START_THRESHOLD_A)
+        )
+        self._surplus_stop_threshold_a: float = float(
+            options.get(CONF_SURPLUS_STOP_THRESHOLD_A, DEFAULT_SURPLUS_STOP_THRESHOLD_A)
+        )
+        self._charge_buffer: float = float(options.get(CONF_CHARGE_BUFFER, DEFAULT_CHARGE_BUFFER))
+        self._range_hysteresis_pct: float = float(options.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT))
+        self._tonight_start_hour: int = int(options.get(CONF_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_HOUR))
+        self._tonight_start_minute: int = int(options.get(CONF_TONIGHT_START_MINUTE, DEFAULT_TONIGHT_START_MINUTE))
+        self._night_off_hour: int = int(options.get(CONF_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_HOUR))
+        self._night_off_minute: int = int(options.get(CONF_NIGHT_OFF_MINUTE, DEFAULT_NIGHT_OFF_MINUTE))
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -266,6 +287,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_state_since: float | None = None
         self._import_below_since: float | None = None
         self._import_guard_last_reduce_time: float | None = None
+        self._import_guard_zero_since: float | None = None  # when we first held at 0A
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
@@ -286,6 +308,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_solar_wh: float = 0.0
         self._energy_session_import_wh: float = 0.0
         self._missed_solar_wh: float = 0.0
+        self._missed_solar_absence_wh: float = 0.0
+        self._missed_solar_cable_wh: float = 0.0
+        self._missed_solar_low_surplus_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
         # Unsub for interval tracker and night-off timer
@@ -642,15 +667,30 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         presence: bool | None,
         cable_connected: bool | None,
     ) -> dict[str, Any]:
-        """Evaluate force charge, need, tonight condition, and earliest-start gate."""
+        """Evaluate force charge, need, tonight condition, and earliest-start gate.
+
+        Symmetric hysteresis (Option B): the hysteresis band is centered on
+        effective_range.  start threshold = effective_range - hyst/2,
+        stop threshold = effective_range + hyst/2.
+
+        Both buffer and hysteresis are percentages of desired_range:
+          effective_range = desired_range × (1 + buffer%)
+          hysteresis_km   = desired_range × hysteresis%
+        This keeps them directly comparable so the constraint hyst ≤ buffer
+        (enforced in the config flow) guarantees the start threshold never
+        drops below desired_range.
+        """
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
-        hysteresis_km = effective_range * (self._range_hysteresis_pct / 100.0)
+        hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
+        half_hyst = hysteresis_km / 2.0
         prev_need_active = self._need_active
         if current_range is not None:
             if self._need_active:
-                self._need_active = current_range < (effective_range + hysteresis_km)
+                # Stop only when range reaches upper band
+                self._need_active = current_range < (effective_range + half_hyst)
             else:
-                self._need_active = current_range < effective_range
+                # Start when range drops below lower band
+                self._need_active = current_range < (effective_range - half_hyst)
         else:
             self._need_active = False
         need = self._need_active
@@ -749,7 +789,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Missed solar accumulation ---
         if surplus_w > 0 and not self._charging_on:
-            self._missed_solar_wh += surplus_w * dt_h
+            missed_wh = surplus_w * dt_h
+            self._missed_solar_wh += missed_wh
+
+            voltage = sensor_data.get("voltage", 230.0) or 230.0
+            surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
+
+            if not presence:
+                self._missed_solar_absence_wh += missed_wh
+            elif not cable_connected:
+                self._missed_solar_cable_wh += missed_wh
+            elif surplus_a < self._surplus_start_threshold_a:
+                self._missed_solar_low_surplus_wh += missed_wh
 
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
@@ -822,6 +873,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "range_hysteresis_km": round(force_data["hysteresis_km"], 1),
             "charge_buffer": self._charge_buffer,
             "max_current_limit": self._max_current_limit,
+            "min_current_limit": self._min_current_limit,
+            "surplus_start_threshold_a": self._surplus_start_threshold_a,
+            "surplus_stop_threshold_a": self._surplus_stop_threshold_a,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
             "tonight_condition": force_data["tonight_condition"],
@@ -847,8 +901,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "import_guard_state": self._import_guard_state,
             "import_guard_reason": self._import_guard_reason,
             "import_watts": max(computed_net_w, 0.0),
-            "time_in_import_state": (
-                round(time.monotonic() - self._import_guard_state_since, 1)
+            "time_in_import_state": format_duration(
+                time.monotonic() - self._import_guard_state_since
                 if self._import_guard_state_since is not None
                 else 0.0
             ),
@@ -929,6 +983,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "energy_session_solar_kwh": round(self._energy_session_solar_wh / 1000.0, 3),
             "energy_session_import_kwh": round(self._energy_session_import_wh / 1000.0, 3),
             "missed_solar_kwh": round(self._missed_solar_wh / 1000.0, 3),
+            "missed_solar_absence_kwh": round(self._missed_solar_absence_wh / 1000.0, 3),
+            "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
+            "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
         }
 
     # ------------------------------------------------------------------
@@ -974,6 +1031,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 self._import_guard_state_since = mono_now
                 self._import_below_since = None
                 self._import_guard_last_reduce_time = None
+                self._import_guard_zero_since = None
         else:
             # Between clear_threshold and threshold — hold current state (dead zone)
             self._import_exceed_since = None
@@ -1006,6 +1064,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
+        self._import_guard_zero_since = None
         await asyncio.sleep(10)
         await self._set_charge_current(int(self._max_current_limit))
 
@@ -1049,8 +1108,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Import safety: escalation ladder ---
         # Step 1: Reduce current by 1A (soft mitigation)
         # Step 2: Hold / settle window to observe net import improvement
-        # Step 3: Reduce to 0A (minimum current, charger stays on)
-        # Step 4: Only then hard stop / charger off (hard mitigation)
+        # Step 3: Reduce to 0A (keep session alive, no power draw)
+        # Step 4: Hold at 0A for up to ZERO_HOLD_S before hard stop
+        # Step 5: Only then hard stop / charger off (hard mitigation)
         if import_safety and self._charging_on and self._current_mode == MODE_SURPLUS:
             # Respect settle window after last reduction
             if (
@@ -1066,25 +1126,34 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 new_target = max(new_target, 0.0)
                 self._import_guard_last_reduce_time = mono_now
                 self._import_guard_state = IMPORT_GUARD_REDUCING
+                if new_target == 0.0:
+                    self._import_guard_zero_since = mono_now
                 await self._commit_current(
                     new_target, mono_now, reason="import_guard_reduce"
                 )
                 self._last_reason = "import_guard_reduce"
             else:
-                # Already at 0A — escalate to hard stop after settle window
-                self._cancel_pending()
-                self._pending_task = self.hass.async_create_task(
-                    self._debounced(0, self._action_stop_surplus),
-                    eager_start=False,
-                )
-                self._import_guard_state = IMPORT_GUARD_STOPPED
-                self._last_commit_reason = "import_guard_escalate_stop"
-                self._last_reason = "import_guard_escalate_stop"
-                self._last_action_ts = time.monotonic()
+                # At 0A — hold for ZERO_HOLD_S before escalating to hard stop
+                if self._import_guard_zero_since is None:
+                    self._import_guard_zero_since = mono_now
+                zero_elapsed = mono_now - self._import_guard_zero_since
+                if zero_elapsed >= DEFAULT_IMPORT_GUARD_ZERO_HOLD_S:
+                    # Held at 0A long enough — escalate to hard stop
+                    self._cancel_pending()
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(0, self._action_stop_surplus),
+                        eager_start=False,
+                    )
+                    self._import_guard_state = IMPORT_GUARD_STOPPED
+                    self._last_commit_reason = "import_guard_escalate_stop"
+                    self._last_reason = "import_guard_escalate_stop"
+                    self._last_action_ts = time.monotonic()
+                    self._import_guard_zero_since = None
+                # else: continue holding at 0A (session alive, no power)
             return
 
         # --- Start surplus charging ---
-        if ema_current >= 1.0 and not self._charging_on:
+        if ema_current >= self._surplus_start_threshold_a and not self._charging_on:
             # Respect min-off time
             if self._last_off_time is not None:
                 off_elapsed = mono_now - self._last_off_time
@@ -1094,7 +1163,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             # debounce timer every tick which would prevent it from completing.
             if self._pending_task is None or self._pending_task.done():
                 capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
-                start_a = max(1, min(int(ema_current), int(capped_limit)))
+                start_a = max(int(self._surplus_start_threshold_a), min(int(ema_current), int(capped_limit)))
                 self._pending_task = self.hass.async_create_task(
                     self._debounced(self._start_delay, self._action_start_surplus, start_a),
                     eager_start=False,
@@ -1102,7 +1171,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return
 
         # --- Stop surplus charging ---
-        if ema_current < 1.0 and self._charging_on and self._current_mode == MODE_SURPLUS:
+        if ema_current < self._surplus_stop_threshold_a and self._charging_on and self._current_mode == MODE_SURPLUS:
             # Respect min-on time
             if self._last_on_time is not None:
                 on_elapsed = mono_now - self._last_on_time
@@ -1245,6 +1314,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         await self._set_charge_current(start_a)
         await asyncio.sleep(5)
         await self._enable_charging()
+        await asyncio.sleep(2)
+        # Re-confirm current after enabling — some cars (e.g. Tesla) reset
+        # the current to 0 when it is set while the charge switch is off.
+        await self._set_charge_current(start_a)
         self._charging_on = True
         self._set_mode(MODE_FORCE, "force_charge_active", source)
         self._last_action = "start_force"
@@ -1276,6 +1349,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         await self._set_charge_current(current_a)
         await asyncio.sleep(5)
         await self._enable_charging()
+        await asyncio.sleep(2)
+        # Re-confirm current after enabling — some cars reset the current
+        # when it is set while the charge switch is off.
+        await self._set_charge_current(current_a)
         self._charging_on = True
         self._set_mode(MODE_SURPLUS, "surplus_above_threshold", "auto_rule")
         self._last_action = f"start_surplus_{current_a}A"
@@ -1303,6 +1380,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_active = False
         self._import_guard_state = IMPORT_GUARD_OK
         self._import_guard_last_reduce_time = None
+        self._import_guard_zero_since = None
         self._import_below_since = None
         self._import_exceed_since = None
         await asyncio.sleep(10)
@@ -1436,26 +1514,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # Public properties (used by time/number/switch entities)
     # ------------------------------------------------------------------
 
-    @property
-    def tonight_start_hour(self) -> int:
-        """Return the configured earliest charge start hour."""
-        return self._tonight_start_hour
-
-    @property
-    def tonight_start_minute(self) -> int:
-        """Return the configured earliest charge start minute."""
-        return self._tonight_start_minute
-
-    @property
-    def night_off_hour(self) -> int:
-        """Return the configured night-off hour."""
-        return self._night_off_hour
-
-    @property
-    def night_off_minute(self) -> int:
-        """Return the configured night-off minute."""
-        return self._night_off_minute
-
     # ------------------------------------------------------------------
     # Public setters (used by switch/number entities)
     # ------------------------------------------------------------------
@@ -1477,14 +1535,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Set the max current limit in A."""
         self._max_current_limit = value
 
-    def set_charge_buffer(self, value: float) -> None:
-        """Set the charge buffer percentage (0-25%)."""
-        self._charge_buffer = value
-
-    def set_range_hysteresis_pct(self, value: float) -> None:
-        """Set the range hysteresis percentage (0-10%)."""
-        self._range_hysteresis_pct = value
-
     def restore_energy_state(
         self, total_wh: float, solar_wh: float, import_wh: float
     ) -> None:
@@ -1497,16 +1547,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Restore cumulative missed solar counter from persistent state."""
         self._missed_solar_wh = missed_wh
 
-    def set_tonight_start_time(self, hour: int, minute: int) -> None:
-        """Set the earliest charge tonight start time."""
-        self._tonight_start_hour = hour
-        self._tonight_start_minute = minute
-
-    def set_night_off_time(self, hour: int, minute: int) -> None:
-        """Set the nightly charge_tonight reset time and reschedule."""
-        self._night_off_hour = hour
-        self._night_off_minute = minute
-        self._schedule_night_off()
+    def restore_missed_solar_split(
+        self, absence_wh: float, cable_wh: float, low_surplus_wh: float
+    ) -> None:
+        """Restore missed solar sub-category counters from persistent state."""
+        self._missed_solar_absence_wh = absence_wh
+        self._missed_solar_cable_wh = cable_wh
+        self._missed_solar_low_surplus_wh = low_surplus_wh
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).
