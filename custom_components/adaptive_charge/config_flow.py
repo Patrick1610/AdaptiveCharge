@@ -13,6 +13,7 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
+    CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_SWITCH,
     CONF_CHARGE_WINDOW_END,
     CONF_CHARGE_WINDOW_START,
@@ -20,7 +21,6 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
-    CONF_MAX_CURRENT_LIMIT,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_INVERT,
     CONF_NET_POWER_MODE,
@@ -39,7 +39,6 @@ from .const import (
     DEFAULT_CHARGE_WINDOW_END,
     DEFAULT_CHARGE_WINDOW_START,
     DEFAULT_DESIRED_RANGE,
-    DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SMOOTHING_WINDOW,
@@ -239,13 +238,9 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_actuators_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 7: optional charge switch, current number and max current limit."""
+        """Step 7: optional charge switch, current number and charge limit."""
         if user_input is not None:
-            filtered = {k: v for k, v in user_input.items() if v != "" and v is not None}
-            # Always keep max_current_limit even if zero
-            if CONF_MAX_CURRENT_LIMIT in user_input:
-                filtered[CONF_MAX_CURRENT_LIMIT] = user_input[CONF_MAX_CURRENT_LIMIT]
-            self._data = {**self._data, **filtered}
+            self._data = {**self._data, **{k: v for k, v in user_input.items() if v != "" and v is not None}}
             return await self.async_step_advanced()
 
         schema = vol.Schema(
@@ -256,16 +251,8 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_CHARGE_CURRENT_NUMBER): selector.selector(
                     {"entity": {"domain": "number"}}
                 ),
-                vol.Required(CONF_MAX_CURRENT_LIMIT, default=DEFAULT_MAX_CURRENT_LIMIT): selector.selector(
-                    {
-                        "number": {
-                            "min": 1,
-                            "max": 32,
-                            "step": 1,
-                            "unit_of_measurement": "A",
-                            "mode": "box",
-                        }
-                    }
+                vol.Optional(CONF_CHARGE_LIMIT_NUMBER): selector.selector(
+                    {"entity": {"domain": "number"}}
                 ),
             }
         )

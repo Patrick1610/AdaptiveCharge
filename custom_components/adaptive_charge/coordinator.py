@@ -27,6 +27,7 @@ from .alignment import (
 from .const import (
     CONF_CABLE_SENSOR,
     CONF_CHARGE_CURRENT_NUMBER,
+    CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_SWITCH,
     CONF_CONSUMPTION_SENSOR,
     CONF_CURRENT_RANGE_SENSOR,
@@ -171,6 +172,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
+        self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
         self._charge_window_start: str = options.get(CONF_CHARGE_WINDOW_START, DEFAULT_CHARGE_WINDOW_START)
         self._charge_window_end: str = options.get(CONF_CHARGE_WINDOW_END, DEFAULT_CHARGE_WINDOW_END)
 
@@ -610,6 +612,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "cable_connected": cable_connected,
             "current_range": current_range,
             "desired_range": self._desired_range,
+            "charge_limit_entity": self._charge_limit_number,
             "max_current_limit": self._max_current_limit,
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,

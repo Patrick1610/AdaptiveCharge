@@ -89,16 +89,16 @@
       },
       "actuators_optional": {
         "title": "Actuators",
-        "description": "Configure the entities that AdaptiveCharge uses to actually control your charger, and set the maximum allowed charge current.",
+        "description": "Configure the entities that AdaptiveCharge uses to control your charger, and optionally link the vehicle's charge limit entity.",
         "data": {
           "charge_switch": "Charge Switch",
           "charge_current_number": "Charge Current Number",
-          "max_current_limit": "Max Charge Current (A)"
+          "charge_limit_number": "Charge Limit (% entity)"
         },
         "data_description": {
           "charge_switch": "Optional: a switch entity used to enable or disable the EVSE relay. AdaptiveCharge turns this on/off when starting or stopping a charging session. If not provided, no relay commands are issued.",
           "charge_current_number": "Optional: a number entity used to set the charge current in amps. AdaptiveCharge writes to this entity to modulate the current based on available solar surplus. If not provided, current modulation is disabled.",
-          "max_current_limit": "The maximum current (A) that AdaptiveCharge will ever send to the charger. Set this to the rated capacity of your charger or cable. This limit can be changed at any time via the Max Current Limit entity."
+          "charge_limit_number": "Optional: a number entity that represents the vehicle's charge limit in %. Link this to your car's charge limit entity (e.g. 80 for 80%) so AdaptiveCharge can read or set how full the battery should charge. If not provided, charge limit management is disabled."
         }
       },
       "advanced": {

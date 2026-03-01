@@ -145,9 +145,9 @@ A `sensor` for total solar yield (W or kW). Used to detect _Solar Done_ state.
 
 - **Charge Switch** *(optional)*: `switch` entity to enable/disable the EVSE
 - **Charge Current Number** *(optional)*: `number` entity to set the charge current (A)
-- **Max Charge Current (A)**: the maximum current AdaptiveCharge will ever send to the charger (default: 16 A). Set this to your charger's or cable's rated maximum. This can also be adjusted at runtime via the `number.max_current_limit_a` entity.
+- **Charge Limit** *(optional)*: `number` entity representing the vehicle's charge limit in %. Link this to your car's charge limit entity (e.g. Tesla's `number.charge_limit` via Tessie or Volkswagen's equivalent) to allow AdaptiveCharge to read or set the target battery fill level (e.g. 80 for 80%).
 
-If the switch and current number are left empty, the integration tracks state internally but does not issue actual commands.
+If all three are left empty, the integration tracks state internally but does not issue actual commands to the charger or vehicle.
 
 ### Step 8 – Advanced Settings
 
