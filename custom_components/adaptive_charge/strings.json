@@ -110,6 +110,11 @@
     }
   },
   "options": {
+    "error": {
+      "unknown": "Unexpected error.",
+      "hysteresis_exceeds_buffer": "Hysteresis must be ≤ buffer percentage.",
+      "stop_exceeds_start": "Stop threshold must be ≤ start threshold."
+    },
     "step": {
       "init": {
         "title": "AdaptiveCharge — Net Power Mode",
