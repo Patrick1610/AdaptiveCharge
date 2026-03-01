@@ -21,6 +21,8 @@ from .const import (
     CONF_DESIRED_RANGE,
     CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
+    CONF_IMPORT_GUARD_DURATION,
+    CONF_IMPORT_GUARD_THRESHOLD,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
@@ -43,6 +45,8 @@ from .const import (
     CONF_VOLTAGE_SENSOR,
     DEFAULT_CHARGE_BUFFER,
     DEFAULT_DESIRED_RANGE,
+    DEFAULT_IMPORT_GUARD_DURATION_S,
+    DEFAULT_IMPORT_GUARD_THRESHOLD_W,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_NIGHT_OFF_HOUR,
     DEFAULT_NIGHT_OFF_MINUTE,
@@ -374,6 +378,16 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_MODULATE_MIN_INTERVAL, default=DEFAULT_MODULATE_MIN_INTERVAL
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_IMPORT_GUARD_THRESHOLD, default=int(DEFAULT_IMPORT_GUARD_THRESHOLD_W)
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 1000, "step": 10, "unit_of_measurement": "W", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_IMPORT_GUARD_DURATION, default=int(DEFAULT_IMPORT_GUARD_DURATION_S)
+                ): selector.selector(
+                    {"number": {"min": 5, "max": 120, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Optional(
                     CONF_ENABLE_UTILITY_METERS, default=False
@@ -734,6 +748,18 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     default=int(current.get(CONF_MODULATE_MIN_INTERVAL, DEFAULT_MODULATE_MIN_INTERVAL)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 300, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_IMPORT_GUARD_THRESHOLD,
+                    default=int(current.get(CONF_IMPORT_GUARD_THRESHOLD, DEFAULT_IMPORT_GUARD_THRESHOLD_W)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 1000, "step": 10, "unit_of_measurement": "W", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_IMPORT_GUARD_DURATION,
+                    default=int(current.get(CONF_IMPORT_GUARD_DURATION, DEFAULT_IMPORT_GUARD_DURATION_S)),
+                ): selector.selector(
+                    {"number": {"min": 5, "max": 120, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Optional(
                     CONF_ENABLE_UTILITY_METERS,

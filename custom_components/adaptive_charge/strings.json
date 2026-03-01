@@ -94,6 +94,8 @@
           "start_delay": "Start Delay (s)",
           "stop_delay": "Stop Delay (s)",
           "modulate_min_interval": "Modulate Min Interval (s)",
+          "import_guard_threshold_w": "Import Guard Threshold (W)",
+          "import_guard_duration_s": "Import Guard Duration (s)",
           "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
         }
       }
@@ -202,6 +204,8 @@
           "start_delay": "Start Delay (s)",
           "stop_delay": "Stop Delay (s)",
           "modulate_min_interval": "Modulate Min Interval (s)",
+          "import_guard_threshold_w": "Import Guard Threshold (W)",
+          "import_guard_duration_s": "Import Guard Duration (s)",
           "enable_utility_meters": "Enable Utility Meters (daily/monthly/yearly)"
         }
       }

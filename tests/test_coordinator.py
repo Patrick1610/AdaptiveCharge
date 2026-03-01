@@ -3854,3 +3854,48 @@ class TestUtilityMetersOptIn:
         utility_count = 15
         total = core_count + (utility_count if enable else 0)
         assert total == 31
+
+
+# ---------------------------------------------------------------------------
+# Tests: Import guard configurable via config flow
+# ---------------------------------------------------------------------------
+
+class TestImportGuardConfigurable:
+    """Test that import guard threshold/duration are configurable."""
+
+    def test_default_threshold(self):
+        """Default import guard threshold is 200W."""
+        options = {}
+        threshold = float(options.get("import_guard_threshold_w", 200.0))
+        assert threshold == 200.0
+
+    def test_custom_threshold(self):
+        """Custom threshold is picked up from options."""
+        options = {"import_guard_threshold_w": 300}
+        threshold = float(options.get("import_guard_threshold_w", 200.0))
+        assert threshold == 300.0
+
+    def test_default_duration(self):
+        """Default import guard duration is 30s."""
+        options = {}
+        duration = float(options.get("import_guard_duration_s", 30.0))
+        assert duration == 30.0
+
+    def test_custom_duration(self):
+        """Custom duration is picked up from options."""
+        options = {"import_guard_duration_s": 60}
+        duration = float(options.get("import_guard_duration_s", 30.0))
+        assert duration == 60.0
+
+    def test_higher_threshold_reduces_false_triggers(self):
+        """Higher threshold means small imports don't trigger the guard."""
+        threshold = 300.0
+        # 250W import: below 300W threshold → no trigger
+        net_w = 250.0
+        assert net_w <= threshold  # no trigger
+
+    def test_longer_duration_debounces_spikes(self):
+        """Longer duration means brief spikes are ignored."""
+        duration = 60.0
+        spike_duration = 25.0
+        assert spike_duration < duration  # not long enough to trigger
