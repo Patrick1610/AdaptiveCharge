@@ -54,6 +54,7 @@ async def async_setup_entry(
         MissedSolarAbsenceSensor(coordinator, entry),
         MissedSolarCableSensor(coordinator, entry),
         MissedSolarLowSurplusSensor(coordinator, entry),
+        MissedSolarQuantizationSensor(coordinator, entry),
         # Range thresholds
         RangeUpperLimitSensor(coordinator, entry),
         RangeLowerLimitSensor(coordinator, entry),
@@ -87,18 +88,21 @@ async def async_setup_entry(
                     MissedSolarAbsenceDailySensor(coordinator, entry),
                     MissedSolarCableDailySensor(coordinator, entry),
                     MissedSolarLowSurplusDailySensor(coordinator, entry),
+                    MissedSolarQuantizationDailySensor(coordinator, entry),
                 ])
             if monthly:
                 entities.extend([
                     MissedSolarAbsenceMonthlySensor(coordinator, entry),
                     MissedSolarCableMonthlySensor(coordinator, entry),
                     MissedSolarLowSurplusMonthlySensor(coordinator, entry),
+                    MissedSolarQuantizationMonthlySensor(coordinator, entry),
                 ])
             if yearly:
                 entities.extend([
                     MissedSolarAbsenceYearlySensor(coordinator, entry),
                     MissedSolarCableYearlySensor(coordinator, entry),
                     MissedSolarLowSurplusYearlySensor(coordinator, entry),
+                    MissedSolarQuantizationYearlySensor(coordinator, entry),
                 ])
 
     async_add_entities(entities)
@@ -482,6 +486,7 @@ class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
                     float(attrs.get("missed_absence_kwh", 0)) * 1000.0,
                     float(attrs.get("missed_cable_kwh", 0)) * 1000.0,
                     float(attrs.get("missed_low_surplus_kwh", 0)) * 1000.0,
+                    float(attrs.get("missed_quantization_kwh", 0)) * 1000.0,
                 )
             except (ValueError, TypeError):
                 pass
@@ -504,6 +509,7 @@ class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             "missed_absence_kwh": data.get("missed_solar_absence_kwh", 0.0),
             "missed_cable_kwh": data.get("missed_solar_cable_kwh", 0.0),
             "missed_low_surplus_kwh": data.get("missed_solar_low_surplus_kwh", 0.0),
+            "missed_quantization_kwh": data.get("missed_solar_quantization_kwh", 0.0),
         }
 
 
@@ -558,6 +564,17 @@ class MissedSolarLowSurplusSensor(_MissedSolarSubSensor):
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_kwh"
+
+
+class MissedSolarQuantizationSensor(_MissedSolarSubSensor):
+    """Missed solar due to integer current steps while charging (fractional surplus)."""
+
+    _attr_name = "Missed Solar Quantization (kWh)"
+    _data_key = "missed_solar_quantization_kwh"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_kwh"
 
 
 # ---------------------------------------------------------------------------
@@ -911,3 +928,41 @@ class MissedSolarLowSurplusYearlySensor(_UtilityMeterSensor):
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_yearly"
+
+
+# --- Missed Solar Quantization utility meters ---
+
+class MissedSolarQuantizationDailySensor(_UtilityMeterSensor):
+    """Daily missed solar quantization utility meter."""
+
+    _attr_name = "Missed Solar Quantization Daily (kWh)"
+    _source_key = "missed_solar_quantization_kwh"
+    _period = "daily"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_daily"
+
+
+class MissedSolarQuantizationMonthlySensor(_UtilityMeterSensor):
+    """Monthly missed solar quantization utility meter."""
+
+    _attr_name = "Missed Solar Quantization Monthly (kWh)"
+    _source_key = "missed_solar_quantization_kwh"
+    _period = "monthly"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_monthly"
+
+
+class MissedSolarQuantizationYearlySensor(_UtilityMeterSensor):
+    """Yearly missed solar quantization utility meter."""
+
+    _attr_name = "Missed Solar Quantization Yearly (kWh)"
+    _source_key = "missed_solar_quantization_kwh"
+    _period = "yearly"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_yearly"

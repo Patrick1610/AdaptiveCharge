@@ -26,6 +26,7 @@ from .helpers import format_duration
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_LIMIT_SENSOR,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -183,6 +184,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._cable_sensor: str | None = options.get(CONF_CABLE_SENSOR)
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
+        self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
@@ -313,6 +315,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_absence_wh: float = 0.0
         self._missed_solar_cable_wh: float = 0.0
         self._missed_solar_low_surplus_wh: float = 0.0
+        self._missed_solar_quantization_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
         # Unsub for interval tracker and night-off timer
@@ -493,6 +496,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         cable_connected = _get_bool_state(self.hass, self._cable_sensor)
         current_range = _get_float_state(self.hass, self._current_range_sensor)
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
+        charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
 
         net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
         consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
@@ -520,6 +524,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "cable_connected": cable_connected,
             "current_range": current_range,
             "battery_pct": battery_pct,
+            "charge_limit_pct": charge_limit_pct,
         }
 
     # ------------------------------------------------------------------
@@ -804,6 +809,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             elif surplus_a < self._surplus_start_threshold_a:
                 self._missed_solar_low_surplus_wh += missed_wh
 
+        # --- Quantization missed solar (fractional surplus lost to integer current steps) ---
+        if self._charging_on and self._current_mode == MODE_SURPLUS and surplus_w > 0:
+            ev_w_val = sensor_data.get("ev_w", 0.0) or 0.0
+            fractional_w = surplus_w - ev_w_val
+            if fractional_w > 0:
+                fractional_wh = fractional_w * dt_h
+                self._missed_solar_wh += fractional_wh
+                self._missed_solar_quantization_wh += fractional_wh
+
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
         self._energy_session_wh = 0.0
@@ -820,7 +834,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         force_charge: bool,
         ema_current_a: float,
     ) -> None:
-        """Detect cable plug-in events and schedule delayed action."""
+        """Detect cable plug-in/disconnect events and schedule delayed action."""
         if (
             self._controller_enabled
             and cable_connected is not None
@@ -832,6 +846,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     self._pending_plugin_task.cancel()
                 self._pending_plugin_task = self.hass.async_create_task(
                     self._action_plug_in_delayed(force_charge, ema_current_a),
+                    eager_start=False,
+                )
+            elif not cable_connected and self._cable_prev and self._charging_on:
+                # Cable disconnected while charging — stop immediately so that
+                # subsequent ticks correctly attribute missed solar to cable/absence.
+                self._cancel_pending()
+                self._pending_task = self.hass.async_create_task(
+                    self._debounced(0, self._action_stop_surplus),
                     eager_start=False,
                 )
         if cable_connected is not None:
@@ -869,6 +891,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "cable_connected": sensor_data["cable_connected"],
             "current_range": sensor_data["current_range"],
             "battery_pct": sensor_data.get("battery_pct"),
+            "charge_limit_pct": sensor_data.get("charge_limit_pct"),
             "desired_range": self._desired_range,
             "effective_range": force_data["effective_range"],
             "range_hysteresis_pct": self._range_hysteresis_pct,
@@ -988,6 +1011,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "missed_solar_absence_kwh": round(self._missed_solar_absence_wh / 1000.0, 3),
             "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
             "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
+            "missed_solar_quantization_kwh": round(self._missed_solar_quantization_wh / 1000.0, 3),
         }
 
     # ------------------------------------------------------------------
@@ -1550,12 +1574,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_wh = missed_wh
 
     def restore_missed_solar_split(
-        self, absence_wh: float, cable_wh: float, low_surplus_wh: float
+        self, absence_wh: float, cable_wh: float, low_surplus_wh: float, quantization_wh: float = 0.0
     ) -> None:
         """Restore missed solar sub-category counters from persistent state."""
         self._missed_solar_absence_wh = absence_wh
         self._missed_solar_cable_wh = cable_wh
         self._missed_solar_low_surplus_wh = low_surplus_wh
+        self._missed_solar_quantization_wh = quantization_wh
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).

@@ -38,7 +38,8 @@
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
-          "battery_sensor": "Battery Level Sensor (optional)"
+          "battery_sensor": "Battery Level Sensor (optional)",
+          "charge_limit_sensor": "Charge Limit Sensor (optional)"
         }
       },
       "range": {
@@ -242,48 +243,120 @@
   },
   "entity": {
     "sensor": {
-      "net_surplus_excl_ev_w": {"name": "Net Surplus Excl EV (W)"},
-      "mode": {"name": "Mode"},
-      "input_skew_seconds": {"name": "Input Skew (s)"},
-      "import_guard_state": {"name": "Import Guard State"},
-      "last_action": {"name": "Last Action"},
-      "last_reason": {"name": "Last Reason"},
-      "current_setting": {"name": "Current Setting (A)"},
-      "available_current_decision": {"name": "Available Current Decision (A)"},
-      "alignment_diagnostics": {"name": "Alignment Diagnostics"},
-      "energy_charged_kwh": {"name": "Energy Charged (kWh)"},
-      "missed_solar_kwh": {"name": "Missed Solar (kWh)"},
-      "missed_solar_absence_kwh": {"name": "Missed Solar Absence (kWh)"},
-      "missed_solar_cable_kwh": {"name": "Missed Solar Cable (kWh)"},
-      "missed_solar_low_surplus_kwh": {"name": "Missed Solar Low Surplus (kWh)"},
-      "definitive_range_km": {"name": "Definitive Range (km)"},
-      "energy_charged_daily": {"name": "Energy Charged Daily (kWh)"},
-      "energy_charged_monthly": {"name": "Energy Charged Monthly (kWh)"},
-      "energy_charged_yearly": {"name": "Energy Charged Yearly (kWh)"},
-      "missed_solar_daily": {"name": "Missed Solar Daily (kWh)"},
-      "missed_solar_monthly": {"name": "Missed Solar Monthly (kWh)"},
-      "missed_solar_yearly": {"name": "Missed Solar Yearly (kWh)"},
-      "missed_solar_absence_daily": {"name": "Missed Solar Absence Daily (kWh)"},
-      "missed_solar_absence_monthly": {"name": "Missed Solar Absence Monthly (kWh)"},
-      "missed_solar_absence_yearly": {"name": "Missed Solar Absence Yearly (kWh)"},
-      "missed_solar_cable_daily": {"name": "Missed Solar Cable Daily (kWh)"},
-      "missed_solar_cable_monthly": {"name": "Missed Solar Cable Monthly (kWh)"},
-      "missed_solar_cable_yearly": {"name": "Missed Solar Cable Yearly (kWh)"},
-      "missed_solar_low_surplus_daily": {"name": "Missed Solar Low Surplus Daily (kWh)"},
-      "missed_solar_low_surplus_monthly": {"name": "Missed Solar Low Surplus Monthly (kWh)"},
-      "missed_solar_low_surplus_yearly": {"name": "Missed Solar Low Surplus Yearly (kWh)"}
+      "net_surplus_excl_ev_w": {
+        "name": "Net Surplus Excl EV (W)"
+      },
+      "mode": {
+        "name": "Mode"
+      },
+      "input_skew_seconds": {
+        "name": "Input Skew (s)"
+      },
+      "import_guard_state": {
+        "name": "Import Guard State"
+      },
+      "last_action": {
+        "name": "Last Action"
+      },
+      "last_reason": {
+        "name": "Last Reason"
+      },
+      "current_setting": {
+        "name": "Current Setting (A)"
+      },
+      "available_current_decision": {
+        "name": "Available Current Decision (A)"
+      },
+      "alignment_diagnostics": {
+        "name": "Alignment Diagnostics"
+      },
+      "energy_charged_kwh": {
+        "name": "Energy Charged (kWh)"
+      },
+      "missed_solar_kwh": {
+        "name": "Missed Solar (kWh)"
+      },
+      "missed_solar_absence_kwh": {
+        "name": "Missed Solar Absence (kWh)"
+      },
+      "missed_solar_cable_kwh": {
+        "name": "Missed Solar Cable (kWh)"
+      },
+      "missed_solar_low_surplus_kwh": {
+        "name": "Missed Solar Low Surplus (kWh)"
+      },
+      "definitive_range_km": {
+        "name": "Definitive Range (km)"
+      },
+      "energy_charged_daily": {
+        "name": "Energy Charged Daily (kWh)"
+      },
+      "energy_charged_monthly": {
+        "name": "Energy Charged Monthly (kWh)"
+      },
+      "energy_charged_yearly": {
+        "name": "Energy Charged Yearly (kWh)"
+      },
+      "missed_solar_daily": {
+        "name": "Missed Solar Daily (kWh)"
+      },
+      "missed_solar_monthly": {
+        "name": "Missed Solar Monthly (kWh)"
+      },
+      "missed_solar_yearly": {
+        "name": "Missed Solar Yearly (kWh)"
+      },
+      "missed_solar_absence_daily": {
+        "name": "Missed Solar Absence Daily (kWh)"
+      },
+      "missed_solar_absence_monthly": {
+        "name": "Missed Solar Absence Monthly (kWh)"
+      },
+      "missed_solar_absence_yearly": {
+        "name": "Missed Solar Absence Yearly (kWh)"
+      },
+      "missed_solar_cable_daily": {
+        "name": "Missed Solar Cable Daily (kWh)"
+      },
+      "missed_solar_cable_monthly": {
+        "name": "Missed Solar Cable Monthly (kWh)"
+      },
+      "missed_solar_cable_yearly": {
+        "name": "Missed Solar Cable Yearly (kWh)"
+      },
+      "missed_solar_low_surplus_daily": {
+        "name": "Missed Solar Low Surplus Daily (kWh)"
+      },
+      "missed_solar_low_surplus_monthly": {
+        "name": "Missed Solar Low Surplus Monthly (kWh)"
+      },
+      "missed_solar_low_surplus_yearly": {
+        "name": "Missed Solar Low Surplus Yearly (kWh)"
+      }
     },
     "binary_sensor": {
-      "force_charge": {"name": "Force Charge"},
-      "charging_active": {"name": "Charging Active"}
+      "force_charge": {
+        "name": "Force Charge"
+      },
+      "charging_active": {
+        "name": "Charging Active"
+      }
     },
     "number": {
-      "desired_range_km": {"name": "Desired Range (km)"}
+      "desired_range_km": {
+        "name": "Desired Range (km)"
+      }
     },
     "switch": {
-      "controller_enabled": {"name": "Controller Enabled"},
-      "charge_now": {"name": "Charge Now"},
-      "charge_tonight": {"name": "Charge Tonight"}
+      "controller_enabled": {
+        "name": "Controller Enabled"
+      },
+      "charge_now": {
+        "name": "Charge Now"
+      },
+      "charge_tonight": {
+        "name": "Charge Tonight"
+      }
     }
   }
 }
