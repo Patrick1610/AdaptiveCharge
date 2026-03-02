@@ -14,14 +14,21 @@ def get_version(hass: HomeAssistant) -> str | None:
     version = domain_data.get("version")
     # Return None for missing or placeholder values — "unknown" is not a valid
     # AwesomeVersion string and causes HA's device registry comparison to fail.
-    return version if version and version != "unknown" else None
+    # Coerce to str() because integration.version may be an AwesomeVersion object.
+    if not version:
+        return None
+    version_str = str(version)
+    return version_str if version_str != "unknown" else None
 
 
 def device_info(entry: ConfigEntry, version: str | None = None) -> DeviceInfo:
-    """Return shared DeviceInfo for all AdaptiveCharge entities."""
-    # Only include sw_version when we have a real version string.  Passing
-    # "unknown" (or None) causes HA's awesomeversion comparison to raise
-    # AwesomeVersionCompareException and blocks every entity from registering.
+    """Return shared DeviceInfo for all AdaptiveCharge entities.
+
+    ``sw_version`` is included only when *version* is a non-empty plain string.
+    Passing ``None`` (or omitting it) means HA receives ``UNDEFINED`` for
+    ``sw_version`` and skips the device-registry comparison entirely — safe
+    even when a corrupted value (e.g. ``"unknown"``) was persisted previously.
+    """
     extra: dict = {"sw_version": version} if version else {}
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},

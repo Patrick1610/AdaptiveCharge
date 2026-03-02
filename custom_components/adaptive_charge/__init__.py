@@ -8,7 +8,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers import config_validation as cv, device_registry as dr, entity_registry as er
 from homeassistant.loader import async_get_integration
 
 from .const import (
@@ -70,10 +70,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if "version" not in domain_data:
         try:
             integration = await async_get_integration(hass, DOMAIN)
-            domain_data["version"] = integration.version
+            # Coerce to plain str — integration.version returns an AwesomeVersion
+            # object in newer HA.  Passing an AwesomeVersion to DeviceInfo causes
+            # AwesomeVersion.__ne__() to be called during device-registry update,
+            # which crashes when the previously-stored sw_version is unparseable.
+            domain_data["version"] = str(integration.version)
         except Exception:
             _LOGGER.debug("Could not load integration version")
             domain_data["version"] = None
+
+    # Clean up corrupted sw_version="unknown" that was stored in the device
+    # registry by v3.1.3/v3.1.4.  "unknown" is not parseable by AwesomeVersion;
+    # comparing *any* new sw_version against it raises
+    # AwesomeVersionCompareException and blocks every entity from registering.
+    device_registry = dr.async_get(hass)
+    device = device_registry.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    if device is not None and device.sw_version is not None:
+        try:
+            sw = str(device.sw_version)
+            if sw == "unknown" or sw == "":
+                device_registry.async_update_device(device.id, sw_version=None)
+        except Exception:
+            _LOGGER.debug("Could not clean up device sw_version")
 
     coordinator = AdaptiveChargeCoordinator(hass, entry)
     domain_data[entry.entry_id] = coordinator

@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 # HA history/energy exports used as reference data only
 *.csv
+# HA diagnostic log files
+*.log
