@@ -229,7 +229,7 @@ class VersionSensor(_BaseAdaptiveChargeSensor):
 
     @property
     def native_value(self) -> str:
-        return get_version(self.coordinator.hass)
+        return get_version(self.coordinator.hass) or "unknown"
 
 
 # ---------------------------------------------------------------------------
