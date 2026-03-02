@@ -46,10 +46,6 @@ CONF_TONIGHT_START_MINUTE = "tonight_start_minute"
 CONF_NIGHT_OFF_HOUR = "night_off_hour"
 CONF_NIGHT_OFF_MINUTE = "night_off_minute"
 
-# Aliases for display (night charging)
-CONF_NIGHT_CHARGING_START = "tonight_start_hour"  # reuses same key
-CONF_NIGHT_CHARGING_END = "night_off_hour"  # reuses same key
-
 # --- Net Power Mode Values ---
 MODE_NET_ONLY = "net_only"
 MODE_CONSUMPTION_PRODUCTION = "consumption_production"

@@ -128,10 +128,54 @@ class TestNetPowerInvert:
         """Invert with EV drawing power."""
         # Sensor reports -2000 (their convention = exporting 2000W)
         # After invert: +2000 (our convention = importing)
-        net_w = -(-2000.0)
-        assert net_w == 2000.0
+        net_w = 2000.0  # after invert of -2000
         # With EV drawing 3000W: surplus = -2000 + 3000 = 1000
         assert compute_surplus(net_w, 3000.0) == 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: time string parsing
+# ---------------------------------------------------------------------------
+
+def _parse_time_string(time_str, default_hour, default_minute):
+    """Mirror of config_flow._parse_time_string for testing."""
+    try:
+        parts = str(time_str).split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (ValueError, TypeError, IndexError):
+        pass
+    return default_hour, default_minute
+
+
+class TestTimeStringParsing:
+    """Test the _parse_time_string helper."""
+
+    def test_valid_hhmm(self):
+        assert _parse_time_string("22:30", 0, 0) == (22, 30)
+
+    def test_valid_hour_only(self):
+        assert _parse_time_string("5", 0, 0) == (5, 0)
+
+    def test_midnight(self):
+        assert _parse_time_string("00:00", 22, 0) == (0, 0)
+
+    def test_invalid_string_returns_default(self):
+        assert _parse_time_string("abc", 22, 0) == (22, 0)
+
+    def test_empty_string_returns_default(self):
+        assert _parse_time_string("", 5, 30) == (5, 30)
+
+    def test_out_of_range_hour_returns_default(self):
+        assert _parse_time_string("25:00", 22, 0) == (22, 0)
+
+    def test_out_of_range_minute_returns_default(self):
+        assert _parse_time_string("22:61", 22, 0) == (22, 0)
+
+    def test_none_returns_default(self):
+        assert _parse_time_string(None, 5, 0) == (5, 0)
 
 
 # ---------------------------------------------------------------------------

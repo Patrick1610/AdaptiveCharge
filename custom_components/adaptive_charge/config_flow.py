@@ -83,6 +83,19 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _parse_time_string(time_str: str, default_hour: int, default_minute: int) -> tuple[int, int]:
+    """Parse an HH:MM time string into (hour, minute) with safe defaults."""
+    try:
+        parts = str(time_str).split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (ValueError, TypeError, IndexError):
+        pass
+    return default_hour, default_minute
+
+
 class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AdaptiveCharge."""
 
@@ -302,16 +315,19 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 7: night charging time window."""
         if user_input is not None:
-            # Convert HH:MM time strings to hour/minute integers for storage
-            start_time = user_input.get("night_charging_start", "22:00")
-            end_time = user_input.get("night_charging_end", "05:00")
-            start_parts = str(start_time).split(":")
-            end_parts = str(end_time).split(":")
+            start_h, start_m = _parse_time_string(
+                user_input.get("night_charging_start", "22:00"),
+                DEFAULT_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_MINUTE,
+            )
+            end_h, end_m = _parse_time_string(
+                user_input.get("night_charging_end", "05:00"),
+                DEFAULT_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_MINUTE,
+            )
             self._data = {**self._data, **{
-                CONF_TONIGHT_START_HOUR: int(start_parts[0]),
-                CONF_TONIGHT_START_MINUTE: int(start_parts[1]) if len(start_parts) > 1 else 0,
-                CONF_NIGHT_OFF_HOUR: int(end_parts[0]),
-                CONF_NIGHT_OFF_MINUTE: int(end_parts[1]) if len(end_parts) > 1 else 0,
+                CONF_TONIGHT_START_HOUR: start_h,
+                CONF_TONIGHT_START_MINUTE: start_m,
+                CONF_NIGHT_OFF_HOUR: end_h,
+                CONF_NIGHT_OFF_MINUTE: end_m,
             }}
             return await self.async_step_solar_optional()
 
@@ -710,16 +726,19 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         """Step 7: night charging time window."""
         current = self._current()
         if user_input is not None:
-            # Convert HH:MM time strings to hour/minute integers for storage
-            start_time = user_input.get("night_charging_start", "22:00")
-            end_time = user_input.get("night_charging_end", "05:00")
-            start_parts = str(start_time).split(":")
-            end_parts = str(end_time).split(":")
+            start_h, start_m = _parse_time_string(
+                user_input.get("night_charging_start", "22:00"),
+                DEFAULT_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_MINUTE,
+            )
+            end_h, end_m = _parse_time_string(
+                user_input.get("night_charging_end", "05:00"),
+                DEFAULT_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_MINUTE,
+            )
             self._data.update({
-                CONF_TONIGHT_START_HOUR: int(start_parts[0]),
-                CONF_TONIGHT_START_MINUTE: int(start_parts[1]) if len(start_parts) > 1 else 0,
-                CONF_NIGHT_OFF_HOUR: int(end_parts[0]),
-                CONF_NIGHT_OFF_MINUTE: int(end_parts[1]) if len(end_parts) > 1 else 0,
+                CONF_TONIGHT_START_HOUR: start_h,
+                CONF_TONIGHT_START_MINUTE: start_m,
+                CONF_NIGHT_OFF_HOUR: end_h,
+                CONF_NIGHT_OFF_MINUTE: end_m,
             })
             return await self.async_step_solar_optional()
 
