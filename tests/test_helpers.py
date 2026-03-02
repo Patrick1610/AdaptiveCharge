@@ -18,20 +18,24 @@ def _get_version_mirror(domain_data: dict | None) -> str | None:
     None, or the placeholder string "unknown".  "unknown" must not be
     returned because it is not a parseable AwesomeVersion format and causes
     HA's device registry comparison to raise AwesomeVersionCompareException.
+    Coerces to str() because integration.version may be an AwesomeVersion object.
     """
     data = domain_data or {}
     version = data.get("version")
-    return version if version and version != "unknown" else None
+    if not version:
+        return None
+    version_str = str(version)
+    return version_str if version_str != "unknown" else None
 
 
 def _device_info_has_sw_version(version: str | None) -> bool:
     """Mirror of helpers.device_info sw_version decision.
 
-    Returns True when sw_version would be included in the DeviceInfo dict,
-    False when it would be omitted (i.e. version is None or empty).
+    sw_version is intentionally never included in DeviceInfo to avoid
+    AwesomeVersionCompareException when the device registry already has
+    a corrupted sw_version from a previous install.
     """
-    extra: dict = {"sw_version": version} if version else {}
-    return "sw_version" in extra
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -68,15 +72,29 @@ class TestGetVersion:
         for v in ("3.0.0", "2.1.1", "1.0.0"):
             assert _get_version_mirror({"version": v}) == v
 
+    def test_coerces_non_string_to_str(self):
+        """integration.version may return an AwesomeVersion object; str() is applied."""
+        class FakeAwesomeVersion:
+            def __init__(self, v):
+                self._v = v
+            def __str__(self):
+                return self._v
+            def __bool__(self):
+                return True
+        domain_data = {"version": FakeAwesomeVersion("3.1.5")}
+        result = _get_version_mirror(domain_data)
+        assert result == "3.1.5"
+        assert isinstance(result, str)
+
 
 # ---------------------------------------------------------------------------
 # Tests: device_info must omit sw_version when version is None/"unknown"
 # ---------------------------------------------------------------------------
 
 class TestDeviceInfoSwVersion:
-    def test_sw_version_included_when_real(self):
-        """A valid version string must be included in DeviceInfo."""
-        assert _device_info_has_sw_version("3.1.5") is True
+    def test_sw_version_never_included_even_when_real(self):
+        """sw_version must never be passed to DeviceInfo to avoid AwesomeVersionCompareException."""
+        assert _device_info_has_sw_version("3.1.5") is False
 
     def test_sw_version_excluded_when_none(self):
         """None must NOT be passed to DeviceInfo — awesomeversion can't compare it."""
@@ -90,7 +108,7 @@ class TestDeviceInfoSwVersion:
         version = _get_version_mirror({"version": "unknown"})
         assert _device_info_has_sw_version(version) is False
 
-    def test_sw_version_set_when_valid_version_in_domain_data(self):
-        """Full round-trip: valid version → sw_version included."""
+    def test_no_sw_version_even_when_valid_version_in_domain_data(self):
+        """Full round-trip: valid version → still no sw_version in DeviceInfo."""
         version = _get_version_mirror({"version": "3.1.5"})
-        assert _device_info_has_sw_version(version) is True
+        assert _device_info_has_sw_version(version) is False
