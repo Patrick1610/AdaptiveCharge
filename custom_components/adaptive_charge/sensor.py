@@ -139,7 +139,7 @@ class _BaseAdaptiveChargeSensor(CoordinatorEntity, SensorEntity):
 class SurplusExclEvSensor(_BaseAdaptiveChargeSensor):
     """Net surplus excluding EV consumption (W)."""
 
-    _attr_name = "Net Surplus Excl EV (W)"
+    _attr_name = "Net Surplus Excl EV"
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
@@ -277,7 +277,7 @@ class ModeSensor(_BaseAdaptiveChargeSensor):
 class InputSkewSensor(_BaseAdaptiveChargeSensor):
     """Skew between net and EV sensor update timestamps (seconds)."""
 
-    _attr_name = "Input Skew (s)"
+    _attr_name = "Input Skew"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "s"
     _attr_entity_registry_enabled_default = False
@@ -386,7 +386,7 @@ class LastReasonSensor(_BaseAdaptiveChargeSensor):
 class CurrentSettingSensor(_BaseAdaptiveChargeSensor):
     """Last current value actually sent to the charger (A)."""
 
-    _attr_name = "Current Setting (A)"
+    _attr_name = "Current Setting"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
@@ -406,7 +406,7 @@ class CurrentSettingSensor(_BaseAdaptiveChargeSensor):
 class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):
     """EMA-smoothed available current used for control decisions (A)."""
 
-    _attr_name = "Available Current Decision (A)"
+    _attr_name = "Available Current Decision"
     _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
@@ -440,7 +440,7 @@ class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):
 class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     """Cumulative energy charged to the EV (kWh), with solar/import split."""
 
-    _attr_name = "Energy Charged (kWh)"
+    _attr_name = "Energy Charged"
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -500,7 +500,7 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     """Cumulative solar surplus energy that was not charged to the EV (kWh)."""
 
-    _attr_name = "Missed Solar (kWh)"
+    _attr_name = "Missed Solar"
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -587,7 +587,7 @@ class _MissedSolarSubSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 class MissedSolarAbsenceSensor(_MissedSolarSubSensor):
     """Missed solar due to vehicle absence (not home)."""
 
-    _attr_name = "Missed Solar Absence (kWh)"
+    _attr_name = "Missed Solar Absence"
     _data_key = "missed_solar_absence_kwh"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -598,7 +598,7 @@ class MissedSolarAbsenceSensor(_MissedSolarSubSensor):
 class MissedSolarCableSensor(_MissedSolarSubSensor):
     """Missed solar due to cable disconnected (while home)."""
 
-    _attr_name = "Missed Solar Cable (kWh)"
+    _attr_name = "Missed Solar Cable"
     _data_key = "missed_solar_cable_kwh"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -609,7 +609,7 @@ class MissedSolarCableSensor(_MissedSolarSubSensor):
 class MissedSolarLowSurplusSensor(_MissedSolarSubSensor):
     """Missed solar due to surplus below 1A threshold."""
 
-    _attr_name = "Missed Solar Low Surplus (kWh)"
+    _attr_name = "Missed Solar Low Surplus"
     _data_key = "missed_solar_low_surplus_kwh"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -620,7 +620,7 @@ class MissedSolarLowSurplusSensor(_MissedSolarSubSensor):
 class MissedSolarQuantizationSensor(_MissedSolarSubSensor):
     """Missed solar due to integer current steps while charging (fractional surplus)."""
 
-    _attr_name = "Missed Solar Quantization (kWh)"
+    _attr_name = "Missed Solar Quantization"
     _data_key = "missed_solar_quantization_kwh"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -651,7 +651,7 @@ class RangeUpperLimitSensor(_BaseAdaptiveChargeSensor):
     upper_limit = effective_range + hysteresis_km / 2
     """
 
-    _attr_name = "Range Upper Limit (km)"
+    _attr_name = "Range Upper Limit"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "km"
 
@@ -680,7 +680,7 @@ class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
     lower_limit = effective_range - hysteresis_km / 2
     """
 
-    _attr_name = "Range Lower Limit (km)"
+    _attr_name = "Range Lower Limit"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "km"
 
@@ -825,7 +825,7 @@ class _StoreBackedPeriodSensor(_BaseAdaptiveChargeSensor):
 class EnergyChargedDailySensor(_UtilityMeterSensor):
     """Daily energy charged utility meter."""
 
-    _attr_name = "Energy Charged Daily (kWh)"
+    _attr_name = "Energy Charged Daily"
     _source_key = "energy_total_kwh"
     _period = "daily"
 
@@ -837,7 +837,7 @@ class EnergyChargedDailySensor(_UtilityMeterSensor):
 class EnergyChargedMonthlySensor(_UtilityMeterSensor):
     """Monthly energy charged utility meter."""
 
-    _attr_name = "Energy Charged Monthly (kWh)"
+    _attr_name = "Energy Charged Monthly"
     _source_key = "energy_total_kwh"
     _period = "monthly"
 
@@ -849,7 +849,7 @@ class EnergyChargedMonthlySensor(_UtilityMeterSensor):
 class EnergyChargedYearlySensor(_UtilityMeterSensor):
     """Yearly energy charged utility meter."""
 
-    _attr_name = "Energy Charged Yearly (kWh)"
+    _attr_name = "Energy Charged Yearly"
     _source_key = "energy_total_kwh"
     _period = "yearly"
 
@@ -861,7 +861,7 @@ class EnergyChargedYearlySensor(_UtilityMeterSensor):
 class MissedSolarDailySensor(_StoreBackedPeriodSensor):
     """Daily missed solar (store-backed)."""
 
-    _attr_name = "Missed Solar Daily (kWh)"
+    _attr_name = "Missed Solar Daily"
     _store_data_key = "store_missed_solar_daily_kwh"
     _period = "daily"
 
@@ -873,7 +873,7 @@ class MissedSolarDailySensor(_StoreBackedPeriodSensor):
 class MissedSolarMonthlySensor(_StoreBackedPeriodSensor):
     """Monthly missed solar (store-backed)."""
 
-    _attr_name = "Missed Solar Monthly (kWh)"
+    _attr_name = "Missed Solar Monthly"
     _store_data_key = "store_missed_solar_monthly_kwh"
     _period = "monthly"
 
@@ -885,7 +885,7 @@ class MissedSolarMonthlySensor(_StoreBackedPeriodSensor):
 class MissedSolarYearlySensor(_StoreBackedPeriodSensor):
     """Yearly missed solar (store-backed)."""
 
-    _attr_name = "Missed Solar Yearly (kWh)"
+    _attr_name = "Missed Solar Yearly"
     _store_data_key = "store_missed_solar_yearly_kwh"
     _period = "yearly"
 
@@ -899,7 +899,7 @@ class MissedSolarYearlySensor(_StoreBackedPeriodSensor):
 class MissedSolarAbsenceDailySensor(_StoreBackedPeriodSensor):
     """Daily missed solar absence (store-backed)."""
 
-    _attr_name = "Missed Solar Absence Daily (kWh)"
+    _attr_name = "Missed Solar Absence Daily"
     _store_data_key = "store_missed_solar_absence_daily_kwh"
     _period = "daily"
     _attr_entity_registry_enabled_default = False
@@ -913,7 +913,7 @@ class MissedSolarAbsenceDailySensor(_StoreBackedPeriodSensor):
 class MissedSolarAbsenceMonthlySensor(_StoreBackedPeriodSensor):
     """Monthly missed solar absence (store-backed)."""
 
-    _attr_name = "Missed Solar Absence Monthly (kWh)"
+    _attr_name = "Missed Solar Absence Monthly"
     _store_data_key = "store_missed_solar_absence_monthly_kwh"
     _period = "monthly"
     _attr_entity_registry_enabled_default = False
@@ -927,7 +927,7 @@ class MissedSolarAbsenceMonthlySensor(_StoreBackedPeriodSensor):
 class MissedSolarAbsenceYearlySensor(_StoreBackedPeriodSensor):
     """Yearly missed solar absence (store-backed)."""
 
-    _attr_name = "Missed Solar Absence Yearly (kWh)"
+    _attr_name = "Missed Solar Absence Yearly"
     _store_data_key = "store_missed_solar_absence_yearly_kwh"
     _period = "yearly"
     _attr_entity_registry_enabled_default = False
@@ -943,7 +943,7 @@ class MissedSolarAbsenceYearlySensor(_StoreBackedPeriodSensor):
 class MissedSolarCableDailySensor(_StoreBackedPeriodSensor):
     """Daily missed solar cable (store-backed)."""
 
-    _attr_name = "Missed Solar Cable Daily (kWh)"
+    _attr_name = "Missed Solar Cable Daily"
     _store_data_key = "store_missed_solar_cable_daily_kwh"
     _period = "daily"
     _attr_entity_registry_enabled_default = False
@@ -957,7 +957,7 @@ class MissedSolarCableDailySensor(_StoreBackedPeriodSensor):
 class MissedSolarCableMonthlySensor(_StoreBackedPeriodSensor):
     """Monthly missed solar cable (store-backed)."""
 
-    _attr_name = "Missed Solar Cable Monthly (kWh)"
+    _attr_name = "Missed Solar Cable Monthly"
     _store_data_key = "store_missed_solar_cable_monthly_kwh"
     _period = "monthly"
     _attr_entity_registry_enabled_default = False
@@ -971,7 +971,7 @@ class MissedSolarCableMonthlySensor(_StoreBackedPeriodSensor):
 class MissedSolarCableYearlySensor(_StoreBackedPeriodSensor):
     """Yearly missed solar cable (store-backed)."""
 
-    _attr_name = "Missed Solar Cable Yearly (kWh)"
+    _attr_name = "Missed Solar Cable Yearly"
     _store_data_key = "store_missed_solar_cable_yearly_kwh"
     _period = "yearly"
     _attr_entity_registry_enabled_default = False
@@ -987,7 +987,7 @@ class MissedSolarCableYearlySensor(_StoreBackedPeriodSensor):
 class MissedSolarLowSurplusDailySensor(_StoreBackedPeriodSensor):
     """Daily missed solar low surplus (store-backed)."""
 
-    _attr_name = "Missed Solar Low Surplus Daily (kWh)"
+    _attr_name = "Missed Solar Low Surplus Daily"
     _store_data_key = "store_missed_solar_low_surplus_daily_kwh"
     _period = "daily"
     _attr_entity_registry_enabled_default = False
@@ -1001,7 +1001,7 @@ class MissedSolarLowSurplusDailySensor(_StoreBackedPeriodSensor):
 class MissedSolarLowSurplusMonthlySensor(_StoreBackedPeriodSensor):
     """Monthly missed solar low surplus (store-backed)."""
 
-    _attr_name = "Missed Solar Low Surplus Monthly (kWh)"
+    _attr_name = "Missed Solar Low Surplus Monthly"
     _store_data_key = "store_missed_solar_low_surplus_monthly_kwh"
     _period = "monthly"
     _attr_entity_registry_enabled_default = False
@@ -1015,7 +1015,7 @@ class MissedSolarLowSurplusMonthlySensor(_StoreBackedPeriodSensor):
 class MissedSolarLowSurplusYearlySensor(_StoreBackedPeriodSensor):
     """Yearly missed solar low surplus (store-backed)."""
 
-    _attr_name = "Missed Solar Low Surplus Yearly (kWh)"
+    _attr_name = "Missed Solar Low Surplus Yearly"
     _store_data_key = "store_missed_solar_low_surplus_yearly_kwh"
     _period = "yearly"
     _attr_entity_registry_enabled_default = False
@@ -1031,7 +1031,7 @@ class MissedSolarLowSurplusYearlySensor(_StoreBackedPeriodSensor):
 class MissedSolarQuantizationDailySensor(_StoreBackedPeriodSensor):
     """Daily missed solar quantization (store-backed)."""
 
-    _attr_name = "Missed Solar Quantization Daily (kWh)"
+    _attr_name = "Missed Solar Quantization Daily"
     _store_data_key = "store_missed_solar_quantization_daily_kwh"
     _period = "daily"
     _attr_entity_registry_enabled_default = False
@@ -1045,7 +1045,7 @@ class MissedSolarQuantizationDailySensor(_StoreBackedPeriodSensor):
 class MissedSolarQuantizationMonthlySensor(_StoreBackedPeriodSensor):
     """Monthly missed solar quantization (store-backed)."""
 
-    _attr_name = "Missed Solar Quantization Monthly (kWh)"
+    _attr_name = "Missed Solar Quantization Monthly"
     _store_data_key = "store_missed_solar_quantization_monthly_kwh"
     _period = "monthly"
     _attr_entity_registry_enabled_default = False
@@ -1059,7 +1059,7 @@ class MissedSolarQuantizationMonthlySensor(_StoreBackedPeriodSensor):
 class MissedSolarQuantizationYearlySensor(_StoreBackedPeriodSensor):
     """Yearly missed solar quantization (store-backed)."""
 
-    _attr_name = "Missed Solar Quantization Yearly (kWh)"
+    _attr_name = "Missed Solar Quantization Yearly"
     _store_data_key = "store_missed_solar_quantization_yearly_kwh"
     _period = "yearly"
     _attr_entity_registry_enabled_default = False

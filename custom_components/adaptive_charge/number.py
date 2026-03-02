@@ -34,7 +34,7 @@ async def async_setup_entry(
 class DesiredRangeNumber(RestoreEntity, NumberEntity):
     """Number entity for the desired vehicle range in km."""
 
-    _attr_name = "Desired Range (km)"
+    _attr_name = "Desired Range"
     _attr_has_entity_name = True
     _attr_native_min_value = 0
     _attr_native_max_value = 1000
