@@ -15,6 +15,9 @@ CONF_CABLE_SENSOR = "cable_sensor"
 CONF_CURRENT_RANGE_SENSOR = "current_range_sensor"
 CONF_BATTERY_SENSOR = "battery_sensor"
 CONF_CHARGE_LIMIT_SENSOR = "charge_limit_sensor"
+CONF_CHARGE_LIMIT_NUMBER = "charge_limit_number"
+CONF_DEFAULT_CHARGE_LIMIT = "default_charge_limit"
+CONF_INVERT_NET_POWER = "invert_net_power"
 CONF_FORECAST_SENSORS = "forecast_sensors"
 CONF_DESIRED_RANGE = "desired_range"
 CONF_SOLAR_SENSOR = "solar_sensor"
@@ -42,6 +45,10 @@ CONF_TONIGHT_START_HOUR = "tonight_start_hour"
 CONF_TONIGHT_START_MINUTE = "tonight_start_minute"
 CONF_NIGHT_OFF_HOUR = "night_off_hour"
 CONF_NIGHT_OFF_MINUTE = "night_off_minute"
+
+# Aliases for display (night charging)
+CONF_NIGHT_CHARGING_START = "tonight_start_hour"  # reuses same key
+CONF_NIGHT_CHARGING_END = "night_off_hour"  # reuses same key
 
 # --- Net Power Mode Values ---
 MODE_NET_ONLY = "net_only"
@@ -73,6 +80,7 @@ DEFAULT_SURPLUS_START_THRESHOLD_A = 2
 DEFAULT_SURPLUS_STOP_THRESHOLD_A = 1
 DEFAULT_CHARGE_BUFFER = 0
 DEFAULT_RANGE_HYSTERESIS_PCT = 3.0
+DEFAULT_CHARGE_LIMIT = 80  # default charge limit percentage to reset to on disconnect
 DEFAULT_TONIGHT_REENTRY_CURRENT_A = 5
 DEFAULT_TONIGHT_START_HOUR = 22
 DEFAULT_TONIGHT_START_MINUTE = 0

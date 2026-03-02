@@ -27,7 +27,9 @@ from .storage import AdaptiveChargeStore
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_LIMIT_SENSOR,
+    CONF_DEFAULT_CHARGE_LIMIT,
     CONF_FORECAST_SENSORS,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
@@ -36,6 +38,7 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_INVERT_NET_POWER,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
@@ -69,6 +72,7 @@ from .const import (
     DEFAULT_ALIGNMENT_TIMEOUT_MAX,
     DEFAULT_ALIGNMENT_TIMEOUT_MIN,
     DEFAULT_CHARGE_BUFFER,
+    DEFAULT_CHARGE_LIMIT,
     DEFAULT_COOLDOWN_DOWN_S,
     DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
@@ -178,6 +182,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         self._net_power_mode: str = options.get(CONF_NET_POWER_MODE, MODE_NET_ONLY)
         self._net_power_sensor: str | None = options.get(CONF_NET_POWER_SENSOR)
+        self._invert_net_power: bool = bool(options.get(CONF_INVERT_NET_POWER, False))
         self._consumption_sensor: str | None = options.get(CONF_CONSUMPTION_SENSOR)
         self._production_sensor: str | None = options.get(CONF_PRODUCTION_SENSOR)
         self._ev_power_sensor: str | None = options.get(CONF_EV_POWER_SENSOR)
@@ -187,6 +192,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
         self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
+        self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
+        self._default_charge_limit: int = int(options.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT))
         self._forecast_sensors: list[str] = options.get(CONF_FORECAST_SENSORS, []) or []
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
@@ -533,6 +540,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         if self._net_power_mode == MODE_NET_ONLY:
             computed_net_w = net_w if net_w is not None else 0.0
+            # Apply invert if configured (flip sign for sensors with reversed convention)
+            if self._invert_net_power:
+                computed_net_w = -computed_net_w
         else:
             if consumption_w is not None and production_w is not None:
                 computed_net_w = consumption_w - production_w

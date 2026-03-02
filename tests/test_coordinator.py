@@ -97,6 +97,44 @@ class TestSurplusCalculation:
 
 
 # ---------------------------------------------------------------------------
+# Tests: net power invert
+# ---------------------------------------------------------------------------
+
+class TestNetPowerInvert:
+    """Test that the invert_net_power flag correctly flips the sign."""
+
+    def test_invert_flips_positive_to_negative(self):
+        """If sensor reports +1000 (export in their convention), invert → -1000 (import in ours)."""
+        net_w = 1000.0
+        inverted = -net_w
+        assert inverted == -1000.0
+        # Then surplus = -(-1000) + 0 = 1000 (correct: there IS surplus)
+        assert compute_surplus(inverted, 0.0) == 1000.0
+
+    def test_invert_flips_negative_to_positive(self):
+        """If sensor reports -500 (import in their convention), invert → +500 (import in ours)."""
+        net_w = -500.0
+        inverted = -net_w
+        assert inverted == 500.0
+        # Then surplus = -(500) + 0 = -500 (correct: no surplus, importing)
+        assert compute_surplus(inverted, 0.0) == -500.0
+
+    def test_no_invert_keeps_value(self):
+        """Without invert, value passes through unchanged."""
+        net_w = -1000.0
+        assert compute_surplus(net_w, 0.0) == 1000.0
+
+    def test_invert_with_ev(self):
+        """Invert with EV drawing power."""
+        # Sensor reports -2000 (their convention = exporting 2000W)
+        # After invert: +2000 (our convention = importing)
+        net_w = -(-2000.0)
+        assert net_w == 2000.0
+        # With EV drawing 3000W: surplus = -2000 + 3000 = 1000
+        assert compute_surplus(net_w, 3000.0) == 1000.0
+
+
+# ---------------------------------------------------------------------------
 # Tests: raw_current_a calculation
 # ---------------------------------------------------------------------------
 

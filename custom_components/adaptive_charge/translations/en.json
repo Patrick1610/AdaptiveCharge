@@ -10,9 +10,10 @@
       },
       "net_power": {
         "title": "Net Power Sensor",
-        "description": "Select the sensor that measures net grid power (positive = import, negative = export).",
+        "description": "Select the sensor that measures net grid power (positive = import, negative = export). Enable 'Invert' if your sensor uses reversed sign convention.",
         "data": {
-          "net_power_sensor": "Net Power Sensor"
+          "net_power_sensor": "Net Power Sensor",
+          "invert_net_power": "Invert Net Power (flip sign)"
         }
       },
       "consumption_production": {
@@ -38,16 +39,16 @@
           "presence_entity": "Vehicle Presence",
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
-          "battery_sensor": "Battery Level Sensor (optional)",
-          "charge_limit_sensor": "Charge Limit Sensor (optional)"
+          "battery_sensor": "Battery Level Sensor (optional)"
         }
       },
       "range": {
-        "title": "Charge Buffer & Hysteresis",
-        "description": "Set the charge buffer and range hysteresis. Hysteresis must be ≤ buffer.",
+        "title": "Charge Buffer, Hysteresis & Default Limit",
+        "description": "Set the charge buffer, range hysteresis, and the default charge limit to reset to when the car disconnects. Hysteresis must be ≤ buffer.",
         "data": {
           "charge_buffer": "Charge Buffer (%)",
-          "range_hysteresis_pct": "Range Hysteresis (%)"
+          "range_hysteresis_pct": "Range Hysteresis (%)",
+          "default_charge_limit": "Default Charge Limit (%)"
         }
       },
       "surplus_settings": {
@@ -61,13 +62,11 @@
         }
       },
       "charge_window": {
-        "title": "Charge Time Window",
-        "description": "Set the earliest time to start 'charge tonight' and the time to auto-reset the charge tonight switch.",
+        "title": "Night Charging Window",
+        "description": "Set the start and end times for the night charging window. The 'Charge Tonight' switch activates charging at the start time and auto-resets at the end time.",
         "data": {
-          "tonight_start_hour": "Earliest Start Hour",
-          "tonight_start_minute": "Earliest Start Minute",
-          "night_off_hour": "Night Off Hour",
-          "night_off_minute": "Night Off Minute"
+          "night_charging_start": "Night Charging Start (HH:MM)",
+          "night_charging_end": "Night Charging End (HH:MM)"
         }
       },
       "solar_optional": {
@@ -80,10 +79,11 @@
       },
       "actuators_optional": {
         "title": "Actuators (Optional)",
-        "description": "Optionally select the charge switch and charge current number entities.",
+        "description": "Optionally select the charge switch, charge current number, and charge limit number entities. The charge limit number controls the vehicle's charge limit percentage.",
         "data": {
           "charge_switch": "Charge Switch",
-          "charge_current_number": "Charge Current Number"
+          "charge_current_number": "Charge Current Number",
+          "charge_limit_number": "Charge Limit Number (vehicle %)"
         }
       },
       "advanced": {
@@ -140,9 +140,10 @@
       },
       "net_power": {
         "title": "Net Power Sensor",
-        "description": "Select the sensor that measures net grid power (positive = import, negative = export).",
+        "description": "Select the sensor that measures net grid power (positive = import, negative = export). Enable 'Invert' if your sensor uses reversed sign convention.",
         "data": {
-          "net_power_sensor": "Net Power Sensor"
+          "net_power_sensor": "Net Power Sensor",
+          "invert_net_power": "Invert Net Power (flip sign)"
         }
       },
       "consumption_production": {
@@ -172,11 +173,12 @@
         }
       },
       "range": {
-        "title": "Charge Buffer & Hysteresis",
-        "description": "Set the charge buffer and range hysteresis. Hysteresis must be ≤ buffer.",
+        "title": "Charge Buffer, Hysteresis & Default Limit",
+        "description": "Set the charge buffer, range hysteresis, and the default charge limit to reset to when the car disconnects. Hysteresis must be ≤ buffer.",
         "data": {
           "charge_buffer": "Charge Buffer (%)",
-          "range_hysteresis_pct": "Range Hysteresis (%)"
+          "range_hysteresis_pct": "Range Hysteresis (%)",
+          "default_charge_limit": "Default Charge Limit (%)"
         }
       },
       "surplus_settings": {
@@ -190,13 +192,11 @@
         }
       },
       "charge_window": {
-        "title": "Charge Time Window",
-        "description": "Set the earliest time to start 'charge tonight' and the time to auto-reset the charge tonight switch.",
+        "title": "Night Charging Window",
+        "description": "Set the start and end times for the night charging window. The 'Charge Tonight' switch activates charging at the start time and auto-resets at the end time.",
         "data": {
-          "tonight_start_hour": "Earliest Start Hour",
-          "tonight_start_minute": "Earliest Start Minute",
-          "night_off_hour": "Night Off Hour",
-          "night_off_minute": "Night Off Minute"
+          "night_charging_start": "Night Charging Start (HH:MM)",
+          "night_charging_end": "Night Charging End (HH:MM)"
         }
       },
       "solar_optional": {
@@ -209,10 +209,11 @@
       },
       "actuators_optional": {
         "title": "Actuators (Optional)",
-        "description": "Optionally select the charge switch and charge current number entities.",
+        "description": "Optionally select the charge switch, charge current number, and charge limit number entities. The charge limit number controls the vehicle's charge limit percentage.",
         "data": {
           "charge_switch": "Charge Switch",
-          "charge_current_number": "Charge Current Number"
+          "charge_current_number": "Charge Current Number",
+          "charge_limit_number": "Charge Limit Number (vehicle %)"
         }
       },
       "advanced": {
