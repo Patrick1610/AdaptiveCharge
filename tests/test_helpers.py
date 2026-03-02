@@ -31,11 +31,11 @@ def _get_version_mirror(domain_data: dict | None) -> str | None:
 def _device_info_has_sw_version(version: str | None) -> bool:
     """Mirror of helpers.device_info sw_version decision.
 
-    sw_version is intentionally never included in DeviceInfo to avoid
-    AwesomeVersionCompareException when the device registry already has
-    a corrupted sw_version from a previous install.
+    Returns True when sw_version would be included in the DeviceInfo dict,
+    False when it would be omitted (i.e. version is None or empty).
     """
-    return False
+    extra: dict = {"sw_version": version} if version else {}
+    return "sw_version" in extra
 
 
 # ---------------------------------------------------------------------------
@@ -92,9 +92,9 @@ class TestGetVersion:
 # ---------------------------------------------------------------------------
 
 class TestDeviceInfoSwVersion:
-    def test_sw_version_never_included_even_when_real(self):
-        """sw_version must never be passed to DeviceInfo to avoid AwesomeVersionCompareException."""
-        assert _device_info_has_sw_version("3.1.5") is False
+    def test_sw_version_included_when_real(self):
+        """A valid version string must be included in DeviceInfo."""
+        assert _device_info_has_sw_version("3.1.5") is True
 
     def test_sw_version_excluded_when_none(self):
         """None must NOT be passed to DeviceInfo — awesomeversion can't compare it."""
@@ -108,7 +108,81 @@ class TestDeviceInfoSwVersion:
         version = _get_version_mirror({"version": "unknown"})
         assert _device_info_has_sw_version(version) is False
 
-    def test_no_sw_version_even_when_valid_version_in_domain_data(self):
-        """Full round-trip: valid version → still no sw_version in DeviceInfo."""
+    def test_sw_version_set_when_valid_version_in_domain_data(self):
+        """Full round-trip: valid version → sw_version included."""
         version = _get_version_mirror({"version": "3.1.5"})
-        assert _device_info_has_sw_version(version) is False
+        assert _device_info_has_sw_version(version) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: device registry cleanup — corrupted sw_version must be cleared
+# ---------------------------------------------------------------------------
+
+def _needs_sw_version_cleanup(sw_version) -> bool:
+    """Mirror of the device registry cleanup logic in __init__.async_setup_entry.
+
+    Returns True when the stored sw_version is corrupted and should be cleared.
+    """
+    if sw_version is None:
+        return False
+    try:
+        sw = str(sw_version)
+        return sw == "unknown" or sw == ""
+    except Exception:
+        return False
+
+
+class TestDeviceRegistryCleanup:
+    def test_unknown_needs_cleanup(self):
+        """'unknown' stored from v3.1.3/v3.1.4 must be cleared."""
+        assert _needs_sw_version_cleanup("unknown") is True
+
+    def test_empty_string_needs_cleanup(self):
+        assert _needs_sw_version_cleanup("") is True
+
+    def test_valid_version_no_cleanup(self):
+        assert _needs_sw_version_cleanup("3.1.5") is False
+
+    def test_none_no_cleanup(self):
+        """None means no sw_version was set — nothing to clean."""
+        assert _needs_sw_version_cleanup(None) is False
+
+    def test_old_hardcoded_version_no_cleanup(self):
+        """'2.0.0' from pre-PR#17 is a valid version, keep it."""
+        assert _needs_sw_version_cleanup("2.0.0") is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: version storage coercion — AwesomeVersion → str
+# ---------------------------------------------------------------------------
+
+class TestVersionStorageCoercion:
+    """integration.version returns an AwesomeVersion object in newer HA.
+    We must coerce to str() before storing to prevent AwesomeVersion.__ne__()
+    being called during device registry comparison."""
+
+    def test_str_coercion_returns_plain_string(self):
+        class FakeAwesomeVersion:
+            def __init__(self, v):
+                self._v = v
+            def __str__(self):
+                return self._v
+            def __bool__(self):
+                return True
+        av = FakeAwesomeVersion("3.1.5")
+        result = str(av)
+        assert result == "3.1.5"
+        assert type(result) is str  # must be plain str, not AwesomeVersion
+
+    def test_str_of_plain_string_is_noop(self):
+        assert str("3.1.5") == "3.1.5"
+        assert type(str("3.1.5")) is str
+
+    def test_coerced_version_safe_for_device_info(self):
+        """Coerced str version must be included in DeviceInfo."""
+        class FakeAV:
+            def __str__(self): return "3.1.5"
+            def __bool__(self): return True
+        version = str(FakeAV())
+        assert _device_info_has_sw_version(version) is True
+        assert isinstance(version, str)

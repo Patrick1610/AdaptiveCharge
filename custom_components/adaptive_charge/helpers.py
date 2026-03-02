@@ -24,18 +24,18 @@ def get_version(hass: HomeAssistant) -> str | None:
 def device_info(entry: ConfigEntry, version: str | None = None) -> DeviceInfo:
     """Return shared DeviceInfo for all AdaptiveCharge entities.
 
-    ``sw_version`` is intentionally **never** included.  When a device already
-    exists in the registry with a corrupted or non-parseable ``sw_version``
-    (e.g. from a previous release), passing *any* new value triggers an
-    ``AwesomeVersionCompareException`` inside the device-registry update path
-    and prevents every entity from registering.  The integration version is
-    already surfaced via the dedicated *Version* sensor entity.
+    ``sw_version`` is included only when *version* is a non-empty plain string.
+    Passing ``None`` (or omitting it) means HA receives ``UNDEFINED`` for
+    ``sw_version`` and skips the device-registry comparison entirely — safe
+    even when a corrupted value (e.g. ``"unknown"``) was persisted previously.
     """
+    extra: dict = {"sw_version": version} if version else {}
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
         name=entry.title,
         manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
+        **extra,
     )
 
 
