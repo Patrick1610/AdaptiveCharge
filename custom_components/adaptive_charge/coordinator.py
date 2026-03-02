@@ -1182,8 +1182,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Shutdown sequence when controller is disabled.
 
         Policy: if the controller had started charging (_charging_on == True),
-        stop charging and reset current to default.  This matches the existing
-        stop behaviour already used by _action_stop_surplus / _action_stop_force.
+        stop charging.  This matches the existing stop behaviour used by
+        _action_stop_surplus / _action_stop_force.
         """
         if not self._charging_on:
             return
@@ -1200,8 +1200,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
         self._import_guard_zero_since = None
-        await asyncio.sleep(10)
-        await self._set_charge_current(int(self._max_current_limit))
 
     # ------------------------------------------------------------------
     # Control logic
@@ -1476,8 +1474,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_force"
-        await asyncio.sleep(10)
-        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_start_surplus(self, current_a: int) -> None:
         _LOGGER.info("AdaptiveCharge: start_surplus at %dA", current_a)
@@ -1518,8 +1514,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_zero_since = None
         self._import_below_since = None
         self._import_exceed_since = None
-        await asyncio.sleep(10)
-        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
         # Immediately set current to 0A so the EVSE cannot charge at any rate
