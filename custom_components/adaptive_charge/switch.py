@@ -12,7 +12,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
-from .helpers import device_info
+from .helpers import device_info, get_version
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class ControllerEnabledSwitch(RestoreEntity, SwitchEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_controller_enabled"
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state; default to off on first install."""
@@ -86,7 +86,7 @@ class ChargeNowSwitch(RestoreEntity, SwitchEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charge_now"
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""
@@ -122,7 +122,7 @@ class ChargeTonightSwitch(RestoreEntity, SwitchEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charge_tonight"
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""

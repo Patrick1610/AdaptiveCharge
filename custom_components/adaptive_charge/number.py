@@ -11,7 +11,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DEFAULT_DESIRED_RANGE, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
-from .helpers import device_info
+from .helpers import device_info, get_version
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class DesiredRangeNumber(RestoreEntity, NumberEntity):
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_desired_range_km"
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     async def async_added_to_hass(self) -> None:
         """Restore previous state."""

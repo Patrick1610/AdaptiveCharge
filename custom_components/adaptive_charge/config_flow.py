@@ -13,18 +13,21 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_LIMIT_SENSOR,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
     CONF_CONSUMPTION_SENSOR,
     CONF_CURRENT_RANGE_SENSOR,
+    CONF_DEFAULT_CHARGE_LIMIT,
     CONF_DESIRED_RANGE,
     CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
     CONF_FORECAST_SENSORS,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_THRESHOLD,
+    CONF_INVERT_NET_POWER,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
     CONF_MODULATE_MIN_INTERVAL,
@@ -52,6 +55,7 @@ from .const import (
     CONF_UTILITY_YEARLY,
     CONF_VOLTAGE_SENSOR,
     DEFAULT_CHARGE_BUFFER,
+    DEFAULT_CHARGE_LIMIT,
     DEFAULT_DESIRED_RANGE,
     DEFAULT_IMPORT_GUARD_DURATION_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
@@ -79,11 +83,28 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _parse_time_string(time_str: str, default_hour: int, default_minute: int) -> tuple[int, int]:
+    """Parse an HH:MM time string into (hour, minute) with safe defaults."""
+    try:
+        parts = str(time_str).split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (ValueError, TypeError, IndexError):
+        pass
+    return default_hour, default_minute
+
+
 class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AdaptiveCharge."""
 
     VERSION = 1
-    _data: dict[str, Any] = {}
+
+    def __init__(self) -> None:
+        """Initialise config flow with empty data."""
+        super().__init__()
+        self._data: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -126,7 +147,10 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_NET_POWER_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
-                )
+                ),
+                vol.Optional(CONF_INVERT_NET_POWER, default=False): selector.selector(
+                    {"boolean": {}}
+                ),
             }
         )
         return self.async_show_form(step_id="net_power", data_schema=schema)
@@ -193,9 +217,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_BATTERY_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
                 ),
-                vol.Optional(CONF_CHARGE_LIMIT_SENSOR): selector.selector(
-                    {"entity": {"domain": "sensor"}}
-                ),
             }
         )
         return self.async_show_form(step_id="vehicle", data_schema=schema)
@@ -233,6 +254,17 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             "min": 0,
                             "max": 25,
                             "step": 0.5,
+                            "unit_of_measurement": "%",
+                            "mode": "box",
+                        }
+                    }
+                ),
+                vol.Optional(CONF_DEFAULT_CHARGE_LIMIT, default=DEFAULT_CHARGE_LIMIT): selector.selector(
+                    {
+                        "number": {
+                            "min": 50,
+                            "max": 100,
+                            "step": 5,
                             "unit_of_measurement": "%",
                             "mode": "box",
                         }
@@ -281,25 +313,34 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_charge_window(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 7: charge time window (earliest start, night off)."""
+        """Step 7: night charging time window."""
         if user_input is not None:
-            self._data = {**self._data, **user_input}
+            start_h, start_m = _parse_time_string(
+                user_input.get("night_charging_start", "22:00"),
+                DEFAULT_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_MINUTE,
+            )
+            end_h, end_m = _parse_time_string(
+                user_input.get("night_charging_end", "05:00"),
+                DEFAULT_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_MINUTE,
+            )
+            self._data = {**self._data, **{
+                CONF_TONIGHT_START_HOUR: start_h,
+                CONF_TONIGHT_START_MINUTE: start_m,
+                CONF_NIGHT_OFF_HOUR: end_h,
+                CONF_NIGHT_OFF_MINUTE: end_m,
+            }}
             return await self.async_step_solar_optional()
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_TONIGHT_START_HOUR, default=DEFAULT_TONIGHT_START_HOUR): selector.selector(
-                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
-                ),
-                vol.Required(CONF_TONIGHT_START_MINUTE, default=DEFAULT_TONIGHT_START_MINUTE): selector.selector(
-                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
-                ),
-                vol.Required(CONF_NIGHT_OFF_HOUR, default=DEFAULT_NIGHT_OFF_HOUR): selector.selector(
-                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
-                ),
-                vol.Required(CONF_NIGHT_OFF_MINUTE, default=DEFAULT_NIGHT_OFF_MINUTE): selector.selector(
-                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
-                ),
+                vol.Required(
+                    "night_charging_start",
+                    default=f"{DEFAULT_TONIGHT_START_HOUR:02d}:{DEFAULT_TONIGHT_START_MINUTE:02d}",
+                ): selector.selector({"time": {}}),
+                vol.Required(
+                    "night_charging_end",
+                    default=f"{DEFAULT_NIGHT_OFF_HOUR:02d}:{DEFAULT_NIGHT_OFF_MINUTE:02d}",
+                ): selector.selector({"time": {}}),
             }
         )
         return self.async_show_form(step_id="charge_window", data_schema=schema)
@@ -328,7 +369,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_actuators_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 7: optional charge switch and current number."""
+        """Step 7: optional charge switch, current number, and charge limit number."""
         if user_input is not None:
             self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
             return await self.async_step_advanced()
@@ -339,6 +380,9 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {"entity": {"domain": "switch"}}
                 ),
                 vol.Optional(CONF_CHARGE_CURRENT_NUMBER): selector.selector(
+                    {"entity": {"domain": "number"}}
+                ),
+                vol.Optional(CONF_CHARGE_LIMIT_NUMBER): selector.selector(
                     {"entity": {"domain": "number"}}
                 ),
             }
@@ -503,6 +547,10 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     CONF_NET_POWER_SENSOR,
                     description={"suggested_value": current.get(CONF_NET_POWER_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
+                vol.Optional(
+                    CONF_INVERT_NET_POWER,
+                    default=bool(current.get(CONF_INVERT_NET_POWER, False)),
+                ): selector.selector({"boolean": {}}),
             }
         )
         return self.async_show_form(step_id="net_power", data_schema=schema)
@@ -580,10 +628,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     CONF_BATTERY_SENSOR,
                     description={"suggested_value": current.get(CONF_BATTERY_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
-                vol.Optional(
-                    CONF_CHARGE_LIMIT_SENSOR,
-                    description={"suggested_value": current.get(CONF_CHARGE_LIMIT_SENSOR, "")},
-                ): selector.selector({"entity": {"domain": "sensor"}}),
             }
         )
         return self.async_show_form(step_id="vehicle", data_schema=schema)
@@ -616,6 +660,12 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     default=float(current.get(CONF_RANGE_HYSTERESIS_PCT, DEFAULT_RANGE_HYSTERESIS_PCT)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 25, "step": 0.5, "unit_of_measurement": "%", "mode": "box"}}
+                ),
+                vol.Optional(
+                    CONF_DEFAULT_CHARGE_LIMIT,
+                    default=int(current.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT)),
+                ): selector.selector(
+                    {"number": {"min": 50, "max": 100, "step": 5, "unit_of_measurement": "%", "mode": "box"}}
                 ),
             }
         )
@@ -673,38 +723,40 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_charge_window(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 7: charge time window (earliest start, night off)."""
+        """Step 7: night charging time window."""
         current = self._current()
         if user_input is not None:
-            self._data.update(user_input)
+            start_h, start_m = _parse_time_string(
+                user_input.get("night_charging_start", "22:00"),
+                DEFAULT_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_MINUTE,
+            )
+            end_h, end_m = _parse_time_string(
+                user_input.get("night_charging_end", "05:00"),
+                DEFAULT_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_MINUTE,
+            )
+            self._data.update({
+                CONF_TONIGHT_START_HOUR: start_h,
+                CONF_TONIGHT_START_MINUTE: start_m,
+                CONF_NIGHT_OFF_HOUR: end_h,
+                CONF_NIGHT_OFF_MINUTE: end_m,
+            })
             return await self.async_step_solar_optional()
+
+        start_h = int(current.get(CONF_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_HOUR))
+        start_m = int(current.get(CONF_TONIGHT_START_MINUTE, DEFAULT_TONIGHT_START_MINUTE))
+        end_h = int(current.get(CONF_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_HOUR))
+        end_m = int(current.get(CONF_NIGHT_OFF_MINUTE, DEFAULT_NIGHT_OFF_MINUTE))
 
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_TONIGHT_START_HOUR,
-                    default=int(current.get(CONF_TONIGHT_START_HOUR, DEFAULT_TONIGHT_START_HOUR)),
-                ): selector.selector(
-                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
-                ),
+                    "night_charging_start",
+                    default=f"{start_h:02d}:{start_m:02d}",
+                ): selector.selector({"time": {}}),
                 vol.Required(
-                    CONF_TONIGHT_START_MINUTE,
-                    default=int(current.get(CONF_TONIGHT_START_MINUTE, DEFAULT_TONIGHT_START_MINUTE)),
-                ): selector.selector(
-                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
-                ),
-                vol.Required(
-                    CONF_NIGHT_OFF_HOUR,
-                    default=int(current.get(CONF_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_HOUR)),
-                ): selector.selector(
-                    {"number": {"min": 0, "max": 23, "step": 1, "unit_of_measurement": "h", "mode": "box"}}
-                ),
-                vol.Required(
-                    CONF_NIGHT_OFF_MINUTE,
-                    default=int(current.get(CONF_NIGHT_OFF_MINUTE, DEFAULT_NIGHT_OFF_MINUTE)),
-                ): selector.selector(
-                    {"number": {"min": 0, "max": 59, "step": 15, "unit_of_measurement": "min", "mode": "box"}}
-                ),
+                    "night_charging_end",
+                    default=f"{end_h:02d}:{end_m:02d}",
+                ): selector.selector({"time": {}}),
             }
         )
         return self.async_show_form(step_id="charge_window", data_schema=schema)
@@ -736,7 +788,7 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_actuators_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 7: optional charge switch and current number."""
+        """Step 7: optional charge switch, current number, and charge limit number."""
         current = self._current()
         if user_input is not None:
             self._data.update({k: v for k, v in user_input.items() if v is not None and v != ""})
@@ -751,6 +803,10 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_CHARGE_CURRENT_NUMBER,
                     description={"suggested_value": current.get(CONF_CHARGE_CURRENT_NUMBER, "")},
+                ): selector.selector({"entity": {"domain": "number"}}),
+                vol.Optional(
+                    CONF_CHARGE_LIMIT_NUMBER,
+                    description={"suggested_value": current.get(CONF_CHARGE_LIMIT_NUMBER, "")},
                 ): selector.selector({"entity": {"domain": "number"}}),
             }
         )

@@ -23,10 +23,13 @@ from .alignment import (
     compute_skew,
 )
 from .helpers import format_duration
+from .storage import AdaptiveChargeStore
 from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_LIMIT_SENSOR,
+    CONF_DEFAULT_CHARGE_LIMIT,
     CONF_FORECAST_SENSORS,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
@@ -35,6 +38,7 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
+    CONF_INVERT_NET_POWER,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
@@ -68,6 +72,7 @@ from .const import (
     DEFAULT_ALIGNMENT_TIMEOUT_MAX,
     DEFAULT_ALIGNMENT_TIMEOUT_MIN,
     DEFAULT_CHARGE_BUFFER,
+    DEFAULT_CHARGE_LIMIT,
     DEFAULT_COOLDOWN_DOWN_S,
     DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
@@ -177,6 +182,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         self._net_power_mode: str = options.get(CONF_NET_POWER_MODE, MODE_NET_ONLY)
         self._net_power_sensor: str | None = options.get(CONF_NET_POWER_SENSOR)
+        self._invert_net_power: bool = bool(options.get(CONF_INVERT_NET_POWER, False))
         self._consumption_sensor: str | None = options.get(CONF_CONSUMPTION_SENSOR)
         self._production_sensor: str | None = options.get(CONF_PRODUCTION_SENSOR)
         self._ev_power_sensor: str | None = options.get(CONF_EV_POWER_SENSOR)
@@ -186,6 +192,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
         self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
+        self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
+        self._default_charge_limit: int = int(options.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT))
         self._forecast_sensors: list[str] = options.get(CONF_FORECAST_SENSORS, []) or []
         self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
@@ -321,6 +329,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_quantization_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
+        # Persistent counter store
+        self._store = AdaptiveChargeStore(hass, entry.entry_id)
+
         # Unsub for interval tracker and night-off timer
         self._unsub_interval = None
         self._unsub_night_off = None
@@ -338,8 +349,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @property
+    def store(self) -> AdaptiveChargeStore:
+        """Expose persistent counter store for sensor access."""
+        return self._store
+
     async def async_config_entry_first_refresh(self) -> None:
         """Set up interval and do first refresh."""
+        # Load persistent counters from .storage
+        await self._store.async_load()
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -375,7 +393,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         )
 
     async def async_shutdown(self) -> None:
-        """Cancel subscriptions."""
+        """Cancel subscriptions and flush persistent store."""
         if self._unsub_interval:
             self._unsub_interval()
             self._unsub_interval = None
@@ -386,6 +404,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._pending_task.cancel()
         if self._pending_modulate_task and not self._pending_modulate_task.done():
             self._pending_modulate_task.cancel()
+        # Flush persistent counters to disk on shutdown
+        await self._store.async_save()
 
     # ------------------------------------------------------------------
     # Tick
@@ -520,6 +540,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         if self._net_power_mode == MODE_NET_ONLY:
             computed_net_w = net_w if net_w is not None else 0.0
+            # Apply invert if configured (flip sign for sensors with reversed convention)
+            if self._invert_net_power:
+                computed_net_w = -computed_net_w
         else:
             if consumption_w is not None and production_w is not None:
                 computed_net_w = consumption_w - production_w
@@ -785,6 +808,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         cable_connected = sensor_data.get("cable_connected")
         surplus_w = (0.0 - computed_net_w) + ev_w
 
+        # Check for period rollovers in persistent store
+        self._store.check_rollovers()
+
         # --- Energy charged accumulation ---
         if self._charging_on and ev_w > 0:
             energy_wh = ev_w * dt_h
@@ -807,6 +833,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._energy_import_wh += import_wh
             self._energy_session_solar_wh += solar_wh
             self._energy_session_import_wh += import_wh
+            # Persist energy charged
+            self._store.add_energy_charged(energy_wh, solar_wh, import_wh)
 
         # --- Missed solar accumulation ---
         if surplus_w > 0 and not self._charging_on:
@@ -818,10 +846,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
             if not presence:
                 self._missed_solar_absence_wh += missed_wh
+                self._store.add_missed_solar(missed_wh, "absence")
             elif not cable_connected:
                 self._missed_solar_cable_wh += missed_wh
+                self._store.add_missed_solar(missed_wh, "cable")
             elif surplus_a < self._surplus_start_threshold_a:
                 self._missed_solar_low_surplus_wh += missed_wh
+                self._store.add_missed_solar(missed_wh, "low_surplus")
+            else:
+                # Surplus above threshold but not charging — unclassified cause
+                # (e.g. presence + cable + surplus >= threshold, but still not
+                # charging due to other logic like min_on_time or settling).
+                self._store.add_missed_solar(missed_wh)
 
         # --- Quantization missed solar (fractional surplus lost to integer current steps) ---
         if self._charging_on and self._current_mode == MODE_SURPLUS and surplus_w > 0:
@@ -831,6 +867,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 fractional_wh = fractional_w * dt_h
                 self._missed_solar_wh += fractional_wh
                 self._missed_solar_quantization_wh += fractional_wh
+                self._store.add_missed_solar(fractional_wh, "quantization")
 
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
@@ -1068,6 +1105,22 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
             "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
             "missed_solar_quantization_kwh": round(self._missed_solar_quantization_wh / 1000.0, 3),
+            # --- Persistent store period counters (kWh) ---
+            "store_missed_solar_daily_kwh": self._store.get_kwh("missed_solar_daily_wh"),
+            "store_missed_solar_monthly_kwh": self._store.get_kwh("missed_solar_monthly_wh"),
+            "store_missed_solar_yearly_kwh": self._store.get_kwh("missed_solar_yearly_wh"),
+            "store_missed_solar_absence_daily_kwh": self._store.get_kwh("missed_solar_absence_daily_wh"),
+            "store_missed_solar_absence_monthly_kwh": self._store.get_kwh("missed_solar_absence_monthly_wh"),
+            "store_missed_solar_absence_yearly_kwh": self._store.get_kwh("missed_solar_absence_yearly_wh"),
+            "store_missed_solar_cable_daily_kwh": self._store.get_kwh("missed_solar_cable_daily_wh"),
+            "store_missed_solar_cable_monthly_kwh": self._store.get_kwh("missed_solar_cable_monthly_wh"),
+            "store_missed_solar_cable_yearly_kwh": self._store.get_kwh("missed_solar_cable_yearly_wh"),
+            "store_missed_solar_low_surplus_daily_kwh": self._store.get_kwh("missed_solar_low_surplus_daily_wh"),
+            "store_missed_solar_low_surplus_monthly_kwh": self._store.get_kwh("missed_solar_low_surplus_monthly_wh"),
+            "store_missed_solar_low_surplus_yearly_kwh": self._store.get_kwh("missed_solar_low_surplus_yearly_wh"),
+            "store_missed_solar_quantization_daily_kwh": self._store.get_kwh("missed_solar_quantization_daily_wh"),
+            "store_missed_solar_quantization_monthly_kwh": self._store.get_kwh("missed_solar_quantization_monthly_wh"),
+            "store_missed_solar_quantization_yearly_kwh": self._store.get_kwh("missed_solar_quantization_yearly_wh"),
         }
 
     # ------------------------------------------------------------------

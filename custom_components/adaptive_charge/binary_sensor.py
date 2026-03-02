@@ -15,7 +15,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
-from .helpers import device_info
+from .helpers import device_info, get_version
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class ForceChargeSensor(CoordinatorEntity, BinarySensorEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_force_charge"
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     @property
     def is_on(self) -> bool | None:
@@ -82,7 +82,7 @@ class ChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charging_active"
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     @property
     def is_on(self) -> bool | None:

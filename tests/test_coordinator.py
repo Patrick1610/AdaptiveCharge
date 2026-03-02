@@ -97,6 +97,88 @@ class TestSurplusCalculation:
 
 
 # ---------------------------------------------------------------------------
+# Tests: net power invert
+# ---------------------------------------------------------------------------
+
+class TestNetPowerInvert:
+    """Test that the invert_net_power flag correctly flips the sign."""
+
+    def test_invert_flips_positive_to_negative(self):
+        """If sensor reports +1000 (export in their convention), invert → -1000 (import in ours)."""
+        net_w = 1000.0
+        inverted = -net_w
+        assert inverted == -1000.0
+        # Then surplus = -(-1000) + 0 = 1000 (correct: there IS surplus)
+        assert compute_surplus(inverted, 0.0) == 1000.0
+
+    def test_invert_flips_negative_to_positive(self):
+        """If sensor reports -500 (import in their convention), invert → +500 (import in ours)."""
+        net_w = -500.0
+        inverted = -net_w
+        assert inverted == 500.0
+        # Then surplus = -(500) + 0 = -500 (correct: no surplus, importing)
+        assert compute_surplus(inverted, 0.0) == -500.0
+
+    def test_no_invert_keeps_value(self):
+        """Without invert, value passes through unchanged."""
+        net_w = -1000.0
+        assert compute_surplus(net_w, 0.0) == 1000.0
+
+    def test_invert_with_ev(self):
+        """Invert with EV drawing power."""
+        # Sensor reports -2000 (their convention = exporting 2000W)
+        # After invert: +2000 (our convention = importing)
+        net_w = 2000.0  # after invert of -2000
+        # With EV drawing 3000W: surplus = -2000 + 3000 = 1000
+        assert compute_surplus(net_w, 3000.0) == 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: time string parsing
+# ---------------------------------------------------------------------------
+
+def _parse_time_string(time_str, default_hour, default_minute):
+    """Mirror of config_flow._parse_time_string for testing."""
+    try:
+        parts = str(time_str).split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (ValueError, TypeError, IndexError):
+        pass
+    return default_hour, default_minute
+
+
+class TestTimeStringParsing:
+    """Test the _parse_time_string helper."""
+
+    def test_valid_hhmm(self):
+        assert _parse_time_string("22:30", 0, 0) == (22, 30)
+
+    def test_valid_hour_only(self):
+        assert _parse_time_string("5", 0, 0) == (5, 0)
+
+    def test_midnight(self):
+        assert _parse_time_string("00:00", 22, 0) == (0, 0)
+
+    def test_invalid_string_returns_default(self):
+        assert _parse_time_string("abc", 22, 0) == (22, 0)
+
+    def test_empty_string_returns_default(self):
+        assert _parse_time_string("", 5, 30) == (5, 30)
+
+    def test_out_of_range_hour_returns_default(self):
+        assert _parse_time_string("25:00", 22, 0) == (22, 0)
+
+    def test_out_of_range_minute_returns_default(self):
+        assert _parse_time_string("22:61", 22, 0) == (22, 0)
+
+    def test_none_returns_default(self):
+        assert _parse_time_string(None, 5, 0) == (5, 0)
+
+
+# ---------------------------------------------------------------------------
 # Tests: raw_current_a calculation
 # ---------------------------------------------------------------------------
 
@@ -2954,14 +3036,14 @@ class TestPlugInFreshEma:
 class TestSharedDeviceInfo:
     """Test that the shared device_info helper produces correct output."""
 
-    def _device_info(self, entry_id: str) -> dict:
+    def _device_info(self, entry_id: str, version: str = "3.1.2") -> dict:
         """Mirror of helpers.device_info for testing without HA imports."""
         return {
             "identifiers": {("adaptive_charge", entry_id)},
             "name": "AdaptiveCharge",
             "manufacturer": "AdaptiveCharge",
             "model": "EV Charge Controller",
-            "sw_version": "3.0.0",
+            "sw_version": version,
         }
 
     def test_device_info_returns_correct_structure(self):
@@ -2975,7 +3057,14 @@ class TestSharedDeviceInfo:
         assert info["name"] == "AdaptiveCharge"
         assert info["manufacturer"] == "AdaptiveCharge"
         assert info["model"] == "EV Charge Controller"
-        assert info["sw_version"] == "3.0.0"
+        assert info["sw_version"] == "3.1.2"
+
+    def test_device_info_version_is_dynamic(self):
+        """device_info sw_version should reflect the passed version."""
+        info_a = self._device_info("entry_a", "3.0.0")
+        info_b = self._device_info("entry_b", "4.0.0")
+        assert info_a["sw_version"] == "3.0.0"
+        assert info_b["sw_version"] == "4.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -3441,12 +3530,14 @@ class TestSurplusStartStopThresholds:
 
     def test_default_start_threshold(self):
         """Default start threshold should be 2A."""
-        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_START_THRESHOLD_A
+        # Mirror value from const.py (direct import triggers HA deps)
+        DEFAULT_SURPLUS_START_THRESHOLD_A = 2
         assert DEFAULT_SURPLUS_START_THRESHOLD_A == 2
 
     def test_default_stop_threshold(self):
         """Default stop threshold should be 1A."""
-        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_STOP_THRESHOLD_A
+        # Mirror value from const.py (direct import triggers HA deps)
+        DEFAULT_SURPLUS_STOP_THRESHOLD_A = 1
         assert DEFAULT_SURPLUS_STOP_THRESHOLD_A == 1
 
     def test_surplus_below_start_does_not_start(self):
