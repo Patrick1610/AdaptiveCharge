@@ -2954,14 +2954,14 @@ class TestPlugInFreshEma:
 class TestSharedDeviceInfo:
     """Test that the shared device_info helper produces correct output."""
 
-    def _device_info(self, entry_id: str) -> dict:
+    def _device_info(self, entry_id: str, version: str = "3.1.2") -> dict:
         """Mirror of helpers.device_info for testing without HA imports."""
         return {
             "identifiers": {("adaptive_charge", entry_id)},
             "name": "AdaptiveCharge",
             "manufacturer": "AdaptiveCharge",
             "model": "EV Charge Controller",
-            "sw_version": "3.0.0",
+            "sw_version": version,
         }
 
     def test_device_info_returns_correct_structure(self):
@@ -2975,7 +2975,14 @@ class TestSharedDeviceInfo:
         assert info["name"] == "AdaptiveCharge"
         assert info["manufacturer"] == "AdaptiveCharge"
         assert info["model"] == "EV Charge Controller"
-        assert info["sw_version"] == "3.0.0"
+        assert info["sw_version"] == "3.1.2"
+
+    def test_device_info_version_is_dynamic(self):
+        """device_info sw_version should reflect the passed version."""
+        info_a = self._device_info("entry_a", "3.0.0")
+        info_b = self._device_info("entry_b", "4.0.0")
+        assert info_a["sw_version"] == "3.0.0"
+        assert info_b["sw_version"] == "4.0.0"
 
 
 # ---------------------------------------------------------------------------

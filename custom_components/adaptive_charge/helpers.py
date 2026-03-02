@@ -2,19 +2,26 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from .const import DOMAIN
 
 
-def device_info(entry: ConfigEntry) -> DeviceInfo:
+def get_version(hass: HomeAssistant) -> str:
+    """Return the integration version stored during setup, or fallback."""
+    domain_data = hass.data.get(DOMAIN) or {}
+    return domain_data.get("version", "unknown")
+
+
+def device_info(entry: ConfigEntry, version: str | None = None) -> DeviceInfo:
     """Return shared DeviceInfo for all AdaptiveCharge entities."""
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
         name="AdaptiveCharge",
         manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
-        sw_version="3.0.0",
+        sw_version=version or "unknown",
     )
 
 

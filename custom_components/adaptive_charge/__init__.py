@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.loader import async_get_integration
 
 from .const import (
     DOMAIN,
@@ -63,8 +64,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Removing stale entity %s", stale_entity_id)
         registry.async_remove(stale_entity_id)
 
+    # Load integration version from manifest (dynamic, not hardcoded)
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if "version" not in domain_data:
+        try:
+            integration = await async_get_integration(hass, DOMAIN)
+            domain_data["version"] = integration.version
+        except Exception:  # noqa: BLE001
+            domain_data["version"] = "unknown"
+
     coordinator = AdaptiveChargeCoordinator(hass, entry)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    domain_data[entry.entry_id] = coordinator
 
     await coordinator.async_config_entry_first_refresh()
 

@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
+from homeassistant.const import EntityCategory, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_change
@@ -20,7 +20,7 @@ import homeassistant.util.dt as dt_util
 
 from .const import CONF_ENABLE_UTILITY_METERS, CONF_UTILITY_DAILY, CONF_UTILITY_MONTHLY, CONF_UTILITY_YEARLY, CONF_SPLIT_MISSED_SOLAR, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
-from .helpers import device_info
+from .helpers import device_info, get_version
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +47,8 @@ async def async_setup_entry(
         CurrentSettingSensor(coordinator, entry),
         AvailableCurrentDecisionSensor(coordinator, entry),
         AlignmentDiagnosticSensor(coordinator, entry),
+        # Integration version (diagnostic)
+        VersionSensor(coordinator, entry),
         # Energy tracking
         EnergyChargedSensor(coordinator, entry),
         MissedSolarSensor(coordinator, entry),
@@ -120,7 +122,7 @@ class _BaseAdaptiveChargeSensor(CoordinatorEntity, SensorEntity):
     ) -> None:
         super().__init__(coordinator)
         self._entry = entry
-        self._attr_device_info = device_info(entry)
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -208,6 +210,26 @@ class AlignmentDiagnosticSensor(_BaseAdaptiveChargeSensor):
             "last_control_reason": data.get("last_control_reason"),
             "ema_current_a": data.get("ema_current_a"),
         }
+
+
+# ---------------------------------------------------------------------------
+# Version diagnostic sensor
+# ---------------------------------------------------------------------------
+
+class VersionSensor(_BaseAdaptiveChargeSensor):
+    """Diagnostic sensor showing the running integration version."""
+
+    _attr_name = "Version"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_version"
+
+    @property
+    def native_value(self) -> str:
+        return get_version(self.coordinator.hass)
 
 
 # ---------------------------------------------------------------------------
