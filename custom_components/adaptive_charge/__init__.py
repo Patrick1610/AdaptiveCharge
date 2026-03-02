@@ -72,8 +72,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             integration = await async_get_integration(hass, DOMAIN)
             domain_data["version"] = integration.version
         except Exception:
-            _LOGGER.debug("Could not load integration version, defaulting to 'unknown'")
-            domain_data["version"] = "unknown"
+            _LOGGER.debug("Could not load integration version")
+            domain_data["version"] = None
 
     coordinator = AdaptiveChargeCoordinator(hass, entry)
     domain_data[entry.entry_id] = coordinator
