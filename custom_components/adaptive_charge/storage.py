@@ -130,7 +130,17 @@ class AdaptiveChargeStore:
         self._dirty = True
         now = time.monotonic()
         if now - self._last_flush >= _FLUSH_THROTTLE_S:
-            self._hass.async_create_task(self.async_save(), eager_start=False)
+            task = self._hass.async_create_task(self.async_save(), eager_start=False)
+            task.add_done_callback(self._flush_done_callback)
+
+    @staticmethod
+    def _flush_done_callback(task) -> None:
+        """Log any errors from the async flush task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            _LOGGER.warning("AdaptiveCharge store flush failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Rollover logic

@@ -844,7 +844,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 self._missed_solar_low_surplus_wh += missed_wh
                 self._store.add_missed_solar(missed_wh, "low_surplus")
             else:
-                # No specific cause — just total
+                # Surplus above threshold but not charging — unclassified cause
+                # (e.g. presence + cable + surplus >= threshold, but still not
+                # charging due to other logic like min_on_time or settling).
                 self._store.add_missed_solar(missed_wh)
 
         # --- Quantization missed solar (fractional surplus lost to integer current steps) ---

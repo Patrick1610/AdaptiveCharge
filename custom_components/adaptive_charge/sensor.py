@@ -462,6 +462,19 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
                 self.coordinator.restore_energy_state(
                     total * 1000.0, solar * 1000.0, import_e * 1000.0
                 )
+                # Seed persistent store energy if not yet migrated
+                store = self.coordinator.store
+                if not store.migrated:
+                    store.seed_from_old_state(
+                        store.get("missed_solar_total_wh"),
+                        store.get("missed_solar_absence_wh"),
+                        store.get("missed_solar_cable_wh"),
+                        store.get("missed_solar_low_surplus_wh"),
+                        store.get("missed_solar_quantization_wh"),
+                        energy_total_wh=total * 1000.0,
+                        energy_solar_wh=solar * 1000.0,
+                        energy_import_wh=import_e * 1000.0,
+                    )
             except (ValueError, TypeError):
                 pass
 
@@ -497,21 +510,35 @@ class MissedSolarSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_kwh"
 
     async def async_added_to_hass(self) -> None:
-        """Restore cumulative missed solar on HA restart."""
+        """Restore cumulative missed solar on HA restart and seed store."""
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if state is not None and state.state not in ("unknown", "unavailable", ""):
             try:
-                self.coordinator.restore_missed_solar(float(state.state) * 1000.0)
+                total_wh = float(state.state) * 1000.0
+                self.coordinator.restore_missed_solar(total_wh)
                 attrs = state.attributes or {}
+                absence_wh = float(attrs.get("missed_absence_kwh", 0)) * 1000.0
+                cable_wh = float(attrs.get("missed_cable_kwh", 0)) * 1000.0
+                low_surplus_wh = float(attrs.get("missed_low_surplus_kwh", 0)) * 1000.0
+                quantization_wh = float(attrs.get("missed_quantization_kwh", 0)) * 1000.0
                 self.coordinator.restore_missed_solar_split(
-                    float(attrs.get("missed_absence_kwh", 0)) * 1000.0,
-                    float(attrs.get("missed_cable_kwh", 0)) * 1000.0,
-                    float(attrs.get("missed_low_surplus_kwh", 0)) * 1000.0,
-                    float(attrs.get("missed_quantization_kwh", 0)) * 1000.0,
+                    absence_wh, cable_wh, low_surplus_wh, quantization_wh,
                 )
+                # Seed persistent store on first migration
+                store = self.coordinator.store
+                if not store.migrated:
+                    store.seed_from_old_state(
+                        total_wh, absence_wh, cable_wh,
+                        low_surplus_wh, quantization_wh,
+                    )
             except (ValueError, TypeError):
                 pass
+        else:
+            # No old state — mark store as migrated (nothing to seed)
+            store = self.coordinator.store
+            if not store.migrated:
+                store.mark_migrated()
 
     @property
     def native_value(self) -> float | None:
