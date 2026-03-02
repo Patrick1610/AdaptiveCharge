@@ -397,8 +397,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._data = {**self._data, **user_input}
             if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
                 return await self.async_step_utility_meters()
-            await self.async_set_unique_id(DOMAIN)
-            self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title="AdaptiveCharge",
                 data=self._data,
@@ -464,8 +462,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Step 9: utility meter period selection."""
         if user_input is not None:
             self._data = {**self._data, **user_input}
-            await self.async_set_unique_id(DOMAIN)
-            self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title="AdaptiveCharge",
                 data=self._data,
