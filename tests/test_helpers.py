@@ -138,6 +138,7 @@ class TestDeviceRegistryCleanup:
         assert _needs_sw_version_cleanup("unknown") is True
 
     def test_empty_string_needs_cleanup(self):
+        """Empty sw_version could result from a failed version store."""
         assert _needs_sw_version_cleanup("") is True
 
     def test_valid_version_no_cleanup(self):
