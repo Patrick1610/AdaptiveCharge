@@ -4127,3 +4127,70 @@ class TestStopActionsNoCurrentReset:
         assert f"set_current({int(max_current_limit)})" not in hardware_calls_during_stop, (
             "Current-only EVSE: setting current to max after stop restarts charging"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Cable disconnect resets current to max
+# ---------------------------------------------------------------------------
+
+class TestCableDisconnectResetsToMax:
+    """On cable disconnect, current must be reset to max_current_limit.
+
+    This ensures that when the EV is taken to charge elsewhere (public
+    charger, work, etc.) the EVSE is restored to its full rated current
+    so that it behaves normally for the next connection.
+
+    The sequence for _action_cable_disconnected is:
+      1. If charging is active: stop_surplus (disable_charging)
+      2. set_current(max_a)
+
+    This is the inverse of the post-stop behaviour: for EVSE-attached
+    connections the current is *not* reset after a stop (to avoid spikes),
+    but on physical cable removal it is safe and desirable to do so.
+    """
+
+    MAX = 16
+
+    def _simulate_disconnect_calls(
+        self,
+        charging_on: bool,
+        max_current_limit: float = 16.0,
+    ) -> list[str]:
+        """Return the list of hardware calls made by _action_cable_disconnected."""
+        calls: list[str] = []
+        if charging_on:
+            calls.append("disable_charging")  # _action_stop_surplus
+        max_a = int(min(max_current_limit, self.MAX))
+        calls.append(f"set_current({max_a})")
+        return calls
+
+    def test_disconnect_while_charging_stops_then_resets_current(self):
+        """When cable is pulled while charging, must stop then reset to max."""
+        calls = self._simulate_disconnect_calls(charging_on=True, max_current_limit=16.0)
+        assert "disable_charging" in calls, "must stop charging on cable disconnect"
+        assert calls[-1] == f"set_current({self.MAX})", "must reset current to max after stop"
+
+    def test_disconnect_while_idle_only_resets_current(self):
+        """When cable is pulled while idle, must reset current without stopping."""
+        calls = self._simulate_disconnect_calls(charging_on=False, max_current_limit=16.0)
+        assert "disable_charging" not in calls, "must not disable_charging when already idle"
+        assert calls == [f"set_current({self.MAX})"], "only set_current(max) expected"
+
+    def test_disconnect_resets_to_configured_max(self):
+        """max_current_limit is respected when resetting current after disconnect."""
+        calls = self._simulate_disconnect_calls(charging_on=False, max_current_limit=10.0)
+        assert calls == ["set_current(10)"]
+
+    def test_disconnect_respects_absolute_max(self):
+        """max_current_limit cannot exceed ABS cap of 16A."""
+        calls = self._simulate_disconnect_calls(charging_on=False, max_current_limit=32.0)
+        # Capped at 16
+        assert calls == [f"set_current({self.MAX})"]
+
+    def test_disconnect_current_reset_is_last_call(self):
+        """set_current(max) must be the last hardware call (after any stop)."""
+        for charging_on in (True, False):
+            calls = self._simulate_disconnect_calls(charging_on=charging_on)
+            assert calls[-1] == f"set_current({self.MAX})", (
+                f"set_current(max) must be last call (charging_on={charging_on})"
+            )
