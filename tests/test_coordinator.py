@@ -3530,12 +3530,14 @@ class TestSurplusStartStopThresholds:
 
     def test_default_start_threshold(self):
         """Default start threshold should be 2A."""
-        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_START_THRESHOLD_A
+        # Mirror value from const.py (direct import triggers HA deps)
+        DEFAULT_SURPLUS_START_THRESHOLD_A = 2
         assert DEFAULT_SURPLUS_START_THRESHOLD_A == 2
 
     def test_default_stop_threshold(self):
         """Default stop threshold should be 1A."""
-        from custom_components.adaptive_charge.const import DEFAULT_SURPLUS_STOP_THRESHOLD_A
+        # Mirror value from const.py (direct import triggers HA deps)
+        DEFAULT_SURPLUS_STOP_THRESHOLD_A = 1
         assert DEFAULT_SURPLUS_STOP_THRESHOLD_A == 1
 
     def test_surplus_below_start_does_not_start(self):
