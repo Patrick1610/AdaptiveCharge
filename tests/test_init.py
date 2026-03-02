@@ -35,11 +35,11 @@ def _has_coordinator_entries(domain_data: dict) -> bool:
 class TestGetCoordinator:
     def test_returns_coordinator_not_version_string(self):
         coord = _FakeCoordinator()
-        domain_data = {"version": "3.1.2", "entry_abc": coord}
+        domain_data = {"version": "3.1.6", "entry_abc": coord}
         assert _get_coordinator_mirror(domain_data) is coord
 
     def test_returns_none_when_only_version_key(self):
-        domain_data = {"version": "3.1.2"}
+        domain_data = {"version": "3.1.6"}
         assert _get_coordinator_mirror(domain_data) is None
 
     def test_returns_none_on_empty_dict(self):
@@ -48,18 +48,18 @@ class TestGetCoordinator:
     def test_returns_specific_entry_by_id(self):
         coord_a = _FakeCoordinator()
         coord_b = _FakeCoordinator()
-        domain_data = {"version": "3.1.2", "entry_a": coord_a, "entry_b": coord_b}
+        domain_data = {"version": "3.1.6", "entry_a": coord_a, "entry_b": coord_b}
         assert _get_coordinator_mirror(domain_data, entry_id="entry_b") is coord_b
 
     def test_returns_none_for_missing_entry_id(self):
-        domain_data = {"version": "3.1.2"}
+        domain_data = {"version": "3.1.6"}
         assert _get_coordinator_mirror(domain_data, entry_id="nonexistent") is None
 
     def test_version_string_is_not_returned_even_if_first(self):
         """Version key is inserted first; must not be returned as coordinator."""
         coord = _FakeCoordinator()
         domain_data = {}
-        domain_data["version"] = "3.1.2"
+        domain_data["version"] = "3.1.6"
         domain_data["entry_x"] = coord
         assert _get_coordinator_mirror(domain_data) is coord
 
@@ -70,11 +70,11 @@ class TestGetCoordinator:
 
 class TestUnloadCleanup:
     def test_no_entries_when_only_version_remains(self):
-        domain_data = {"version": "3.1.2"}
+        domain_data = {"version": "3.1.6"}
         assert _has_coordinator_entries(domain_data) is False
 
     def test_has_entries_when_coordinator_present(self):
-        domain_data = {"version": "3.1.2", "entry_abc": _FakeCoordinator()}
+        domain_data = {"version": "3.1.6", "entry_abc": _FakeCoordinator()}
         assert _has_coordinator_entries(domain_data) is True
 
     def test_no_entries_on_empty_dict(self):
@@ -83,13 +83,13 @@ class TestUnloadCleanup:
     def test_cleanup_after_popping_last_entry(self):
         """Simulate removing the last coordinator entry; version key remains."""
         coord = _FakeCoordinator()
-        domain_data = {"version": "3.1.2", "entry_abc": coord}
+        domain_data = {"version": "3.1.6", "entry_abc": coord}
         domain_data.pop("entry_abc")
         assert _has_coordinator_entries(domain_data) is False
 
     def test_still_has_entries_after_popping_one_of_two(self):
         coord_a = _FakeCoordinator()
         coord_b = _FakeCoordinator()
-        domain_data = {"version": "3.1.2", "entry_a": coord_a, "entry_b": coord_b}
+        domain_data = {"version": "3.1.6", "entry_a": coord_a, "entry_b": coord_b}
         domain_data.pop("entry_a")
         assert _has_coordinator_entries(domain_data) is True

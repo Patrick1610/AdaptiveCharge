@@ -44,8 +44,8 @@ def _device_info_has_sw_version(version: str | None) -> bool:
 
 class TestGetVersion:
     def test_returns_real_version(self):
-        domain_data = {"version": "3.1.5"}
-        assert _get_version_mirror(domain_data) == "3.1.5"
+        domain_data = {"version": "3.1.6"}
+        assert _get_version_mirror(domain_data) == "3.1.6"
 
     def test_returns_none_for_unknown(self):
         """'unknown' must not be returned — it crashes awesomeversion."""
@@ -81,9 +81,9 @@ class TestGetVersion:
                 return self._v
             def __bool__(self):
                 return True
-        domain_data = {"version": FakeAwesomeVersion("3.1.5")}
+        domain_data = {"version": FakeAwesomeVersion("3.1.6")}
         result = _get_version_mirror(domain_data)
-        assert result == "3.1.5"
+        assert result == "3.1.6"
         assert isinstance(result, str)
 
 
@@ -94,7 +94,7 @@ class TestGetVersion:
 class TestDeviceInfoSwVersion:
     def test_sw_version_included_when_real(self):
         """A valid version string must be included in DeviceInfo."""
-        assert _device_info_has_sw_version("3.1.5") is True
+        assert _device_info_has_sw_version("3.1.6") is True
 
     def test_sw_version_excluded_when_none(self):
         """None must NOT be passed to DeviceInfo — awesomeversion can't compare it."""
@@ -110,7 +110,7 @@ class TestDeviceInfoSwVersion:
 
     def test_sw_version_set_when_valid_version_in_domain_data(self):
         """Full round-trip: valid version → sw_version included."""
-        version = _get_version_mirror({"version": "3.1.5"})
+        version = _get_version_mirror({"version": "3.1.6"})
         assert _device_info_has_sw_version(version) is True
 
 
@@ -142,7 +142,7 @@ class TestDeviceRegistryCleanup:
         assert _needs_sw_version_cleanup("") is True
 
     def test_valid_version_no_cleanup(self):
-        assert _needs_sw_version_cleanup("3.1.5") is False
+        assert _needs_sw_version_cleanup("3.1.6") is False
 
     def test_none_no_cleanup(self):
         """None means no sw_version was set — nothing to clean."""
@@ -170,19 +170,19 @@ class TestVersionStorageCoercion:
                 return self._v
             def __bool__(self):
                 return True
-        av = FakeAwesomeVersion("3.1.5")
+        av = FakeAwesomeVersion("3.1.6")
         result = str(av)
-        assert result == "3.1.5"
+        assert result == "3.1.6"
         assert type(result) is str  # must be plain str, not AwesomeVersion
 
     def test_str_of_plain_string_is_noop(self):
-        assert str("3.1.5") == "3.1.5"
-        assert type(str("3.1.5")) is str
+        assert str("3.1.6") == "3.1.6"
+        assert type(str("3.1.6")) is str
 
     def test_coerced_version_safe_for_device_info(self):
         """Coerced str version must be included in DeviceInfo."""
         class FakeAV:
-            def __str__(self): return "3.1.5"
+            def __str__(self): return "3.1.6"
             def __bool__(self): return True
         version = str(FakeAV())
         assert _device_info_has_sw_version(version) is True

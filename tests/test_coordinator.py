@@ -3036,15 +3036,17 @@ class TestPlugInFreshEma:
 class TestSharedDeviceInfo:
     """Test that the shared device_info helper produces correct output."""
 
-    def _device_info(self, entry_id: str, version: str = "3.1.2") -> dict:
+    def _device_info(self, entry_id: str, version: str | None = "3.1.6") -> dict:
         """Mirror of helpers.device_info for testing without HA imports."""
-        return {
+        info = {
             "identifiers": {("adaptive_charge", entry_id)},
             "name": "AdaptiveCharge",
             "manufacturer": "AdaptiveCharge",
             "model": "EV Charge Controller",
-            "sw_version": version,
         }
+        if version:
+            info["sw_version"] = version
+        return info
 
     def test_device_info_returns_correct_structure(self):
         """device_info should return a dict with identifiers."""
@@ -3057,7 +3059,7 @@ class TestSharedDeviceInfo:
         assert info["name"] == "AdaptiveCharge"
         assert info["manufacturer"] == "AdaptiveCharge"
         assert info["model"] == "EV Charge Controller"
-        assert info["sw_version"] == "3.1.2"
+        assert info["sw_version"] == "3.1.6"
 
     def test_device_info_version_is_dynamic(self):
         """device_info sw_version should reflect the passed version."""
@@ -3065,6 +3067,11 @@ class TestSharedDeviceInfo:
         info_b = self._device_info("entry_b", "4.0.0")
         assert info_a["sw_version"] == "3.0.0"
         assert info_b["sw_version"] == "4.0.0"
+
+    def test_device_info_omits_sw_version_when_none(self):
+        """device_info should not include sw_version when version is None."""
+        info = self._device_info("entry_x", None)
+        assert "sw_version" not in info
 
 
 # ---------------------------------------------------------------------------
