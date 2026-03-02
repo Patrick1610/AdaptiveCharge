@@ -545,6 +545,8 @@ class _MissedSolarSubSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     _data_key: str = ""
 
@@ -766,6 +768,33 @@ class _UtilityMeterSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
         return {"period": self._period, "source": self._source_key}
 
 
+class _StoreBackedPeriodSensor(_BaseAdaptiveChargeSensor):
+    """Missed solar period sensor backed by persistent store.
+
+    Reads directly from coordinator.data (which contains store-backed
+    period counters), so values survive restart and show correct state
+    immediately when enabled later.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_entity_registry_enabled_default = True
+
+    _store_data_key: str = ""
+    _period: str = ""
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get(self._store_data_key, 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"period": self._period, "source": "persistent_store"}
+
+
 class EnergyChargedDailySensor(_UtilityMeterSensor):
     """Daily energy charged utility meter."""
 
@@ -802,11 +831,11 @@ class EnergyChargedYearlySensor(_UtilityMeterSensor):
         self._attr_unique_id = f"{entry.entry_id}_energy_charged_yearly"
 
 
-class MissedSolarDailySensor(_UtilityMeterSensor):
-    """Daily missed solar utility meter."""
+class MissedSolarDailySensor(_StoreBackedPeriodSensor):
+    """Daily missed solar (store-backed)."""
 
     _attr_name = "Missed Solar Daily (kWh)"
-    _source_key = "missed_solar_kwh"
+    _store_data_key = "store_missed_solar_daily_kwh"
     _period = "daily"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -814,11 +843,11 @@ class MissedSolarDailySensor(_UtilityMeterSensor):
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_daily"
 
 
-class MissedSolarMonthlySensor(_UtilityMeterSensor):
-    """Monthly missed solar utility meter."""
+class MissedSolarMonthlySensor(_StoreBackedPeriodSensor):
+    """Monthly missed solar (store-backed)."""
 
     _attr_name = "Missed Solar Monthly (kWh)"
-    _source_key = "missed_solar_kwh"
+    _store_data_key = "store_missed_solar_monthly_kwh"
     _period = "monthly"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -826,11 +855,11 @@ class MissedSolarMonthlySensor(_UtilityMeterSensor):
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_monthly"
 
 
-class MissedSolarYearlySensor(_UtilityMeterSensor):
-    """Yearly missed solar utility meter."""
+class MissedSolarYearlySensor(_StoreBackedPeriodSensor):
+    """Yearly missed solar (store-backed)."""
 
     _attr_name = "Missed Solar Yearly (kWh)"
-    _source_key = "missed_solar_kwh"
+    _store_data_key = "store_missed_solar_yearly_kwh"
     _period = "yearly"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
@@ -838,152 +867,176 @@ class MissedSolarYearlySensor(_UtilityMeterSensor):
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_yearly"
 
 
-# --- Missed Solar Absence utility meters ---
+# --- Missed Solar Absence utility meters (store-backed) ---
 
-class MissedSolarAbsenceDailySensor(_UtilityMeterSensor):
-    """Daily missed solar absence utility meter."""
+class MissedSolarAbsenceDailySensor(_StoreBackedPeriodSensor):
+    """Daily missed solar absence (store-backed)."""
 
     _attr_name = "Missed Solar Absence Daily (kWh)"
-    _source_key = "missed_solar_absence_kwh"
+    _store_data_key = "store_missed_solar_absence_daily_kwh"
     _period = "daily"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_absence_daily"
 
 
-class MissedSolarAbsenceMonthlySensor(_UtilityMeterSensor):
-    """Monthly missed solar absence utility meter."""
+class MissedSolarAbsenceMonthlySensor(_StoreBackedPeriodSensor):
+    """Monthly missed solar absence (store-backed)."""
 
     _attr_name = "Missed Solar Absence Monthly (kWh)"
-    _source_key = "missed_solar_absence_kwh"
+    _store_data_key = "store_missed_solar_absence_monthly_kwh"
     _period = "monthly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_absence_monthly"
 
 
-class MissedSolarAbsenceYearlySensor(_UtilityMeterSensor):
-    """Yearly missed solar absence utility meter."""
+class MissedSolarAbsenceYearlySensor(_StoreBackedPeriodSensor):
+    """Yearly missed solar absence (store-backed)."""
 
     _attr_name = "Missed Solar Absence Yearly (kWh)"
-    _source_key = "missed_solar_absence_kwh"
+    _store_data_key = "store_missed_solar_absence_yearly_kwh"
     _period = "yearly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_absence_yearly"
 
 
-# --- Missed Solar Cable utility meters ---
+# --- Missed Solar Cable utility meters (store-backed) ---
 
-class MissedSolarCableDailySensor(_UtilityMeterSensor):
-    """Daily missed solar cable utility meter."""
+class MissedSolarCableDailySensor(_StoreBackedPeriodSensor):
+    """Daily missed solar cable (store-backed)."""
 
     _attr_name = "Missed Solar Cable Daily (kWh)"
-    _source_key = "missed_solar_cable_kwh"
+    _store_data_key = "store_missed_solar_cable_daily_kwh"
     _period = "daily"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_cable_daily"
 
 
-class MissedSolarCableMonthlySensor(_UtilityMeterSensor):
-    """Monthly missed solar cable utility meter."""
+class MissedSolarCableMonthlySensor(_StoreBackedPeriodSensor):
+    """Monthly missed solar cable (store-backed)."""
 
     _attr_name = "Missed Solar Cable Monthly (kWh)"
-    _source_key = "missed_solar_cable_kwh"
+    _store_data_key = "store_missed_solar_cable_monthly_kwh"
     _period = "monthly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_cable_monthly"
 
 
-class MissedSolarCableYearlySensor(_UtilityMeterSensor):
-    """Yearly missed solar cable utility meter."""
+class MissedSolarCableYearlySensor(_StoreBackedPeriodSensor):
+    """Yearly missed solar cable (store-backed)."""
 
     _attr_name = "Missed Solar Cable Yearly (kWh)"
-    _source_key = "missed_solar_cable_kwh"
+    _store_data_key = "store_missed_solar_cable_yearly_kwh"
     _period = "yearly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_cable_yearly"
 
 
-# --- Missed Solar Low Surplus utility meters ---
+# --- Missed Solar Low Surplus utility meters (store-backed) ---
 
-class MissedSolarLowSurplusDailySensor(_UtilityMeterSensor):
-    """Daily missed solar low surplus utility meter."""
+class MissedSolarLowSurplusDailySensor(_StoreBackedPeriodSensor):
+    """Daily missed solar low surplus (store-backed)."""
 
     _attr_name = "Missed Solar Low Surplus Daily (kWh)"
-    _source_key = "missed_solar_low_surplus_kwh"
+    _store_data_key = "store_missed_solar_low_surplus_daily_kwh"
     _period = "daily"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_daily"
 
 
-class MissedSolarLowSurplusMonthlySensor(_UtilityMeterSensor):
-    """Monthly missed solar low surplus utility meter."""
+class MissedSolarLowSurplusMonthlySensor(_StoreBackedPeriodSensor):
+    """Monthly missed solar low surplus (store-backed)."""
 
     _attr_name = "Missed Solar Low Surplus Monthly (kWh)"
-    _source_key = "missed_solar_low_surplus_kwh"
+    _store_data_key = "store_missed_solar_low_surplus_monthly_kwh"
     _period = "monthly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_monthly"
 
 
-class MissedSolarLowSurplusYearlySensor(_UtilityMeterSensor):
-    """Yearly missed solar low surplus utility meter."""
+class MissedSolarLowSurplusYearlySensor(_StoreBackedPeriodSensor):
+    """Yearly missed solar low surplus (store-backed)."""
 
     _attr_name = "Missed Solar Low Surplus Yearly (kWh)"
-    _source_key = "missed_solar_low_surplus_kwh"
+    _store_data_key = "store_missed_solar_low_surplus_yearly_kwh"
     _period = "yearly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_low_surplus_yearly"
 
 
-# --- Missed Solar Quantization utility meters ---
+# --- Missed Solar Quantization utility meters (store-backed) ---
 
-class MissedSolarQuantizationDailySensor(_UtilityMeterSensor):
-    """Daily missed solar quantization utility meter."""
+class MissedSolarQuantizationDailySensor(_StoreBackedPeriodSensor):
+    """Daily missed solar quantization (store-backed)."""
 
     _attr_name = "Missed Solar Quantization Daily (kWh)"
-    _source_key = "missed_solar_quantization_kwh"
+    _store_data_key = "store_missed_solar_quantization_daily_kwh"
     _period = "daily"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_daily"
 
 
-class MissedSolarQuantizationMonthlySensor(_UtilityMeterSensor):
-    """Monthly missed solar quantization utility meter."""
+class MissedSolarQuantizationMonthlySensor(_StoreBackedPeriodSensor):
+    """Monthly missed solar quantization (store-backed)."""
 
     _attr_name = "Missed Solar Quantization Monthly (kWh)"
-    _source_key = "missed_solar_quantization_kwh"
+    _store_data_key = "store_missed_solar_quantization_monthly_kwh"
     _period = "monthly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_monthly"
 
 
-class MissedSolarQuantizationYearlySensor(_UtilityMeterSensor):
-    """Yearly missed solar quantization utility meter."""
+class MissedSolarQuantizationYearlySensor(_StoreBackedPeriodSensor):
+    """Yearly missed solar quantization (store-backed)."""
 
     _attr_name = "Missed Solar Quantization Yearly (kWh)"
-    _source_key = "missed_solar_quantization_kwh"
+    _store_data_key = "store_missed_solar_quantization_yearly_kwh"
     _period = "yearly"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)

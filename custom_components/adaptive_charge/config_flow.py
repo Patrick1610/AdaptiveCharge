@@ -83,7 +83,11 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AdaptiveCharge."""
 
     VERSION = 1
-    _data: dict[str, Any] = {}
+
+    def __init__(self) -> None:
+        """Initialise config flow with empty data."""
+        super().__init__()
+        self._data: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
