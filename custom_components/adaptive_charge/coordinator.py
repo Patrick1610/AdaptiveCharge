@@ -899,12 +899,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     self._action_plug_in_delayed(force_charge, ema_current_a),
                     eager_start=False,
                 )
-            elif not cable_connected and self._cable_prev and self._charging_on:
-                # Cable disconnected while charging — stop immediately so that
-                # subsequent ticks correctly attribute missed solar to cable/absence.
+            elif not cable_connected and self._cable_prev:
+                # Cable disconnected — stop charging if active, then reset
+                # current to max so the EVSE is ready for the next session
+                # (safe: no spike risk since the car is physically gone).
                 self._cancel_pending()
                 self._pending_task = self.hass.async_create_task(
-                    self._debounced(0, self._action_stop_surplus),
+                    self._debounced(0, self._action_cable_disconnected),
                     eager_start=False,
                 )
         if cable_connected is not None:
@@ -1182,8 +1183,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Shutdown sequence when controller is disabled.
 
         Policy: if the controller had started charging (_charging_on == True),
-        stop charging and reset current to default.  This matches the existing
-        stop behaviour already used by _action_stop_surplus / _action_stop_force.
+        stop charging.  This matches the existing stop behaviour used by
+        _action_stop_surplus / _action_stop_force.
         """
         if not self._charging_on:
             return
@@ -1200,8 +1201,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
         self._import_guard_zero_since = None
-        await asyncio.sleep(10)
-        await self._set_charge_current(int(self._max_current_limit))
 
     # ------------------------------------------------------------------
     # Control logic
@@ -1476,8 +1475,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_force"
-        await asyncio.sleep(10)
-        await self._set_charge_current(int(self._max_current_limit))
 
     async def _action_start_surplus(self, current_a: int) -> None:
         _LOGGER.info("AdaptiveCharge: start_surplus at %dA", current_a)
@@ -1518,8 +1515,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_zero_since = None
         self._import_below_since = None
         self._import_exceed_since = None
-        await asyncio.sleep(10)
-        await self._set_charge_current(int(self._max_current_limit))
+
+    async def _action_cable_disconnected(self) -> None:
+        """Handle cable disconnection: stop charging if active, then reset current to max.
+
+        Resetting to max is safe here because the car is physically unplugged —
+        there is no risk of a current spike. It ensures the EVSE is in a ready
+        state for the next session (or for charging elsewhere at full power).
+        """
+        if self._charging_on:
+            await self._action_stop_surplus()
+        max_a = int(min(self._max_current_limit, MAX_CURRENT_ABS))
+        await self._set_charge_current(max_a)
+        _LOGGER.info("AdaptiveCharge: cable disconnected — current reset to %dA", max_a)
 
     async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
         # Immediately set current to 0A so the EVSE cannot charge at any rate
