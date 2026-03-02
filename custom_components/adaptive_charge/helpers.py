@@ -18,7 +18,7 @@ def device_info(entry: ConfigEntry, version: str | None = None) -> DeviceInfo:
     """Return shared DeviceInfo for all AdaptiveCharge entities."""
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name="AdaptiveCharge",
+        name=entry.title,
         manufacturer="AdaptiveCharge",
         model="EV Charge Controller",
         sw_version=version or "unknown",

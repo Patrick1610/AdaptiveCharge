@@ -3,8 +3,9 @@
     "step": {
       "user": {
         "title": "AdaptiveCharge",
-        "description": "Choose how your net power is measured.",
+        "description": "Give this charger a name, then choose how your net power is measured.",
         "data": {
+          "name": "Name",
           "net_power_mode": "Net Power Mode"
         }
       },

@@ -109,15 +109,21 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 1: select net power mode."""
+        """Step 1: name and net power mode."""
         if user_input is not None:
-            self._data = {**self._data, **user_input}
+            name = (user_input.get(CONF_NAME) or "").strip() or "AdaptiveCharge"
+            await self.async_set_unique_id(name)
+            self._abort_if_unique_id_configured()
+            self._data = {**self._data, **user_input, CONF_NAME: name}
             if user_input[CONF_NET_POWER_MODE] == MODE_NET_ONLY:
                 return await self.async_step_net_power()
             return await self.async_step_consumption_production()
 
         schema = vol.Schema(
             {
+                vol.Required(CONF_NAME, default="AdaptiveCharge"): selector.selector(
+                    {"text": {}}
+                ),
                 vol.Required(CONF_NET_POWER_MODE, default=MODE_NET_ONLY): selector.selector(
                     {
                         "select": {
@@ -130,7 +136,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             ]
                         }
                     }
-                )
+                ),
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)
@@ -398,7 +404,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
                 return await self.async_step_utility_meters()
             return self.async_create_entry(
-                title="AdaptiveCharge",
+                title=self._data.get(CONF_NAME, "AdaptiveCharge"),
                 data=self._data,
             )
 
@@ -463,7 +469,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._data = {**self._data, **user_input}
             return self.async_create_entry(
-                title="AdaptiveCharge",
+                title=self._data.get(CONF_NAME, "AdaptiveCharge"),
                 data=self._data,
             )
 
