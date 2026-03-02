@@ -44,8 +44,9 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> AdaptiveChargeCo
     domain_data = hass.data.get(DOMAIN, {})
     if entry_id:
         return domain_data.get(entry_id)
-    if domain_data:
-        return next(iter(domain_data.values()))
+    for value in domain_data.values():
+        if isinstance(value, AdaptiveChargeCoordinator):
+            return value
     return None
 
 
@@ -146,12 +147,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
-        # Remove services if no more entries
-        if not hass.data[DOMAIN]:
+        # Remove services and clean up domain data if no more coordinator entries
+        has_entries = any(
+            isinstance(v, AdaptiveChargeCoordinator)
+            for v in hass.data[DOMAIN].values()
+        )
+        if not has_entries:
             hass.services.async_remove(DOMAIN, SERVICE_FORCE_START)
             hass.services.async_remove(DOMAIN, SERVICE_FORCE_STOP)
             hass.services.async_remove(DOMAIN, SERVICE_SET_DESIRED_RANGE)
             hass.services.async_remove(DOMAIN, SERVICE_ENABLE_TONIGHT)
             hass.services.async_remove(DOMAIN, SERVICE_DISABLE_TONIGHT)
+            hass.data.pop(DOMAIN, None)
 
     return unload_ok
