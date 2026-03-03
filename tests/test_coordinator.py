@@ -4298,3 +4298,156 @@ class TestLowPowerProtection:
         else:
             source = ""
         assert source == "low_power"
+
+
+# ---------------------------------------------------------------------------
+# Tests: battery capacity auto-detection
+# ---------------------------------------------------------------------------
+
+def _compute_capacity_estimate(
+    session_start_soc: float | None,
+    session_end_soc: float | None,
+    energy_session_kwh: float,
+    current_estimate: float = 0.0,
+    min_soc_delta: float = 5.0,
+    min_energy_kwh: float = 0.5,
+    ema_alpha: float = 0.3,
+    min_cap: float = 5.0,
+    max_cap: float = 200.0,
+) -> float:
+    """Mirror of coordinator._update_capacity_estimate logic."""
+    if session_start_soc is None or session_end_soc is None:
+        return current_estimate
+    soc_delta = session_end_soc - session_start_soc
+    if soc_delta < min_soc_delta or energy_session_kwh < min_energy_kwh:
+        return current_estimate
+    raw = energy_session_kwh / (soc_delta / 100.0)
+    raw = max(min_cap, min(max_cap, raw))
+    if current_estimate > 0:
+        return ema_alpha * raw + (1.0 - ema_alpha) * current_estimate
+    return raw
+
+
+def _low_power_precise(
+    battery_pct: float,
+    threshold_pct: float,
+    forecast_kwh: float,
+    solar_to_ev_ratio: float,
+    effective_capacity_kwh: float,
+) -> bool:
+    """Mirror of coordinator precise low-power check."""
+    energy_needed = max(0.0, (threshold_pct - battery_pct) / 100.0 * effective_capacity_kwh)
+    expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+    return expected_ev_kwh < energy_needed
+
+
+class TestBatteryCapacityEstimation:
+    """Tests for the session-based battery capacity auto-detection."""
+
+    def test_typical_session_produces_estimate(self):
+        """Normal charging session → reasonable capacity estimate."""
+        # 30 kWh added, SoC went from 20% to 50% → capacity ≈ 100 kWh
+        est = _compute_capacity_estimate(20.0, 50.0, 30.0)
+        assert abs(est - 100.0) < 0.1
+
+    def test_estimate_accounts_for_losses(self):
+        """Estimate uses wall energy, so it's naturally pre-overhead.
+
+        If true battery = 80 kWh but 10% AC losses, charging 40% of battery
+        requires 80*0.4=32 kWh from battery → 32/0.9≈35.6 kWh at the wall.
+        The estimate from wall energy: 35.6 / 0.4 = 89 kWh (≈ true/eta).
+        """
+        true_capacity = 80.0
+        efficiency = 0.9
+        soc_delta = 40.0
+        energy_at_wall = (true_capacity * soc_delta / 100.0) / efficiency
+        est = _compute_capacity_estimate(10.0, 50.0, energy_at_wall)
+        # The estimate should be higher than true capacity by ~1/eta
+        assert est > true_capacity
+        assert abs(est - true_capacity / efficiency) < 1.0
+
+    def test_ema_updates_toward_new_sessions(self):
+        """Multiple sessions converge the EMA."""
+        est = _compute_capacity_estimate(10.0, 50.0, 40.0)  # 100 kWh
+        est = _compute_capacity_estimate(10.0, 60.0, 42.0, current_estimate=est)  # 70 kWh raw
+        # Should be between 70 and 100
+        assert 70.0 < est < 100.0
+
+    def test_small_soc_delta_skipped(self):
+        """Session with < 5% SoC change is ignored (too noisy)."""
+        est = _compute_capacity_estimate(80.0, 84.0, 5.0, current_estimate=50.0)
+        assert est == 50.0  # unchanged
+
+    def test_tiny_energy_skipped(self):
+        """Session with < 0.5 kWh is ignored."""
+        est = _compute_capacity_estimate(20.0, 50.0, 0.1, current_estimate=50.0)
+        assert est == 50.0  # unchanged
+
+    def test_no_start_soc_skipped(self):
+        """No SoC at plug-in → estimation skipped."""
+        est = _compute_capacity_estimate(None, 60.0, 30.0, current_estimate=75.0)
+        assert est == 75.0  # unchanged
+
+    def test_no_end_soc_skipped(self):
+        """No SoC at unplug → estimation skipped."""
+        est = _compute_capacity_estimate(20.0, None, 30.0, current_estimate=75.0)
+        assert est == 75.0  # unchanged
+
+    def test_soc_decreased_skipped(self):
+        """SoC decrease (e.g. V2H) is ignored."""
+        est = _compute_capacity_estimate(60.0, 50.0, 10.0, current_estimate=80.0)
+        assert est == 80.0  # unchanged
+
+    def test_estimate_capped_at_max(self):
+        """Abnormal readings are clamped to 200 kWh."""
+        # Tiny SoC change but lots of energy → would give crazy raw value
+        est = _compute_capacity_estimate(49.0, 56.0, 150.0)
+        assert est == 200.0
+
+    def test_estimate_floored_at_min(self):
+        """Abnormal readings are clamped to 5 kWh."""
+        est = _compute_capacity_estimate(10.0, 90.0, 0.5)
+        # raw = 0.5 / 0.8 ≈ 0.625 → clamped to 5.0
+        assert est == 5.0
+
+    def test_first_session_sets_estimate_directly(self):
+        """First session bypasses EMA and sets value directly."""
+        est = _compute_capacity_estimate(20.0, 70.0, 40.0, current_estimate=0.0)
+        assert abs(est - 80.0) < 0.1
+
+
+class TestPreciseLowPowerCheck:
+    """Tests for the energy-based low-power forecast comparison."""
+
+    def test_sufficient_forecast_no_force(self):
+        """Expected EV charging exceeds energy needed → no force charge."""
+        # Battery at 10%, threshold 20%, capacity 80 kWh → need 8 kWh
+        # Forecast 20 kWh, ratio 0.5 → expected 10 kWh > 8 kWh
+        assert _low_power_precise(10.0, 20.0, 20.0, 0.5, 80.0) is False
+
+    def test_insufficient_forecast_triggers_force(self):
+        """Expected EV charging is less than energy needed → force charge."""
+        # Battery at 10%, threshold 20%, capacity 80 kWh → need 8 kWh
+        # Forecast 10 kWh, ratio 0.5 → expected 5 kWh < 8 kWh
+        assert _low_power_precise(10.0, 20.0, 10.0, 0.5, 80.0) is True
+
+    def test_wall_energy_capacity_includes_losses(self):
+        """With capacity derived from wall energy (includes losses),
+        the energy_needed correctly reflects pre-overhead demand."""
+        # True 80 kWh battery, 10% losses → wall-derived capacity ≈ 88.9 kWh
+        wall_capacity = 80.0 / 0.9
+        # Need 10% of wall_capacity = 8.89 kWh at wall to reach threshold
+        # Forecast 15 kWh, ratio 0.7 → expected 10.5 kWh > 8.89 kWh
+        assert _low_power_precise(10.0, 20.0, 15.0, 0.7, wall_capacity) is False
+
+    def test_exact_match_no_force(self):
+        """Expected exactly equals needed → no force charge (≥ is sufficient)."""
+        # 50 kWh capacity, 20→30% = 5 kWh needed
+        # Forecast 10 kWh, ratio 0.5 → expected 5 kWh exactly
+        assert _low_power_precise(20.0, 30.0, 10.0, 0.5, 50.0) is False
+
+    def test_low_ratio_can_trigger_force(self):
+        """Low solar-to-EV ratio means even a large forecast doesn't help much."""
+        # 80 kWh capacity, 0→20% = 16 kWh needed
+        # Forecast 50 kWh but only 0.2 ratio → expected 10 kWh < 16 kWh
+        assert _low_power_precise(0.0, 20.0, 50.0, 0.2, 80.0) is True

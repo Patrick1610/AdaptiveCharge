@@ -51,7 +51,8 @@
           "range_hysteresis_pct": "Range Hysteresis (%)",
           "default_charge_limit": "Default Charge Limit (%)",
           "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
-          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)"
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)",
+          "battery_capacity_kwh": "Battery Capacity (kWh, 0 = use auto-detection)"
         }
       },
       "surplus_settings": {
@@ -183,7 +184,8 @@
           "range_hysteresis_pct": "Range Hysteresis (%)",
           "default_charge_limit": "Default Charge Limit (%)",
           "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
-          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)"
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)",
+          "battery_capacity_kwh": "Battery Capacity (kWh, 0 = use auto-detection)"
         }
       },
       "surplus_settings": {
@@ -340,6 +342,9 @@
       },
       "missed_solar_low_surplus_yearly": {
         "name": "Missed Solar Low Surplus Yearly (kWh)"
+      },
+      "solar_to_ev_ratio": {
+        "name": "Solar to EV Ratio"
       }
     },
     "binary_sensor": {

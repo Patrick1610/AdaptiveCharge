@@ -135,5 +135,8 @@ class LowPowerActiveSensor(CoordinatorEntity, BinarySensorEntity):
             "low_power_threshold_pct": data.get("low_power_threshold_pct"),
             "forecast_kwh": data.get("forecast_kwh"),
             "low_power_forecast_threshold_kwh": data.get("low_power_forecast_threshold_kwh"),
+            "battery_capacity_kwh": data.get("battery_capacity_kwh"),
+            "estimated_battery_capacity_kwh": data.get("estimated_battery_capacity_kwh"),
+            "solar_to_ev_ratio": data.get("solar_to_ev_ratio"),
             "force_source": data.get("force_source"),
         }

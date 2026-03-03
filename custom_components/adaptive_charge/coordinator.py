@@ -25,6 +25,7 @@ from .alignment import (
 from .helpers import format_duration
 from .storage import AdaptiveChargeStore
 from .const import (
+    CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
     CONF_CHARGE_LIMIT_NUMBER,
@@ -103,6 +104,7 @@ from .const import (
     DEFAULT_NIGHT_OFF_MINUTE,
     DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH,
     DEFAULT_LOW_POWER_THRESHOLD,
+    DEFAULT_BATTERY_CAPACITY_KWH,
     DEFAULT_MIN_OFF_TIME_S,
     DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S,
@@ -248,6 +250,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._low_power_forecast_threshold_kwh: float = float(
             options.get(CONF_LOW_POWER_FORECAST_THRESHOLD_KWH, DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH)
         )
+        self._battery_capacity_kwh: float = float(
+            options.get(CONF_BATTERY_CAPACITY_KWH, DEFAULT_BATTERY_CAPACITY_KWH)
+        )
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -337,7 +342,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._missed_solar_cable_wh: float = 0.0
         self._missed_solar_low_surplus_wh: float = 0.0
         self._missed_solar_quantization_wh: float = 0.0
+        self._solar_production_wh: float = 0.0
         self._last_energy_mono: float | None = None
+
+        # --- Battery capacity auto-detection ---
+        # SoC recorded when cable is plugged in, used to compute session estimate.
+        self._session_start_soc: float | None = None
+        # EMA estimate derived from past sessions (kWh as seen at the EV power
+        # sensor, so it already includes AC→battery charging losses).
+        # 0.0 means no estimate available yet.
+        self._estimated_battery_capacity_kwh: float = 0.0
 
         # Persistent counter store
         self._store = AdaptiveChargeStore(hass, entry.entry_id)
@@ -368,6 +382,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Set up interval and do first refresh."""
         # Load persistent counters from .storage
         await self._store.async_load()
+        # Restore battery capacity estimate from the store
+        stored_estimate = self._store.get("battery_capacity_estimate_kwh")
+        if stored_estimate > 0:
+            self._estimated_battery_capacity_kwh = stored_estimate
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -460,12 +478,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._evaluate_tonight_auto_off(sensor_data["cable_connected"])
 
         # --- Phase 5: Force charge / need / tonight condition ---
+        # Compute solar-to-EV ratio from persistent store totals
+        store_solar_production_wh = self._store.get("solar_production_total_wh")
+        store_energy_solar_wh = self._store.get("energy_solar_wh")
+        solar_to_ev_ratio: float | None = None
+        if store_solar_production_wh > 0:
+            solar_to_ev_ratio = min(store_energy_solar_wh / store_solar_production_wh, 1.0)
+
         force_data = self._evaluate_force_charge(
             sensor_data["current_range"],
             sensor_data["presence"],
             sensor_data["cable_connected"],
             sensor_data.get("battery_pct"),
             sensor_data.get("forecast_kwh"),
+            solar_to_ev_ratio,
         )
 
         # --- Phase 6: Cable plug-in detection ---
@@ -512,7 +538,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Phase 9: Build data dict ---
         data = self._build_data_dict(
-            sensor_data, analysis, force_data, display_ema, display_available, now
+            sensor_data, analysis, force_data, display_ema, display_available, now,
+            solar_to_ev_ratio,
         )
 
         self.async_set_updated_data(data)
@@ -724,6 +751,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         cable_connected: bool | None,
         battery_pct: float | None = None,
         forecast_kwh: float | None = None,
+        solar_to_ev_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Evaluate force charge, need, tonight condition, and earliest-start gate.
 
@@ -742,6 +770,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         ``_low_power_threshold`` and the solar forecast is insufficient (or
         unavailable) to cover the shortfall, force charging is activated
         regardless of the surplus/tonight conditions.
+
+        Capacity evaluation uses the best available source in priority order:
+          1. Manually configured ``_battery_capacity_kwh`` (config flow, > 0)
+          2. Auto-detected ``_estimated_battery_capacity_kwh`` (derived from
+             wall-measured energy ÷ SoC delta, so it already includes AC→battery
+             charging losses — no separate efficiency factor needed)
+
+        When a capacity and solar_to_ev_ratio are available the precise check is:
+          energy_needed   = (threshold − battery_pct) / 100 × effective_capacity
+          expected_ev_kwh = forecast_kwh × solar_to_ev_ratio
+          force_charge    = expected_ev_kwh < energy_needed
+
+        When no capacity is known the simple ``_low_power_forecast_threshold_kwh``
+        fallback is used instead.
         """
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
@@ -800,13 +842,33 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and bool(presence)
             and bool(cable_connected)
         ):
-            if (
-                forecast_kwh is None
-                or forecast_kwh < self._low_power_forecast_threshold_kwh
-            ):
-                # No forecast or forecast too low → force charge
+            if forecast_kwh is None:
+                # No forecast at all → force charge
                 low_power_active = True
-            # else: forecast is high enough — solar will handle the charging
+            else:
+                # Resolve effective capacity: manual config takes priority,
+                # then fall back to the auto-detected estimate.
+                effective_capacity = (
+                    self._battery_capacity_kwh
+                    if self._battery_capacity_kwh > 0
+                    else self._estimated_battery_capacity_kwh
+                )
+                if (
+                    effective_capacity > 0
+                    and solar_to_ev_ratio is not None
+                    and solar_to_ev_ratio > 0
+                ):
+                    # Precise mode: wall-energy-based capacity already includes
+                    # charging losses, so energy_needed is pre-overhead.
+                    energy_needed_kwh = max(
+                        0.0,
+                        (self._low_power_threshold - battery_pct) / 100.0 * effective_capacity,
+                    )
+                    expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+                    low_power_active = expected_ev_kwh < energy_needed_kwh
+                else:
+                    # Fallback: compare forecast against fixed kWh threshold
+                    low_power_active = forecast_kwh < self._low_power_forecast_threshold_kwh
 
         force_charge = self._charge_now or tonight_condition or low_power_active
         if force_charge:
@@ -855,6 +917,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # Check for period rollovers in persistent store
         self._store.check_rollovers()
+
+        # --- Solar production accumulation ---
+        solar_w_val = sensor_data.get("solar_w")
+        if solar_w_val is not None and solar_w_val > 0:
+            solar_production_wh = solar_w_val * dt_h
+            self._solar_production_wh += solar_production_wh
+            self._store.add_solar_production(solar_production_wh)
 
         # --- Energy charged accumulation ---
         if self._charging_on and ev_w > 0:
@@ -919,6 +988,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_wh = 0.0
         self._energy_session_solar_wh = 0.0
         self._energy_session_import_wh = 0.0
+        # Snapshot the current SoC as the session baseline for capacity estimation.
+        self._session_start_soc = _get_float_state(self.hass, self._battery_sensor)
 
     # ------------------------------------------------------------------
     # Phase 6: Cable plug-in detection
@@ -1009,6 +1080,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         display_ema: float,
         display_available: float,
         now: datetime,
+        solar_to_ev_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]
@@ -1154,6 +1226,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
             "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
             "missed_solar_quantization_kwh": round(self._missed_solar_quantization_wh / 1000.0, 3),
+            # Solar production and solar-to-EV ratio
+            "solar_production_kwh": round(self._solar_production_wh / 1000.0, 3),
+            "solar_to_ev_ratio": round(solar_to_ev_ratio, 3) if solar_to_ev_ratio is not None else None,
+            "battery_capacity_kwh": self._battery_capacity_kwh,
+            "estimated_battery_capacity_kwh": round(self._estimated_battery_capacity_kwh, 2),
             # --- Persistent store period counters (kWh) ---
             "store_missed_solar_daily_kwh": self._store.get_kwh("missed_solar_daily_wh"),
             "store_missed_solar_monthly_kwh": self._store.get_kwh("missed_solar_monthly_wh"),
@@ -1571,11 +1648,65 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         there is no risk of a current spike. It ensures the EVSE is in a ready
         state for the next session (or for charging elsewhere at full power).
         """
+        # Update battery capacity estimate from the completed session before
+        # energy counters are reset by the next plug-in.
+        self._update_capacity_estimate()
         if self._charging_on:
             await self._action_stop_surplus()
         max_a = int(min(self._max_current_limit, MAX_CURRENT_ABS))
         await self._set_charge_current(max_a)
         _LOGGER.info("AdaptiveCharge: cable disconnected — current reset to %dA", max_a)
+
+    # Minimum SoC change (%) and energy (kWh) required for a reliable estimate.
+    _CAPACITY_MIN_SOC_DELTA: float = 5.0
+    _CAPACITY_MIN_ENERGY_KWH: float = 0.5
+    # EMA weight for new session estimates (0.3 = ~3-4 sessions to stabilise).
+    _CAPACITY_EMA_ALPHA: float = 0.3
+    # Sanity bounds for the estimate (kWh).
+    _CAPACITY_MIN_KWH: float = 5.0
+    _CAPACITY_MAX_KWH: float = 200.0
+
+    def _update_capacity_estimate(self) -> None:
+        """Estimate battery capacity from the just-completed charging session.
+
+        The estimate is derived from wall-measured energy (EV power sensor), so
+        it already includes AC→battery charging losses. This means the resulting
+        ``energy_needed`` calculation in the low-power check is automatically
+        pre-overhead — no separate efficiency factor is required.
+
+        Only updates when the SoC increased by at least 5 % and at least 0.5 kWh
+        was added in the session, to avoid noise from rounding or tiny top-ups.
+        """
+        if self._session_start_soc is None:
+            return
+        end_soc = _get_float_state(self.hass, self._battery_sensor)
+        if end_soc is None:
+            return
+        soc_delta = end_soc - self._session_start_soc
+        energy_kwh = self._energy_session_wh / 1000.0
+        if soc_delta < self._CAPACITY_MIN_SOC_DELTA or energy_kwh < self._CAPACITY_MIN_ENERGY_KWH:
+            return
+
+        raw_estimate = (energy_kwh * 100.0) / soc_delta
+        raw_estimate = max(self._CAPACITY_MIN_KWH, min(self._CAPACITY_MAX_KWH, raw_estimate))
+
+        if self._estimated_battery_capacity_kwh > 0:
+            self._estimated_battery_capacity_kwh = (
+                self._CAPACITY_EMA_ALPHA * raw_estimate
+                + (1.0 - self._CAPACITY_EMA_ALPHA) * self._estimated_battery_capacity_kwh
+            )
+        else:
+            self._estimated_battery_capacity_kwh = raw_estimate
+
+        self._store.set_battery_capacity_estimate(self._estimated_battery_capacity_kwh)
+        _LOGGER.info(
+            "AdaptiveCharge: battery capacity estimate updated to %.1f kWh "
+            "(soc_delta=%.1f%%, energy=%.2f kWh, raw=%.1f kWh)",
+            self._estimated_battery_capacity_kwh,
+            soc_delta,
+            energy_kwh,
+            raw_estimate,
+        )
 
     async def _action_plug_in_delayed(self, force_charge: bool, ema_current_a: float) -> None:
         # Immediately set current to 0A so the EVSE cannot charge at any rate

@@ -47,6 +47,7 @@ CONF_NIGHT_OFF_HOUR = "night_off_hour"
 CONF_NIGHT_OFF_MINUTE = "night_off_minute"
 CONF_LOW_POWER_THRESHOLD = "low_power_threshold_pct"
 CONF_LOW_POWER_FORECAST_THRESHOLD_KWH = "low_power_forecast_threshold_kwh"
+CONF_BATTERY_CAPACITY_KWH = "battery_capacity_kwh"
 
 # --- Net Power Mode Values ---
 MODE_NET_ONLY = "net_only"
@@ -86,6 +87,7 @@ DEFAULT_NIGHT_OFF_HOUR = 5
 DEFAULT_NIGHT_OFF_MINUTE = 0
 DEFAULT_LOW_POWER_THRESHOLD = 20  # % SoC — force charge if battery below this
 DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH = 4.0  # kWh remaining forecast to skip force charge
+DEFAULT_BATTERY_CAPACITY_KWH = 0.0  # kWh — 0 means not configured; enables precise forecast evaluation when set
 
 # --- Import guard (configurable fail-safe) ---
 CONF_IMPORT_GUARD_THRESHOLD = "import_guard_threshold_w"

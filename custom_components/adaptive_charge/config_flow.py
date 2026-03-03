@@ -30,6 +30,7 @@ from .const import (
     CONF_INVERT_NET_POWER,
     CONF_LOW_POWER_FORECAST_THRESHOLD_KWH,
     CONF_LOW_POWER_THRESHOLD,
+    CONF_BATTERY_CAPACITY_KWH,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
     CONF_MODULATE_MIN_INTERVAL,
@@ -56,6 +57,7 @@ from .const import (
     CONF_UTILITY_MONTHLY,
     CONF_UTILITY_YEARLY,
     CONF_VOLTAGE_SENSOR,
+    DEFAULT_BATTERY_CAPACITY_KWH,
     DEFAULT_CHARGE_BUFFER,
     DEFAULT_CHARGE_LIMIT,
     DEFAULT_DESIRED_RANGE,
@@ -301,6 +303,19 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "number": {
                             "min": 0,
                             "max": 50,
+                            "step": 0.5,
+                            "unit_of_measurement": "kWh",
+                            "mode": "box",
+                        }
+                    }
+                ),
+                vol.Optional(
+                    CONF_BATTERY_CAPACITY_KWH, default=DEFAULT_BATTERY_CAPACITY_KWH
+                ): selector.selector(
+                    {
+                        "number": {
+                            "min": 0,
+                            "max": 200,
                             "step": 0.5,
                             "unit_of_measurement": "kWh",
                             "mode": "box",
@@ -714,6 +729,12 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     )),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 50, "step": 0.5, "unit_of_measurement": "kWh", "mode": "box"}}
+                ),
+                vol.Optional(
+                    CONF_BATTERY_CAPACITY_KWH,
+                    default=float(current.get(CONF_BATTERY_CAPACITY_KWH, DEFAULT_BATTERY_CAPACITY_KWH)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 200, "step": 0.5, "unit_of_measurement": "kWh", "mode": "box"}}
                 ),
             }
         )
