@@ -49,7 +49,9 @@
         "data": {
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)",
-          "default_charge_limit": "Default Charge Limit (%)"
+          "default_charge_limit": "Default Charge Limit (%)",
+          "low_power_threshold_pct": "Low Power Threshold (%) — force charge when battery is below this level (0 = disabled)",
+          "low_power_forecast_kwh": "Low Power Forecast Minimum (kWh) — skip force charge when solar forecast exceeds this value"
         }
       },
       "surplus_settings": {
@@ -179,7 +181,9 @@
         "data": {
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)",
-          "default_charge_limit": "Default Charge Limit (%)"
+          "default_charge_limit": "Default Charge Limit (%)",
+          "low_power_threshold_pct": "Low Power Threshold (%) — force charge when battery is below this level (0 = disabled)",
+          "low_power_forecast_kwh": "Low Power Forecast Minimum (kWh) — skip force charge when solar forecast exceeds this value"
         }
       },
       "surplus_settings": {

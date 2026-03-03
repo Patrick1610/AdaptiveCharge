@@ -4194,3 +4194,79 @@ class TestCableDisconnectResetsToMax:
             assert calls[-1] == f"set_current({self.MAX})", (
                 f"set_current(max) must be last call (charging_on={charging_on})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: low power force charge logic
+# ---------------------------------------------------------------------------
+
+def _evaluate_low_power_charge(
+    battery_pct: float | None,
+    forecast_kwh: float | None,
+    threshold: float,
+    min_forecast_kwh: float,
+) -> bool:
+    """Mirror of coordinator._evaluate_low_power_charge, unit-tested without HA."""
+    if threshold <= 0 or battery_pct is None:
+        return False
+    if battery_pct >= threshold:
+        return False
+    if forecast_kwh is not None and forecast_kwh >= min_forecast_kwh:
+        return False
+    return True
+
+
+class TestLowPowerChargeLogic:
+    """Test low-power force charge evaluation."""
+
+    def test_disabled_when_threshold_zero(self):
+        # threshold = 0 means feature is disabled
+        assert _evaluate_low_power_charge(10.0, None, 0, 6.0) is False
+
+    def test_disabled_when_no_battery_sensor(self):
+        # battery_pct = None → feature cannot activate
+        assert _evaluate_low_power_charge(None, None, 20, 6.0) is False
+
+    def test_not_triggered_when_battery_above_threshold(self):
+        assert _evaluate_low_power_charge(50.0, None, 20, 6.0) is False
+
+    def test_not_triggered_when_battery_exactly_at_threshold(self):
+        assert _evaluate_low_power_charge(20.0, None, 20, 6.0) is False
+
+    def test_triggered_below_threshold_no_forecast(self):
+        # battery below threshold and no forecast → force charge
+        assert _evaluate_low_power_charge(15.0, None, 20, 6.0) is True
+
+    def test_triggered_below_threshold_insufficient_forecast(self):
+        # battery below threshold and forecast too low → force charge
+        assert _evaluate_low_power_charge(15.0, 3.0, 20, 6.0) is True
+
+    def test_skipped_when_forecast_sufficient(self):
+        # battery below threshold but forecast is good → skip force charge
+        assert _evaluate_low_power_charge(15.0, 8.0, 20, 6.0) is False
+
+    def test_skipped_when_forecast_exactly_at_minimum(self):
+        # forecast exactly equals the minimum → skip force charge
+        assert _evaluate_low_power_charge(15.0, 6.0, 20, 6.0) is False
+
+    def test_triggered_when_forecast_just_below_minimum(self):
+        assert _evaluate_low_power_charge(15.0, 5.9, 20, 6.0) is True
+
+    def test_negative_threshold_disables_feature(self):
+        assert _evaluate_low_power_charge(5.0, None, -5, 6.0) is False
+
+    def test_zero_battery_triggers_when_forecast_low(self):
+        # fully discharged battery with no forecast → force charge
+        assert _evaluate_low_power_charge(0.0, 1.0, 20, 6.0) is True
+
+    def test_zero_battery_skipped_when_forecast_sufficient(self):
+        assert _evaluate_low_power_charge(0.0, 10.0, 20, 6.0) is False
+
+    def test_high_threshold_100pct(self):
+        # threshold = 100% → always force unless solar is enough
+        assert _evaluate_low_power_charge(99.0, None, 100, 6.0) is True
+        assert _evaluate_low_power_charge(100.0, None, 100, 6.0) is False
+
+    def test_zero_forecast_minimum_always_skips_force(self):
+        # min_forecast_kwh = 0 means any forecast (including 0) skips force charge
+        assert _evaluate_low_power_charge(5.0, 0.0, 20, 0.0) is False

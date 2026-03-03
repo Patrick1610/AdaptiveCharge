@@ -39,6 +39,8 @@ from .const import (
     CONF_DESIRED_RANGE,
     CONF_EV_POWER_SENSOR,
     CONF_INVERT_NET_POWER,
+    CONF_LOW_POWER_FORECAST_KWH,
+    CONF_LOW_POWER_THRESHOLD,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
@@ -99,6 +101,8 @@ from .const import (
     DEFAULT_TONIGHT_START_MINUTE,
     DEFAULT_NIGHT_OFF_HOUR,
     DEFAULT_NIGHT_OFF_MINUTE,
+    DEFAULT_LOW_POWER_FORECAST_KWH,
+    DEFAULT_LOW_POWER_THRESHOLD,
     DEFAULT_MIN_OFF_TIME_S,
     DEFAULT_MIN_ON_TIME_S,
     DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S,
@@ -238,6 +242,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._tonight_start_minute: int = int(options.get(CONF_TONIGHT_START_MINUTE, DEFAULT_TONIGHT_START_MINUTE))
         self._night_off_hour: int = int(options.get(CONF_NIGHT_OFF_HOUR, DEFAULT_NIGHT_OFF_HOUR))
         self._night_off_minute: int = int(options.get(CONF_NIGHT_OFF_MINUTE, DEFAULT_NIGHT_OFF_MINUTE))
+        self._low_power_threshold: float = float(options.get(CONF_LOW_POWER_THRESHOLD, DEFAULT_LOW_POWER_THRESHOLD))
+        self._low_power_forecast_kwh: float = float(options.get(CONF_LOW_POWER_FORECAST_KWH, DEFAULT_LOW_POWER_FORECAST_KWH))
 
         self._charge_now: bool = False
         self._charge_tonight: bool = False
@@ -454,6 +460,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             sensor_data["current_range"],
             sensor_data["presence"],
             sensor_data["cable_connected"],
+            sensor_data,
         )
 
         # --- Phase 6: Cable plug-in detection ---
@@ -710,6 +717,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         current_range: float | None,
         presence: bool | None,
         cable_connected: bool | None,
+        sensor_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Evaluate force charge, need, tonight condition, and earliest-start gate.
 
@@ -769,17 +777,71 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and self._solar_done
             and after_start
         )
-        force_charge = self._charge_now or tonight_condition
+        low_power_force = self._evaluate_low_power_charge(
+            battery_pct=(sensor_data or {}).get("battery_pct"),
+            forecast_kwh=(sensor_data or {}).get("forecast_kwh"),
+        )
+        force_charge = self._charge_now or tonight_condition or low_power_force
         if force_charge:
-            self._force_source = "charge_now_switch" if self._charge_now else "charge_tonight"
+            if self._charge_now:
+                self._force_source = "charge_now_switch"
+            elif tonight_condition:
+                self._force_source = "charge_tonight"
+            else:
+                self._force_source = "low_power"
 
         return {
             "effective_range": effective_range,
             "hysteresis_km": hysteresis_km,
             "need": need,
             "tonight_condition": tonight_condition,
+            "low_power_force": low_power_force,
             "force_charge": force_charge,
         }
+
+    # ------------------------------------------------------------------
+    # Low power charge evaluation
+    # ------------------------------------------------------------------
+
+    def _evaluate_low_power_charge(
+        self, battery_pct: float | None, forecast_kwh: float | None
+    ) -> bool:
+        """Return True if low-power force charge should be activated.
+
+        Activates when the battery SoC is below the configured threshold AND
+        the solar forecast is insufficient to charge the car to the threshold
+        via surplus charging alone.  When the forecast is above the configured
+        minimum, forced charging is skipped and the car is expected to reach the
+        threshold through normal surplus charging.
+        """
+        # Feature requires a battery sensor to be configured
+        if self._low_power_threshold <= 0 or battery_pct is None:
+            return False
+        # Battery already at or above the threshold — nothing to do
+        if battery_pct >= self._low_power_threshold:
+            return False
+        # Battery is below threshold: check whether the forecast is sufficient
+        if forecast_kwh is not None and forecast_kwh >= self._low_power_forecast_kwh:
+            # Solar forecast is good enough — let surplus charging handle it
+            _LOGGER.debug(
+                "AdaptiveCharge: low-power threshold not met (%.0f%% < %.0f%%) "
+                "but forecast %.1f kWh >= %.1f kWh — skipping force charge",
+                battery_pct,
+                self._low_power_threshold,
+                forecast_kwh,
+                self._low_power_forecast_kwh,
+            )
+            return False
+        # Forecast is insufficient (or unavailable) — force charge
+        _LOGGER.info(
+            "AdaptiveCharge: low-power force charge — battery %.0f%% < threshold %.0f%%, "
+            "forecast %s kWh < %.1f kWh",
+            battery_pct,
+            self._low_power_threshold,
+            f"{forecast_kwh:.1f}" if forecast_kwh is not None else "N/A",
+            self._low_power_forecast_kwh,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Energy accumulation
@@ -998,6 +1060,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "charge_now": self._charge_now,
             "charge_tonight": self._charge_tonight,
             "tonight_condition": force_data["tonight_condition"],
+            "low_power_force": force_data["low_power_force"],
+            "low_power_threshold_pct": self._low_power_threshold,
+            "low_power_forecast_kwh": self._low_power_forecast_kwh,
             "tonight_reason": self._tonight_reason,
             "tonight_reentry": self._tonight_reentry,
             "tonight_start_time": f"{self._tonight_start_hour:02d}:{self._tonight_start_minute:02d}",
