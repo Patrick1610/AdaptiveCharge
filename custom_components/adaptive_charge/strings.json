@@ -49,7 +49,9 @@
         "data": {
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)",
-          "default_charge_limit": "Default Charge Limit (%)"
+          "default_charge_limit": "Default Charge Limit (%)",
+          "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)"
         }
       },
       "surplus_settings": {
@@ -179,7 +181,9 @@
         "data": {
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)",
-          "default_charge_limit": "Default Charge Limit (%)"
+          "default_charge_limit": "Default Charge Limit (%)",
+          "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)"
         }
       },
       "surplus_settings": {
@@ -344,6 +348,9 @@
       },
       "charging_active": {
         "name": "Charging Active"
+      },
+      "low_power_active": {
+        "name": "Low Power Active"
       }
     },
     "number": {

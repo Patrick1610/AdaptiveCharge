@@ -4194,3 +4194,107 @@ class TestCableDisconnectResetsToMax:
             assert calls[-1] == f"set_current({self.MAX})", (
                 f"set_current(max) must be last call (charging_on={charging_on})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: low power protection logic
+# ---------------------------------------------------------------------------
+
+def _evaluate_low_power(
+    battery_pct: float | None,
+    forecast_kwh: float | None,
+    low_power_threshold: float,
+    low_power_forecast_threshold_kwh: float,
+    presence: bool = True,
+    cable_connected: bool = True,
+) -> bool:
+    """Mirror of coordinator low_power_active evaluation logic."""
+    if low_power_threshold <= 0:
+        return False
+    if battery_pct is None:
+        return False
+    if battery_pct >= low_power_threshold:
+        return False
+    if not presence or not cable_connected:
+        return False
+    # battery_pct < threshold and vehicle present and cable connected
+    if forecast_kwh is None or forecast_kwh < low_power_forecast_threshold_kwh:
+        return True
+    return False
+
+
+class TestLowPowerProtection:
+    """Tests for the low-power forced-charge optimisation."""
+
+    THRESHOLD = 20.0          # % SoC — force if battery is below this
+    FORECAST_MIN = 4.0        # kWh — minimum forecast to skip forced charge
+
+    def test_battery_below_threshold_no_forecast_triggers_force(self):
+        """Battery below threshold, no forecast → must force charge."""
+        assert _evaluate_low_power(15.0, None, self.THRESHOLD, self.FORECAST_MIN) is True
+
+    def test_battery_below_threshold_low_forecast_triggers_force(self):
+        """Battery below threshold, forecast below minimum → must force charge."""
+        assert _evaluate_low_power(10.0, 2.0, self.THRESHOLD, self.FORECAST_MIN) is True
+
+    def test_battery_below_threshold_high_forecast_no_force(self):
+        """Battery below threshold but high forecast → solar will handle it, no force."""
+        assert _evaluate_low_power(10.0, 8.0, self.THRESHOLD, self.FORECAST_MIN) is False
+
+    def test_battery_at_threshold_no_force(self):
+        """Battery exactly at threshold → feature inactive (not strictly below)."""
+        assert _evaluate_low_power(20.0, None, self.THRESHOLD, self.FORECAST_MIN) is False
+
+    def test_battery_above_threshold_no_force(self):
+        """Battery well above threshold → feature inactive."""
+        assert _evaluate_low_power(50.0, None, self.THRESHOLD, self.FORECAST_MIN) is False
+
+    def test_battery_none_no_force(self):
+        """No battery sensor → feature stays inactive (safe default)."""
+        assert _evaluate_low_power(None, None, self.THRESHOLD, self.FORECAST_MIN) is False
+
+    def test_threshold_zero_disables_feature(self):
+        """Threshold of 0 disables the feature entirely."""
+        assert _evaluate_low_power(5.0, None, 0.0, self.FORECAST_MIN) is False
+
+    def test_forecast_exactly_at_minimum_no_force(self):
+        """Forecast exactly equal to minimum → sufficient solar, no force."""
+        assert _evaluate_low_power(10.0, self.FORECAST_MIN, self.THRESHOLD, self.FORECAST_MIN) is False
+
+    def test_forecast_just_below_minimum_triggers_force(self):
+        """Forecast just below minimum → insufficient solar, force charge."""
+        assert _evaluate_low_power(10.0, self.FORECAST_MIN - 0.1, self.THRESHOLD, self.FORECAST_MIN) is True
+
+    def test_vehicle_not_present_no_force(self):
+        """Vehicle absent → low power protection not activated."""
+        assert _evaluate_low_power(5.0, None, self.THRESHOLD, self.FORECAST_MIN, presence=False) is False
+
+    def test_cable_not_connected_no_force(self):
+        """Cable unplugged → low power protection not activated."""
+        assert _evaluate_low_power(5.0, None, self.THRESHOLD, self.FORECAST_MIN, cable_connected=False) is False
+
+    def test_high_threshold_triggers_at_higher_soc(self):
+        """Custom higher threshold triggers for vehicles with higher SoC."""
+        assert _evaluate_low_power(35.0, None, 40.0, self.FORECAST_MIN) is True
+
+    def test_zero_forecast_triggers_force(self):
+        """Forecast of exactly zero → insufficient solar, force charge."""
+        assert _evaluate_low_power(10.0, 0.0, self.THRESHOLD, self.FORECAST_MIN) is True
+
+    def test_low_power_source_label(self):
+        """Verify that low_power force is distinct from charge_now / charge_tonight."""
+        # Simulate source assignment: low_power is the fallback when other flags are off
+        charge_now = False
+        tonight_condition = False
+        low_power_active = _evaluate_low_power(10.0, None, self.THRESHOLD, self.FORECAST_MIN)
+        force_charge = charge_now or tonight_condition or low_power_active
+        if force_charge:
+            if charge_now:
+                source = "charge_now_switch"
+            elif tonight_condition:
+                source = "charge_tonight"
+            else:
+                source = "low_power"
+        else:
+            source = ""
+        assert source == "low_power"

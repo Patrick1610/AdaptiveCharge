@@ -28,6 +28,8 @@ from .const import (
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_THRESHOLD,
     CONF_INVERT_NET_POWER,
+    CONF_LOW_POWER_FORECAST_THRESHOLD_KWH,
+    CONF_LOW_POWER_THRESHOLD,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
     CONF_MODULATE_MIN_INTERVAL,
@@ -59,6 +61,8 @@ from .const import (
     DEFAULT_DESIRED_RANGE,
     DEFAULT_IMPORT_GUARD_DURATION_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
+    DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH,
+    DEFAULT_LOW_POWER_THRESHOLD,
     DEFAULT_MAX_CURRENT_LIMIT,
     DEFAULT_MIN_CURRENT_LIMIT,
     DEFAULT_MODULATE_MIN_INTERVAL,
@@ -272,6 +276,33 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             "max": 100,
                             "step": 5,
                             "unit_of_measurement": "%",
+                            "mode": "box",
+                        }
+                    }
+                ),
+                vol.Optional(
+                    CONF_LOW_POWER_THRESHOLD, default=DEFAULT_LOW_POWER_THRESHOLD
+                ): selector.selector(
+                    {
+                        "number": {
+                            "min": 0,
+                            "max": 100,
+                            "step": 5,
+                            "unit_of_measurement": "%",
+                            "mode": "box",
+                        }
+                    }
+                ),
+                vol.Optional(
+                    CONF_LOW_POWER_FORECAST_THRESHOLD_KWH,
+                    default=DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH,
+                ): selector.selector(
+                    {
+                        "number": {
+                            "min": 0,
+                            "max": 50,
+                            "step": 0.5,
+                            "unit_of_measurement": "kWh",
                             "mode": "box",
                         }
                     }
@@ -668,6 +699,21 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     default=int(current.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT)),
                 ): selector.selector(
                     {"number": {"min": 50, "max": 100, "step": 5, "unit_of_measurement": "%", "mode": "box"}}
+                ),
+                vol.Optional(
+                    CONF_LOW_POWER_THRESHOLD,
+                    default=float(current.get(CONF_LOW_POWER_THRESHOLD, DEFAULT_LOW_POWER_THRESHOLD)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 100, "step": 5, "unit_of_measurement": "%", "mode": "box"}}
+                ),
+                vol.Optional(
+                    CONF_LOW_POWER_FORECAST_THRESHOLD_KWH,
+                    default=float(current.get(
+                        CONF_LOW_POWER_FORECAST_THRESHOLD_KWH,
+                        DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH,
+                    )),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 50, "step": 0.5, "unit_of_measurement": "kWh", "mode": "box"}}
                 ),
             }
         )
