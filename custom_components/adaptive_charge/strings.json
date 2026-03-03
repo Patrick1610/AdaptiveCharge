@@ -342,6 +342,9 @@
       },
       "missed_solar_low_surplus_yearly": {
         "name": "Missed Solar Low Surplus Yearly (kWh)"
+      },
+      "solar_to_ev_ratio": {
+        "name": "Solar to EV Ratio"
       }
     },
     "binary_sensor": {
