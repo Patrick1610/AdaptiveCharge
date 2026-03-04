@@ -405,7 +405,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.FlowResult:
         """Step 8: optional solar sensor(s) and forecast sensors."""
         if user_input is not None:
-            cleaned = {k: v for k, v in user_input.items() if v}
+            cleaned = {k: v for k, v in user_input.items() if v or isinstance(v, list)}
             # Remove the toggle itself from persisted data
             cleaned.pop(CONF_SHOW_FORECAST_TOTAL, None)
             self._data = {**self._data, **cleaned}
@@ -847,7 +847,7 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         """Step 6: optional solar sensor(s) and forecast sensors."""
         current = self._current()
         if user_input is not None:
-            cleaned = {k: v for k, v in user_input.items() if v}
+            cleaned = {k: v for k, v in user_input.items() if v or isinstance(v, list)}
             # Remove the toggle itself from persisted data
             cleaned.pop(CONF_SHOW_FORECAST_TOTAL, None)
             self._data.update(cleaned)
