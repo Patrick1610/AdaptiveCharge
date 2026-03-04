@@ -648,6 +648,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         raw_floored = min(max(int(raw_current_a), 0), int(capped))
 
+        # Debug: log when surplus exists but is below the start threshold
+        # (helps diagnose morning ramp-up "unused power" scenarios)
+        if (
+            surplus_w > 0
+            and not self._charging_on
+            and ema_current_a < self._surplus_start_threshold_a
+        ):
+            _LOGGER.debug(
+                "AdaptiveCharge: surplus below start threshold — "
+                "surplus=%.0fW ema=%.2fA raw=%.2fA threshold=%.1fA voltage=%.1fV",
+                surplus_w, ema_current_a, raw_current_a,
+                self._surplus_start_threshold_a, voltage,
+            )
+
         self._confidence = compute_confidence(
             net_tracker=self._net_tracker,
             ev_tracker=self._ev_tracker,
@@ -1377,6 +1391,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             if self._last_off_time is not None:
                 off_elapsed = mono_now - self._last_off_time
                 if off_elapsed < DEFAULT_MIN_OFF_TIME_S:
+                    _LOGGER.debug(
+                        "AdaptiveCharge: surplus start blocked by min-off-time "
+                        "(%.0fs / %.0fs), ema=%.2fA threshold=%.1fA",
+                        off_elapsed, DEFAULT_MIN_OFF_TIME_S,
+                        ema_current, self._surplus_start_threshold_a,
+                    )
                     return
             # Only schedule if not already pending — avoid resetting the
             # debounce timer every tick which would prevent it from completing.
@@ -1425,10 +1445,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # During alignment or settling, only allow decreases (safety), hold otherwise
         if (self._alignment.active or self._alignment.settling) and delta > 0:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked by alignment/settling "
+                "(alignment=%s settling=%s) delta=+%.2fA",
+                self._alignment.active, self._alignment.settling, delta,
+            )
             return
 
         # Confidence gating
         if delta > 0 and self._confidence == CONFIDENCE_LOW:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked by low confidence, delta=+%.2fA",
+                delta,
+            )
             return
 
         # Hysteresis check
@@ -1451,6 +1480,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             if self._last_up_time is not None:
                 up_elapsed = mono_now - self._last_up_time
                 if up_elapsed < DEFAULT_COOLDOWN_UP_S:
+                    _LOGGER.debug(
+                        "AdaptiveCharge: modulate up blocked by cooldown "
+                        "(%.0fs / %.0fs) target=%.1fA",
+                        up_elapsed, DEFAULT_COOLDOWN_UP_S, new_target,
+                    )
                     return
 
         reason = "modulate_up" if delta > 0 else "modulate_down"
