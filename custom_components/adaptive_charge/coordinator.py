@@ -566,13 +566,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         voltage_raw = _get_float_state(self.hass, self._voltage_sensor)
         # Sum multiple solar sensors (backward compat: list may contain single entry)
         solar_raw: float | None = None
-        _solar_entity_for_uom: str | None = None
         for sid in self._solar_sensors:
             val = _get_float_state(self.hass, sid)
             if val is not None:
                 converted = _to_watts(val, sid, self.hass)
                 solar_raw = (solar_raw or 0.0) + converted
-                _solar_entity_for_uom = sid  # keep last for logging only
         presence = _get_bool_state(self.hass, self._presence_entity)
         cable_connected = _get_bool_state(self.hass, self._cable_sensor)
         current_range = _get_float_state(self.hass, self._current_range_sensor)
