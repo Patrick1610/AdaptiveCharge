@@ -3189,36 +3189,6 @@ class TestEnergyAccumulation:
         assert import_portion == 3000.0
         assert solar_portion == 0.0
 
-    def test_missed_solar_when_not_charging(self):
-        """Surplus > 0 and not charging → should accumulate missed solar."""
-        surplus_w = 2000.0
-        charging_on = False
-        dt_s = 10.0
-        missed_wh = 0.0
-        if surplus_w > 0 and not charging_on:
-            missed_wh += surplus_w * (dt_s / 3600.0)
-        assert abs(missed_wh - 5.556) < 0.01
-
-    def test_no_missed_solar_when_charging(self):
-        """If charging is on, surplus is not missed."""
-        surplus_w = 2000.0
-        charging_on = True
-        dt_s = 10.0
-        missed_wh = 0.0
-        if surplus_w > 0 and not charging_on:
-            missed_wh += surplus_w * (dt_s / 3600.0)
-        assert missed_wh == 0.0
-
-    def test_no_missed_solar_when_no_surplus(self):
-        """Negative surplus (import) → nothing missed."""
-        surplus_w = -500.0
-        charging_on = False
-        dt_s = 10.0
-        missed_wh = 0.0
-        if surplus_w > 0 and not charging_on:
-            missed_wh += surplus_w * (dt_s / 3600.0)
-        assert missed_wh == 0.0
-
     def test_session_reset(self):
         """Session counters should reset independently of totals."""
         total_wh = 5000.0
@@ -3451,7 +3421,6 @@ class TestBuildDataDictEnergy:
             "energy_session_kwh",
             "energy_session_solar_kwh",
             "energy_session_import_kwh",
-            "missed_solar_kwh",
         }
         data = {k: 0.0 for k in expected_energy_keys}
         assert set(data.keys()) == expected_energy_keys
@@ -3611,78 +3580,6 @@ class TestSurplusStartStopThresholds:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Missed solar sub-categories
-# ---------------------------------------------------------------------------
-
-class TestMissedSolarSubCategories:
-    """Test missed solar split into absence, cable, and low surplus."""
-
-    def _classify_missed(
-        self, surplus_w: float, presence: bool, cable_connected: bool,
-        voltage: float = 230.0, start_threshold_a: float = 2.0
-    ) -> str:
-        """Return category of missed solar, mirroring coordinator logic."""
-        surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
-        if not presence:
-            return "absence"
-        if not cable_connected:
-            return "cable"
-        if surplus_a < start_threshold_a:
-            return "low_surplus"
-        return "none"
-
-    def test_missed_due_to_absence(self):
-        """Vehicle not home → missed classified as absence."""
-        assert self._classify_missed(2000.0, presence=False, cable_connected=False) == "absence"
-
-    def test_missed_due_to_cable(self):
-        """Vehicle home but cable disconnected → missed classified as cable."""
-        assert self._classify_missed(2000.0, presence=True, cable_connected=False) == "cable"
-
-    def test_missed_due_to_low_surplus(self):
-        """Vehicle home, cable connected, but surplus < start threshold (2A)."""
-        # surplus < 2A: 230 * 3 * 2 = 1380W
-        assert self._classify_missed(500.0, presence=True, cable_connected=True) == "low_surplus"
-
-    def test_surplus_above_threshold_no_category(self):
-        """Surplus >= start threshold (2A) → not classified (charging should be active)."""
-        # surplus > 2A: 230 * 3 * 2 = 1380W, so 1500W > 1380W → "none"
-        assert self._classify_missed(1500.0, presence=True, cable_connected=True) == "none"
-
-    def test_accumulation_per_category(self):
-        """Missed solar should accumulate into the correct sub-category."""
-        absence_wh = 0.0
-        cable_wh = 0.0
-        low_surplus_wh = 0.0
-        dt_h = 10.0 / 3600.0
-
-        # Tick 1: away from home, surplus 2000W
-        surplus_w = 2000.0
-        missed_wh = surplus_w * dt_h
-        cat = self._classify_missed(surplus_w, presence=False, cable_connected=False)
-        if cat == "absence":
-            absence_wh += missed_wh
-
-        # Tick 2: home, cable disconnected, surplus 1500W
-        surplus_w = 1500.0
-        missed_wh = surplus_w * dt_h
-        cat = self._classify_missed(surplus_w, presence=True, cable_connected=False)
-        if cat == "cable":
-            cable_wh += missed_wh
-
-        # Tick 3: home, cable connected, surplus 400W (< 690W = 1A)
-        surplus_w = 400.0
-        missed_wh = surplus_w * dt_h
-        cat = self._classify_missed(surplus_w, presence=True, cable_connected=True)
-        if cat == "low_surplus":
-            low_surplus_wh += missed_wh
-
-        assert absence_wh > 0
-        assert cable_wh > 0
-        assert low_surplus_wh > 0
-
-
-# ---------------------------------------------------------------------------
 # Tests: Definitive range sensor
 # ---------------------------------------------------------------------------
 
@@ -3783,22 +3680,11 @@ class TestUtilityMeterLogic:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Energy data dict includes missed solar sub-categories
+# Tests: Surplus thresholds in data dict
 # ---------------------------------------------------------------------------
 
-class TestBuildDataDictMissedSolarSplit:
-    """Test that data dict includes missed solar sub-category keys."""
-
-    def test_missed_solar_split_keys_present(self):
-        """Data dict should include missed solar sub-category keys."""
-        expected_keys = {
-            "missed_solar_kwh",
-            "missed_solar_absence_kwh",
-            "missed_solar_cable_kwh",
-            "missed_solar_low_surplus_kwh",
-        }
-        data = {k: 0.0 for k in expected_keys}
-        assert expected_keys.issubset(set(data.keys()))
+class TestBuildDataDictSurplusThresholds:
+    """Test that data dict includes surplus threshold keys."""
 
     def test_surplus_thresholds_in_data_dict(self):
         """Data dict should include surplus thresholds."""
