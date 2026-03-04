@@ -123,7 +123,7 @@ class TestSolarProductionAccumulation:
 
     def test_new_key_merged_on_old_store_load(self):
         """Old stores without solar_production_total_wh get the key via merge."""
-        old_data = {"missed_solar_total_wh": 999.0}
+        old_data = {"energy_total_wh": 999.0}
         merged = _empty_counters()
         merged.update(old_data)
         assert "solar_production_total_wh" in merged

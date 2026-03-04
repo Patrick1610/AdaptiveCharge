@@ -540,7 +540,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Phase 9: Build data dict ---
         data = self._build_data_dict(
             sensor_data, analysis, force_data, display_ema, display_available, now,
-            solar_to_ev_ratio,
         )
 
         self.async_set_updated_data(data)
@@ -648,19 +647,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         raw_floored = min(max(int(raw_current_a), 0), int(capped))
 
-        # Debug: log when surplus exists but is below the start threshold
-        # (helps diagnose morning ramp-up "unused power" scenarios)
-        if (
-            surplus_w > 0
-            and not self._charging_on
-            and ema_current_a < self._surplus_start_threshold_a
-        ):
-            _LOGGER.debug(
-                "AdaptiveCharge: surplus below start threshold — "
-                "surplus=%.0fW ema=%.2fA raw=%.2fA threshold=%.1fA voltage=%.1fV",
-                surplus_w, ema_current_a, raw_current_a,
-                self._surplus_start_threshold_a, voltage,
-            )
+        # Debug: log surplus vs. committed current to diagnose ramp-up lag
+        # (morning "unused power" is caused by modulation rate limits, not
+        # start threshold — the charger is already ON but not stepping up
+        # fast enough due to cooldown / hysteresis / settling / alignment).
+        if self._charging_on and self._committed_current is not None:
+            gap = ema_current_a - self._committed_current
+            if gap >= DEFAULT_HYSTERESIS_UP:
+                _LOGGER.debug(
+                    "AdaptiveCharge: ramp-up headroom — "
+                    "surplus=%.0fW ema=%.2fA committed=%.1fA gap=+%.2fA "
+                    "voltage=%.1fV confidence=%s",
+                    surplus_w, ema_current_a, self._committed_current,
+                    gap, voltage, self._confidence,
+                )
 
         self._confidence = compute_confidence(
             net_tracker=self._net_tracker,
@@ -927,7 +927,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         sensor_data: dict[str, Any],
         mono_now: float,
     ) -> None:
-        """Accumulate energy charged (split solar/import) and missed solar."""
+        """Accumulate energy charged (split solar/import)."""
         if self._last_energy_mono is None:
             self._last_energy_mono = mono_now
             return
@@ -941,9 +941,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         ev_w = sensor_data.get("ev_w", 0.0) or 0.0
         computed_net_w = sensor_data.get("computed_net_w", 0.0) or 0.0
-        presence = sensor_data.get("presence")
-        cable_connected = sensor_data.get("cable_connected")
-        surplus_w = (0.0 - computed_net_w) + ev_w
 
         # Check for period rollovers in persistent store
         self._store.check_rollovers()
@@ -1077,7 +1074,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         display_ema: float,
         display_available: float,
         now: datetime,
-        solar_to_ev_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]

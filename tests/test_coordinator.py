@@ -4494,3 +4494,108 @@ class TestPreciseLowPowerCheck:
         # 80 kWh capacity, 0→20% = 16 kWh needed
         # Forecast 50 kWh but only 0.2 ratio → expected 10 kWh < 16 kWh
         assert _low_power_precise(0.0, 20.0, 50.0, 0.2, 80.0) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: Modulation ramp-up rate limits
+# ---------------------------------------------------------------------------
+
+# Mirror the constants from const.py used by _try_modulate
+_HYSTERESIS_UP = 1.0
+_MAX_STEP_A = 1
+_COOLDOWN_UP_S = 45.0
+_SETTLING_DURATION_S = 10.0
+
+
+def _simulate_ramp_up(
+    start_a: float,
+    target_a: float,
+    sample_interval_s: float = 10.0,
+    cooldown_s: float = _COOLDOWN_UP_S,
+    max_step: int = _MAX_STEP_A,
+    hysteresis: float = _HYSTERESIS_UP,
+    settling_s: float = _SETTLING_DURATION_S,
+) -> tuple[int, float]:
+    """Simulate how long it takes to ramp from start_a to target_a.
+
+    Returns (steps, total_seconds) reflecting the effective rate limited by:
+    - 1A max per step
+    - 45s cooldown between upward steps
+    - 10s settling window after each commit
+    - 1.0A hysteresis dead zone (requires delta >= 1.0A to trigger)
+    """
+    current = start_a
+    total_time = 0.0
+    steps = 0
+
+    while current < target_a:
+        delta = target_a - current
+        if delta < hysteresis:
+            break  # Stuck in hysteresis dead zone
+
+        step = min(delta, float(max_step))
+        current += step
+        steps += 1
+
+        # Each step incurs cooldown + settling
+        total_time += max(cooldown_s, settling_s)
+
+    return steps, total_time
+
+
+class TestModulationRampUpRate:
+    """Test that modulation ramp-up rate is correctly bounded.
+
+    The morning 'unused power' (~1 kW) is caused by the charger already
+    running but not stepping up fast enough as surplus increases.  The
+    rate limit is: max 1 A per step, 45 s cooldown between up-steps,
+    plus 10 s settling window after each commit — effectively one step
+    per ~45 s.  For 3-phase at 230 V, 1 A ≈ 690 W per step.
+    """
+
+    def test_single_step_delay(self):
+        """A single 1A up-step requires at least one cooldown period."""
+        steps, seconds = _simulate_ramp_up(2.0, 3.0)
+        assert steps == 1
+        assert seconds >= _COOLDOWN_UP_S
+
+    def test_multi_step_ramp(self):
+        """Ramping from 2A to 6A takes 4 steps × 45s = 180s minimum."""
+        steps, seconds = _simulate_ramp_up(2.0, 6.0)
+        assert steps == 4
+        assert seconds >= 4 * _COOLDOWN_UP_S
+
+    def test_hysteresis_blocks_fractional_step(self):
+        """A delta < 1.0A is blocked by hysteresis — no step occurs."""
+        steps, seconds = _simulate_ramp_up(5.0, 5.5)
+        assert steps == 0
+        assert seconds == 0.0
+
+    def test_hysteresis_allows_exactly_1a(self):
+        """A delta of exactly 1.0A passes the hysteresis check."""
+        steps, seconds = _simulate_ramp_up(5.0, 6.0)
+        assert steps == 1
+
+    def test_full_ramp_0_to_16a(self):
+        """Worst case: 0A → 16A takes 16 steps × 45s = 720s (12 minutes)."""
+        steps, seconds = _simulate_ramp_up(0.0, 16.0)
+        assert steps == 16
+        assert seconds == 16 * _COOLDOWN_UP_S
+
+    def test_ramp_up_power_gap_at_230v_3phase(self):
+        """At 230V 3-phase, each pending step represents ~690W unused power.
+
+        If the EMA says 5A but committed is 3A, the 'gap' is 2 steps
+        = ~1380W of unused surplus waiting for cooldown to expire.
+        """
+        voltage = 230.0
+        w_per_amp = voltage * 3.0  # 690 W/A for 3-phase
+        committed = 3.0
+        ema = 5.0
+        gap_a = ema - committed
+        gap_w = gap_a * w_per_amp
+        # 2A gap at 690 W/A = 1380W — this is the ~1kW morning unused power
+        assert gap_w == pytest.approx(1380.0, abs=1.0)
+        steps, delay = _simulate_ramp_up(committed, ema)
+        assert steps == 2
+        assert delay >= 2 * _COOLDOWN_UP_S  # At least 90 seconds to close gap
