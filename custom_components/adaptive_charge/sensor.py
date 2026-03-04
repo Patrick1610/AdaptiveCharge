@@ -57,6 +57,8 @@ async def async_setup_entry(
         MissedSolarCableSensor(coordinator, entry),
         MissedSolarLowSurplusSensor(coordinator, entry),
         MissedSolarQuantizationSensor(coordinator, entry),
+        # Solar production efficiency
+        SolarToEvRatioSensor(coordinator, entry),
         # Range thresholds
         RangeUpperLimitSensor(coordinator, entry),
         RangeLowerLimitSensor(coordinator, entry),
@@ -633,6 +635,54 @@ class MissedSolarQuantizationSensor(_MissedSolarSubSensor):
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_missed_solar_quantization_kwh"
+
+
+# ---------------------------------------------------------------------------
+# Solar-to-EV efficiency ratio sensor
+# ---------------------------------------------------------------------------
+
+class SolarToEvRatioSensor(_BaseAdaptiveChargeSensor):
+    """Fraction of total solar production that was charged into the EV.
+
+    Computed from persistent lifetime totals:
+      solar_to_ev_ratio = solar_energy_charged_kwh / solar_production_kwh
+
+    This ratio is used by the low-power optimisation to estimate how much of
+    the upcoming solar forecast is expected to flow to the EV. The sensor
+    is disabled by default and shown as a diagnostic.
+    """
+
+    _attr_name = "Solar to EV Ratio"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_solar_to_ev_ratio"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        ratio = self.coordinator.data.get("solar_to_ev_ratio")
+        if ratio is None:
+            return None
+        return round(ratio * 100.0, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "solar_production_kwh": data.get("solar_production_kwh"),
+            "energy_solar_kwh": data.get("energy_solar_kwh"),
+            "battery_capacity_kwh": data.get("battery_capacity_kwh"),
+            "estimated_battery_capacity_kwh": data.get("estimated_battery_capacity_kwh"),
+            "forecast_kwh": data.get("forecast_kwh"),
+            "low_power_threshold_pct": data.get("low_power_threshold_pct"),
+            "low_power_forecast_threshold_kwh": data.get("low_power_forecast_threshold_kwh"),
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ async def async_setup_entry(
     async_add_entities([
         ForceChargeSensor(coordinator, entry),
         ChargingActiveSensor(coordinator, entry),
+        LowPowerActiveSensor(coordinator, entry),
     ])
 
 
@@ -98,4 +99,44 @@ class ChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
             "current_mode": data.get("current_mode"),
             "last_action": data.get("last_action"),
             "last_reason": data.get("last_reason"),
+        }
+
+
+class LowPowerActiveSensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor indicating whether the low-power forced charge is active.
+
+    True when the vehicle battery SoC is below the configured threshold AND
+    the solar forecast does not promise enough generation to cover the shortfall.
+    """
+
+    _attr_name = "Low Power Active"
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+
+    def __init__(
+        self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_low_power_active"
+        self._attr_device_info = device_info(entry, get_version(coordinator.hass))
+
+    @property
+    def is_on(self) -> bool | None:
+        if self.coordinator.data is None:
+            return None
+        return bool(self.coordinator.data.get("low_power_active", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "battery_pct": data.get("battery_pct"),
+            "low_power_threshold_pct": data.get("low_power_threshold_pct"),
+            "forecast_kwh": data.get("forecast_kwh"),
+            "low_power_forecast_threshold_kwh": data.get("low_power_forecast_threshold_kwh"),
+            "battery_capacity_kwh": data.get("battery_capacity_kwh"),
+            "estimated_battery_capacity_kwh": data.get("estimated_battery_capacity_kwh"),
+            "solar_to_ev_ratio": data.get("solar_to_ev_ratio"),
+            "force_source": data.get("force_source"),
         }

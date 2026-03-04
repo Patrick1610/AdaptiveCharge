@@ -75,6 +75,10 @@ def _empty_counters() -> dict[str, Any]:
         "energy_total_wh": 0.0,
         "energy_solar_wh": 0.0,
         "energy_import_wh": 0.0,
+        # Solar production total (used for solar-to-EV ratio)
+        "solar_production_total_wh": 0.0,
+        # Auto-detected battery capacity (EMA over sessions)
+        "battery_capacity_estimate_kwh": 0.0,
         # Migration flag
         "migrated": False,
     }
@@ -206,6 +210,18 @@ class AdaptiveChargeStore:
         self._data["energy_total_wh"] += total_wh
         self._data["energy_solar_wh"] += solar_wh
         self._data["energy_import_wh"] += import_wh
+        self.schedule_flush()
+
+    def add_solar_production(self, wh: float) -> None:
+        """Add solar production delta to persistent total."""
+        if wh < 0:
+            return
+        self._data["solar_production_total_wh"] += wh
+        self.schedule_flush()
+
+    def set_battery_capacity_estimate(self, kwh: float) -> None:
+        """Persist an updated battery capacity estimate."""
+        self._data["battery_capacity_estimate_kwh"] = round(kwh, 2)
         self.schedule_flush()
 
     # ------------------------------------------------------------------
