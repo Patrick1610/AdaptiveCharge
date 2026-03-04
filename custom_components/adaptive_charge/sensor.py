@@ -440,11 +440,6 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
                 store = self.coordinator.store
                 if not store.migrated:
                     store.seed_from_old_state(
-                        store.get("missed_solar_total_wh"),
-                        store.get("missed_solar_absence_wh"),
-                        store.get("missed_solar_cable_wh"),
-                        store.get("missed_solar_low_surplus_wh"),
-                        store.get("missed_solar_quantization_wh"),
                         energy_total_wh=total * 1000.0,
                         energy_solar_wh=solar * 1000.0,
                         energy_import_wh=import_e * 1000.0,
