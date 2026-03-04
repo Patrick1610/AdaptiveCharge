@@ -4207,8 +4207,16 @@ def _evaluate_low_power(
     low_power_forecast_threshold_kwh: float,
     presence: bool = True,
     cable_connected: bool = True,
+    effective_capacity: float = 0.0,
+    solar_to_ev_ratio: float | None = None,
 ) -> bool:
-    """Mirror of coordinator low_power_active evaluation logic."""
+    """Mirror of coordinator low_power_active evaluation logic.
+
+    Priority:
+      1. Precise mode (capacity + ratio available) → energy-based check
+      2. Manual backup threshold (> 0) → forecast vs fixed kWh
+      3. Conservative fallback (threshold == 0, no precise mode) → force charge
+    """
     if low_power_threshold <= 0:
         return False
     if battery_pct is None:
@@ -4218,9 +4226,21 @@ def _evaluate_low_power(
     if not presence or not cable_connected:
         return False
     # battery_pct < threshold and vehicle present and cable connected
-    if forecast_kwh is None or forecast_kwh < low_power_forecast_threshold_kwh:
+    if forecast_kwh is None:
         return True
-    return False
+    # Precise mode: use capacity + ratio when available
+    if (
+        effective_capacity > 0
+        and solar_to_ev_ratio is not None
+        and solar_to_ev_ratio > 0
+    ):
+        energy_needed = max(0.0, (low_power_threshold - battery_pct) / 100.0 * effective_capacity)
+        expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+        return expected_ev_kwh < energy_needed
+    # Fallback: manual threshold if configured, else conservative force
+    if low_power_forecast_threshold_kwh > 0:
+        return forecast_kwh < low_power_forecast_threshold_kwh
+    return True
 
 
 class TestLowPowerProtection:
@@ -4298,6 +4318,143 @@ class TestLowPowerProtection:
         else:
             source = ""
         assert source == "low_power"
+
+
+class TestLowPowerAutoDetectPrimary:
+    """Tests for auto-detect (precise mode) as primary, manual threshold as backup."""
+
+    THRESHOLD = 20.0
+    CAPACITY = 80.0
+    RATIO = 0.5
+
+    def test_precise_mode_sufficient_forecast_no_force(self):
+        """Precise mode: expected EV kWh exceeds energy needed → no force."""
+        # Need 8 kWh (10% of 80), forecast 20 × 0.5 = 10 > 8
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+        ) is False
+
+    def test_precise_mode_insufficient_forecast_triggers_force(self):
+        """Precise mode: expected EV kWh < energy needed → force charge."""
+        # Need 8 kWh, forecast 10 × 0.5 = 5 < 8
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+        ) is True
+
+    def test_precise_mode_overrides_manual_threshold(self):
+        """When precise mode can run, manual threshold is irrelevant."""
+        # With manual threshold=50 kWh (very high) it would always force,
+        # but precise mode sees enough EV energy → no force.
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 50.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+        ) is False
+
+    def test_fallback_to_manual_when_no_capacity(self):
+        """No capacity → falls back to manual threshold."""
+        # forecast 5.0 < manual threshold 10.0 → force
+        assert _evaluate_low_power(
+            10.0, 5.0, self.THRESHOLD, 10.0,
+            effective_capacity=0.0, solar_to_ev_ratio=self.RATIO,
+        ) is True
+
+    def test_fallback_to_manual_when_no_ratio(self):
+        """No ratio → falls back to manual threshold."""
+        assert _evaluate_low_power(
+            10.0, 5.0, self.THRESHOLD, 10.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=None,
+        ) is True
+
+    def test_auto_only_conservative_when_no_capacity(self):
+        """Auto-only (threshold=0), no capacity → conservative force charge."""
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 0.0,
+            effective_capacity=0.0, solar_to_ev_ratio=self.RATIO,
+        ) is True
+
+    def test_auto_only_conservative_when_no_ratio(self):
+        """Auto-only (threshold=0), no ratio → conservative force charge."""
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=None,
+        ) is True
+
+    def test_manual_backup_high_forecast_skips_force(self):
+        """Manual backup threshold with high forecast → no force."""
+        assert _evaluate_low_power(
+            10.0, 15.0, self.THRESHOLD, 10.0,
+            effective_capacity=0.0,
+        ) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: total-day forecast → remaining conversion
+# ---------------------------------------------------------------------------
+
+
+def _total_to_remaining(total_kwh: float, daily_production_kwh: float) -> float:
+    """Mirror of coordinator logic: remaining = max(0, total - daily_production)."""
+    return max(0.0, total_kwh - daily_production_kwh)
+
+
+class TestTotalForecastConversion:
+    """Tests for converting total-day forecast to remaining forecast."""
+
+    def test_normal_conversion(self):
+        """Total minus production gives remaining."""
+        assert abs(_total_to_remaining(15.0, 5.0) - 10.0) < 0.01
+
+    def test_production_exceeds_total(self):
+        """When production already exceeds forecast, remaining is 0."""
+        assert _total_to_remaining(10.0, 12.0) == 0.0
+
+    def test_no_production_yet(self):
+        """Early morning: no production → remaining equals total."""
+        assert abs(_total_to_remaining(20.0, 0.0) - 20.0) < 0.01
+
+    def test_zero_total(self):
+        """Zero total forecast → remaining is 0."""
+        assert _total_to_remaining(0.0, 5.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: multi-solar sensor summing
+# ---------------------------------------------------------------------------
+
+
+def _sum_solar_sensors(values: list[float | None]) -> float | None:
+    """Mirror of coordinator multi-solar summing logic."""
+    result: float | None = None
+    for val in values:
+        if val is not None:
+            result = (result or 0.0) + val
+    return result
+
+
+class TestMultiSolarSensorSumming:
+    """Tests for summing multiple solar sensor values."""
+
+    def test_single_sensor(self):
+        """Single sensor returns its value."""
+        assert _sum_solar_sensors([1500.0]) == 1500.0
+
+    def test_multiple_sensors_summed(self):
+        """Multiple sensors are summed."""
+        assert abs(_sum_solar_sensors([1000.0, 500.0, 250.0]) - 1750.0) < 0.01
+
+    def test_all_none_returns_none(self):
+        """All sensors unavailable → None."""
+        assert _sum_solar_sensors([None, None]) is None
+
+    def test_partial_none_ignored(self):
+        """Unavailable sensors are skipped in sum."""
+        assert _sum_solar_sensors([1000.0, None, 500.0]) == 1500.0
+
+    def test_empty_list_returns_none(self):
+        """No sensors configured → None."""
+        assert _sum_solar_sensors([]) is None
 
 
 # ---------------------------------------------------------------------------

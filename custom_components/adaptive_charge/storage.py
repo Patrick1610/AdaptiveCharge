@@ -77,6 +77,8 @@ def _empty_counters() -> dict[str, Any]:
         "energy_import_wh": 0.0,
         # Solar production total (used for solar-to-EV ratio)
         "solar_production_total_wh": 0.0,
+        # Solar production today (used for total-forecast → remaining conversion)
+        "solar_production_daily_wh": 0.0,
         # Auto-detected battery capacity (EMA over sessions)
         "battery_capacity_estimate_kwh": 0.0,
         # Migration flag
@@ -159,6 +161,7 @@ class AdaptiveChargeStore:
         if self._data.get("daily_period_start") != today:
             _LOGGER.debug("AdaptiveCharge store: daily rollover detected")
             self._reset_period("daily")
+            self._data["solar_production_daily_wh"] = 0.0
             self._data["daily_period_start"] = today
 
         if self._data.get("monthly_period_start") != month:
@@ -213,10 +216,11 @@ class AdaptiveChargeStore:
         self.schedule_flush()
 
     def add_solar_production(self, wh: float) -> None:
-        """Add solar production delta to persistent total."""
+        """Add solar production delta to persistent total and daily counter."""
         if wh < 0:
             return
         self._data["solar_production_total_wh"] += wh
+        self._data["solar_production_daily_wh"] = self._data.get("solar_production_daily_wh", 0.0) + wh
         self.schedule_flush()
 
     def set_battery_capacity_estimate(self, kwh: float) -> None:

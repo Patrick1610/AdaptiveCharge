@@ -56,6 +56,7 @@ def _empty_counters():
         "energy_solar_wh": 0.0,
         "energy_import_wh": 0.0,
         "solar_production_total_wh": 0.0,
+        "solar_production_daily_wh": 0.0,
         "battery_capacity_estimate_kwh": 0.0,
         "migrated": False,
     }
@@ -89,6 +90,7 @@ def _check_rollovers(data, today=None, month=None, year=None):
 
     if data.get("daily_period_start") != today:
         _reset_period(data, "daily")
+        data["solar_production_daily_wh"] = 0.0
         data["daily_period_start"] = today
 
     if data.get("monthly_period_start") != month:
@@ -276,6 +278,7 @@ def _add_solar_production(data: dict, wh: float) -> None:
     if wh < 0:
         return
     data["solar_production_total_wh"] += wh
+    data["solar_production_daily_wh"] = data.get("solar_production_daily_wh", 0.0) + wh
 
 
 def _set_battery_capacity_estimate(data: dict, kwh: float) -> None:
@@ -320,6 +323,43 @@ class TestSolarProductionAccumulation:
         merged.update(old_data)
         assert "solar_production_total_wh" in merged
         assert merged["solar_production_total_wh"] == 0.0
+
+
+class TestSolarProductionDaily:
+    """Tests for the daily solar production counter and rollover."""
+
+    def test_daily_accumulates_alongside_total(self):
+        """Daily counter accumulates in parallel with total."""
+        data = _empty_counters()
+        _add_solar_production(data, 500.0)
+        _add_solar_production(data, 250.0)
+        assert data["solar_production_daily_wh"] == 750.0
+        assert data["solar_production_total_wh"] == 750.0
+
+    def test_daily_resets_on_rollover(self):
+        """Daily counter resets to 0 on daily rollover."""
+        data = _empty_counters()
+        _add_solar_production(data, 1000.0)
+        assert data["solar_production_daily_wh"] == 1000.0
+        # Simulate next day
+        _check_rollovers(data, today="2099-01-02")
+        assert data["solar_production_daily_wh"] == 0.0
+        # Total should remain untouched
+        assert data["solar_production_total_wh"] == 1000.0
+
+    def test_daily_present_in_empty_counters(self):
+        """New key is initialised to 0.0."""
+        data = _empty_counters()
+        assert "solar_production_daily_wh" in data
+        assert data["solar_production_daily_wh"] == 0.0
+
+    def test_daily_merged_on_old_store_load(self):
+        """Old stores without daily key get it via merge."""
+        old_data = {"solar_production_total_wh": 5000.0}
+        merged = _empty_counters()
+        merged.update(old_data)
+        assert "solar_production_daily_wh" in merged
+        assert merged["solar_production_daily_wh"] == 0.0
 
 
 class TestBatteryCapacityEstimateStorage:

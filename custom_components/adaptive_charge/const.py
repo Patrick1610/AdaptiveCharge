@@ -19,8 +19,11 @@ CONF_CHARGE_LIMIT_NUMBER = "charge_limit_number"
 CONF_DEFAULT_CHARGE_LIMIT = "default_charge_limit"
 CONF_INVERT_NET_POWER = "invert_net_power"
 CONF_FORECAST_SENSORS = "forecast_sensors"
+CONF_FORECAST_TOTAL_SENSORS = "forecast_total_sensors"
+CONF_SHOW_FORECAST_TOTAL = "show_forecast_total"
 CONF_DESIRED_RANGE = "desired_range"
 CONF_SOLAR_SENSOR = "solar_sensor"
+CONF_SOLAR_SENSORS = "solar_sensors"
 CONF_CHARGE_SWITCH = "charge_switch"
 CONF_CHARGE_CURRENT_NUMBER = "charge_current_number"
 CONF_SMOOTHING_WINDOW = "smoothing_window"
@@ -86,7 +89,7 @@ DEFAULT_TONIGHT_START_MINUTE = 0
 DEFAULT_NIGHT_OFF_HOUR = 5
 DEFAULT_NIGHT_OFF_MINUTE = 0
 DEFAULT_LOW_POWER_THRESHOLD = 20  # % SoC — force charge if battery below this
-DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH = 4.0  # kWh remaining forecast to skip force charge
+DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH = 0.0  # kWh — 0 means auto-only; >0 acts as fallback when ratio/capacity unavailable
 DEFAULT_BATTERY_CAPACITY_KWH = 0.0  # kWh — 0 means not configured; enables precise forecast evaluation when set
 
 # --- Import guard (configurable fail-safe) ---

@@ -32,6 +32,7 @@ from .const import (
     CONF_CHARGE_LIMIT_SENSOR,
     CONF_DEFAULT_CHARGE_LIMIT,
     CONF_FORECAST_SENSORS,
+    CONF_FORECAST_TOTAL_SENSORS,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -62,6 +63,7 @@ from .const import (
     CONF_SOLAR_DONE_DURATION,
     CONF_SOLAR_DONE_THRESHOLD,
     CONF_SOLAR_SENSOR,
+    CONF_SOLAR_SENSORS,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
     CONF_SURPLUS_START_THRESHOLD_A,
@@ -201,7 +203,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
         self._default_charge_limit: int = int(options.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT))
         self._forecast_sensors: list[str] = options.get(CONF_FORECAST_SENSORS, []) or []
-        self._solar_sensor: str | None = options.get(CONF_SOLAR_SENSOR)
+        self._forecast_total_sensors: list[str] = options.get(CONF_FORECAST_TOTAL_SENSORS, []) or []
+        # Multi-select solar sensors with backward compat for old single-sensor config
+        solar_sensors = options.get(CONF_SOLAR_SENSORS, []) or []
+        old_solar = options.get(CONF_SOLAR_SENSOR)
+        if not solar_sensors and old_solar:
+            solar_sensors = [old_solar]
+        self._solar_sensors: list[str] = solar_sensors
         self._charge_switch: str | None = options.get(CONF_CHARGE_SWITCH)
         self._charge_current_number: str | None = options.get(CONF_CHARGE_CURRENT_NUMBER)
 
@@ -556,26 +564,47 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         production_raw = _get_float_state(self.hass, self._production_sensor)
         ev_raw = _get_float_state(self.hass, self._ev_power_sensor)
         voltage_raw = _get_float_state(self.hass, self._voltage_sensor)
-        solar_raw = _get_float_state(self.hass, self._solar_sensor)
+        # Sum multiple solar sensors (backward compat: list may contain single entry)
+        solar_raw: float | None = None
+        _solar_entity_for_uom: str | None = None
+        for sid in self._solar_sensors:
+            val = _get_float_state(self.hass, sid)
+            if val is not None:
+                converted = _to_watts(val, sid, self.hass)
+                solar_raw = (solar_raw or 0.0) + converted
+                _solar_entity_for_uom = sid  # keep last for logging only
         presence = _get_bool_state(self.hass, self._presence_entity)
         cable_connected = _get_bool_state(self.hass, self._cable_sensor)
         current_range = _get_float_state(self.hass, self._current_range_sensor)
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
 
-        # Sum all forecast sensor values (each typically reports kWh remaining today)
+        # Sum all remaining-forecast sensor values (kWh remaining today)
         forecast_kwh: float | None = None
         for fid in self._forecast_sensors:
             val = _get_float_state(self.hass, fid)
             if val is not None:
                 forecast_kwh = (forecast_kwh or 0.0) + val
 
+        # Total-day forecast sensors: convert to remaining by subtracting today's
+        # accumulated solar production (tracked in persistent store).
+        if forecast_kwh is None and self._forecast_total_sensors:
+            total_forecast: float | None = None
+            for fid in self._forecast_total_sensors:
+                val = _get_float_state(self.hass, fid)
+                if val is not None:
+                    total_forecast = (total_forecast or 0.0) + val
+            if total_forecast is not None:
+                produced_today_kwh = self._store.get("solar_production_daily_wh") / 1000.0
+                forecast_kwh = max(0.0, total_forecast - produced_today_kwh)
+
         net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
         consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
         production_w = _to_watts(production_raw, self._production_sensor, self.hass) if production_raw is not None else None
         ev_w = _to_watts(ev_raw, self._ev_power_sensor, self.hass) if ev_raw is not None else 0.0
         voltage = voltage_raw if voltage_raw is not None else 230.0
-        solar_w = _to_watts(solar_raw, self._solar_sensor, self.hass) if solar_raw is not None else None
+        # solar_w already summed and converted above
+        solar_w = solar_raw
 
         if self._net_power_mode == MODE_NET_ONLY:
             computed_net_w = net_w if net_w is not None else 0.0
@@ -771,19 +800,23 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         unavailable) to cover the shortfall, force charging is activated
         regardless of the surplus/tonight conditions.
 
+        The **primary** method uses the lifetime solar-to-EV ratio to estimate
+        how much of the remaining forecast will actually reach the car:
+          energy_needed   = (threshold − battery_pct) / 100 × effective_capacity
+          expected_ev_kwh = forecast_kwh × solar_to_ev_ratio
+          force_charge    = expected_ev_kwh < energy_needed
+
         Capacity evaluation uses the best available source in priority order:
           1. Manually configured ``_battery_capacity_kwh`` (config flow, > 0)
           2. Auto-detected ``_estimated_battery_capacity_kwh`` (derived from
              wall-measured energy ÷ SoC delta, so it already includes AC→battery
              charging losses — no separate efficiency factor needed)
 
-        When a capacity and solar_to_ev_ratio are available the precise check is:
-          energy_needed   = (threshold − battery_pct) / 100 × effective_capacity
-          expected_ev_kwh = forecast_kwh × solar_to_ev_ratio
-          force_charge    = expected_ev_kwh < energy_needed
-
-        When no capacity is known the simple ``_low_power_forecast_threshold_kwh``
-        fallback is used instead.
+        When no capacity or ratio is available, the optional
+        ``_low_power_forecast_threshold_kwh`` serves as a **backup**: if > 0,
+        the forecast is compared against this fixed threshold. When set to 0
+        (the default) and the precise mode cannot run, a conservative approach
+        is taken and force charging is activated to protect the battery.
         """
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
@@ -867,8 +900,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
                     low_power_active = expected_ev_kwh < energy_needed_kwh
                 else:
-                    # Fallback: compare forecast against fixed kWh threshold
-                    low_power_active = forecast_kwh < self._low_power_forecast_threshold_kwh
+                    # Fallback: use manual kWh threshold if configured, otherwise
+                    # conservative force charge to protect the battery.
+                    if self._low_power_forecast_threshold_kwh > 0:
+                        low_power_active = forecast_kwh < self._low_power_forecast_threshold_kwh
+                    else:
+                        low_power_active = True
 
         force_charge = self._charge_now or tonight_condition or low_power_active
         if force_charge:
