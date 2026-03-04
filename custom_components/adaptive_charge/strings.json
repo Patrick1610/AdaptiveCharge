@@ -51,7 +51,7 @@
           "range_hysteresis_pct": "Range Hysteresis (%)",
           "default_charge_limit": "Default Charge Limit (%)",
           "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
-          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)",
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Backup Threshold (kWh, 0 = auto-only)",
           "battery_capacity_kwh": "Battery Capacity (kWh, 0 = use auto-detection)"
         }
       },
@@ -74,11 +74,13 @@
         }
       },
       "solar_optional": {
-        "title": "Solar Sensor (Optional)",
-        "description": "Optionally select a solar generation sensor and/or one or more forecast sensors (e.g. Solcast, Open-Meteo Solar). Multiple forecast sensors are summed.",
+        "title": "Solar & Forecast Sensors (Optional)",
+        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today). Enable the toggle to also configure 'Total Day Forecast' sensors for providers that only report the full-day total.",
         "data": {
-          "solar_sensor": "Solar Sensor",
-          "forecast_sensors": "Solar Forecast Sensor(s)"
+          "solar_sensors": "Solar Sensor(s)",
+          "forecast_sensors": "Remaining Forecast Today Sensor(s)",
+          "show_forecast_total": "I also have Total Day Forecast sensors",
+          "forecast_total_sensors": "Total Day Forecast Sensor(s)"
         }
       },
       "actuators_optional": {
@@ -184,7 +186,7 @@
           "range_hysteresis_pct": "Range Hysteresis (%)",
           "default_charge_limit": "Default Charge Limit (%)",
           "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
-          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh)",
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Backup Threshold (kWh, 0 = auto-only)",
           "battery_capacity_kwh": "Battery Capacity (kWh, 0 = use auto-detection)"
         }
       },
@@ -207,11 +209,13 @@
         }
       },
       "solar_optional": {
-        "title": "Solar Sensor (Optional)",
-        "description": "Optionally select a solar generation sensor and/or one or more forecast sensors (e.g. Solcast, Open-Meteo Solar). Multiple forecast sensors are summed.",
+        "title": "Solar & Forecast Sensors (Optional)",
+        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today). Enable the toggle to also configure 'Total Day Forecast' sensors for providers that only report the full-day total.",
         "data": {
-          "solar_sensor": "Solar Sensor",
-          "forecast_sensors": "Solar Forecast Sensor(s)"
+          "solar_sensors": "Solar Sensor(s)",
+          "forecast_sensors": "Remaining Forecast Today Sensor(s)",
+          "show_forecast_total": "I also have Total Day Forecast sensors",
+          "forecast_total_sensors": "Total Day Forecast Sensor(s)"
         }
       },
       "actuators_optional": {

@@ -25,6 +25,7 @@ from .const import (
     CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
     CONF_FORECAST_SENSORS,
+    CONF_FORECAST_TOTAL_SENSORS,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_THRESHOLD,
     CONF_INVERT_NET_POWER,
@@ -46,6 +47,8 @@ from .const import (
     CONF_SOLAR_DONE_DURATION,
     CONF_SOLAR_DONE_THRESHOLD,
     CONF_SOLAR_SENSOR,
+    CONF_SOLAR_SENSORS,
+    CONF_SHOW_FORECAST_TOTAL,
     CONF_SPLIT_MISSED_SOLAR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
@@ -400,18 +403,26 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 8: optional solar sensor and forecast sensors."""
+        """Step 8: optional solar sensor(s) and forecast sensors."""
         if user_input is not None:
-            cleaned = {k: v for k, v in user_input.items() if v}
+            cleaned = {k: v for k, v in user_input.items() if v or isinstance(v, list)}
+            # Remove the toggle itself from persisted data
+            cleaned.pop(CONF_SHOW_FORECAST_TOTAL, None)
             self._data = {**self._data, **cleaned}
             return await self.async_step_actuators_optional()
 
         schema = vol.Schema(
             {
-                vol.Optional(CONF_SOLAR_SENSOR): selector.selector(
-                    {"entity": {"domain": "sensor"}}
+                vol.Optional(CONF_SOLAR_SENSORS): selector.selector(
+                    {"entity": {"domain": "sensor", "multiple": True}}
                 ),
                 vol.Optional(CONF_FORECAST_SENSORS): selector.selector(
+                    {"entity": {"domain": "sensor", "multiple": True}}
+                ),
+                vol.Optional(
+                    CONF_SHOW_FORECAST_TOTAL, default=False
+                ): selector.selector({"boolean": {}}),
+                vol.Optional(CONF_FORECAST_TOTAL_SENSORS): selector.selector(
                     {"entity": {"domain": "sensor", "multiple": True}}
                 ),
             }
@@ -833,22 +844,39 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_solar_optional(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Step 6: optional solar sensor and forecast sensors."""
+        """Step 6: optional solar sensor(s) and forecast sensors."""
         current = self._current()
         if user_input is not None:
-            cleaned = {k: v for k, v in user_input.items() if v}
+            cleaned = {k: v for k, v in user_input.items() if v or isinstance(v, list)}
+            # Remove the toggle itself from persisted data
+            cleaned.pop(CONF_SHOW_FORECAST_TOTAL, None)
             self._data.update(cleaned)
             return await self.async_step_actuators_optional()
+
+        # Backward compat: migrate old single solar_sensor to list
+        old_solar = current.get(CONF_SOLAR_SENSOR, "")
+        solar_default = current.get(CONF_SOLAR_SENSORS, [])
+        if not solar_default and old_solar:
+            solar_default = [old_solar]
+
+        has_total = bool(current.get(CONF_FORECAST_TOTAL_SENSORS, []))
 
         schema = vol.Schema(
             {
                 vol.Optional(
-                    CONF_SOLAR_SENSOR,
-                    description={"suggested_value": current.get(CONF_SOLAR_SENSOR, "")},
-                ): selector.selector({"entity": {"domain": "sensor"}}),
+                    CONF_SOLAR_SENSORS,
+                    description={"suggested_value": solar_default},
+                ): selector.selector({"entity": {"domain": "sensor", "multiple": True}}),
                 vol.Optional(
                     CONF_FORECAST_SENSORS,
                     description={"suggested_value": current.get(CONF_FORECAST_SENSORS, [])},
+                ): selector.selector({"entity": {"domain": "sensor", "multiple": True}}),
+                vol.Optional(
+                    CONF_SHOW_FORECAST_TOTAL, default=has_total,
+                ): selector.selector({"boolean": {}}),
+                vol.Optional(
+                    CONF_FORECAST_TOTAL_SENSORS,
+                    description={"suggested_value": current.get(CONF_FORECAST_TOTAL_SENSORS, [])},
                 ): selector.selector({"entity": {"domain": "sensor", "multiple": True}}),
             }
         )
