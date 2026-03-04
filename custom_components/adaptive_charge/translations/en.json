@@ -75,12 +75,10 @@
       },
       "solar_optional": {
         "title": "Solar & Forecast Sensors (Optional)",
-        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today). Enable the toggle to also configure 'Total Day Forecast' sensors for providers that only report the full-day total.",
+        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today).",
         "data": {
           "solar_sensors": "Solar Sensor(s)",
-          "forecast_sensors": "Remaining Forecast Today Sensor(s)",
-          "show_forecast_total": "I also have Total Day Forecast sensors",
-          "forecast_total_sensors": "Total Day Forecast Sensor(s)"
+          "forecast_sensors": "Remaining Forecast Today Sensor(s)"
         }
       },
       "actuators_optional": {
@@ -110,12 +108,11 @@
       },
       "utility_meters": {
         "title": "Utility Meter Periods",
-        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "description": "Select which periods to track.",
         "data": {
           "utility_daily": "Daily",
           "utility_monthly": "Monthly",
-          "utility_yearly": "Yearly",
-          "split_missed_solar": "Split Missed Solar Sensors"
+          "utility_yearly": "Yearly"
         }
       }
     },
@@ -210,12 +207,10 @@
       },
       "solar_optional": {
         "title": "Solar & Forecast Sensors (Optional)",
-        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today). Enable the toggle to also configure 'Total Day Forecast' sensors for providers that only report the full-day total.",
+        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today).",
         "data": {
           "solar_sensors": "Solar Sensor(s)",
-          "forecast_sensors": "Remaining Forecast Today Sensor(s)",
-          "show_forecast_total": "I also have Total Day Forecast sensors",
-          "forecast_total_sensors": "Total Day Forecast Sensor(s)"
+          "forecast_sensors": "Remaining Forecast Today Sensor(s)"
         }
       },
       "actuators_optional": {
@@ -245,12 +240,11 @@
       },
       "utility_meters": {
         "title": "Utility Meter Periods",
-        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "description": "Select which periods to track.",
         "data": {
           "utility_daily": "Daily",
           "utility_monthly": "Monthly",
-          "utility_yearly": "Yearly",
-          "split_missed_solar": "Split Missed Solar Sensors"
+          "utility_yearly": "Yearly"
         }
       }
     }
@@ -287,18 +281,6 @@
       "energy_charged_kwh": {
         "name": "Energy Charged (kWh)"
       },
-      "missed_solar_kwh": {
-        "name": "Missed Solar (kWh)"
-      },
-      "missed_solar_absence_kwh": {
-        "name": "Missed Solar Absence (kWh)"
-      },
-      "missed_solar_cable_kwh": {
-        "name": "Missed Solar Cable (kWh)"
-      },
-      "missed_solar_low_surplus_kwh": {
-        "name": "Missed Solar Low Surplus (kWh)"
-      },
       "definitive_range_km": {
         "name": "Definitive Range (km)"
       },
@@ -310,45 +292,6 @@
       },
       "energy_charged_yearly": {
         "name": "Energy Charged Yearly (kWh)"
-      },
-      "missed_solar_daily": {
-        "name": "Missed Solar Daily (kWh)"
-      },
-      "missed_solar_monthly": {
-        "name": "Missed Solar Monthly (kWh)"
-      },
-      "missed_solar_yearly": {
-        "name": "Missed Solar Yearly (kWh)"
-      },
-      "missed_solar_absence_daily": {
-        "name": "Missed Solar Absence Daily (kWh)"
-      },
-      "missed_solar_absence_monthly": {
-        "name": "Missed Solar Absence Monthly (kWh)"
-      },
-      "missed_solar_absence_yearly": {
-        "name": "Missed Solar Absence Yearly (kWh)"
-      },
-      "missed_solar_cable_daily": {
-        "name": "Missed Solar Cable Daily (kWh)"
-      },
-      "missed_solar_cable_monthly": {
-        "name": "Missed Solar Cable Monthly (kWh)"
-      },
-      "missed_solar_cable_yearly": {
-        "name": "Missed Solar Cable Yearly (kWh)"
-      },
-      "missed_solar_low_surplus_daily": {
-        "name": "Missed Solar Low Surplus Daily (kWh)"
-      },
-      "missed_solar_low_surplus_monthly": {
-        "name": "Missed Solar Low Surplus Monthly (kWh)"
-      },
-      "missed_solar_low_surplus_yearly": {
-        "name": "Missed Solar Low Surplus Yearly (kWh)"
-      },
-      "solar_to_ev_ratio": {
-        "name": "Solar to EV Ratio"
       }
     },
     "binary_sensor": {
