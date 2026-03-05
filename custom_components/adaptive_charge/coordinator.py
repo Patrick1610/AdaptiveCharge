@@ -44,11 +44,14 @@ from .const import (
     CONF_LOW_POWER_THRESHOLD,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
+    CONF_HYSTERESIS_DOWN,
+    CONF_HYSTERESIS_UP,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_HYSTERESIS_W,
     CONF_IMPORT_GUARD_SETTLE_S,
     CONF_IMPORT_GUARD_THRESHOLD,
+    CONF_MAX_STEP_A,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
@@ -58,6 +61,7 @@ from .const import (
     CONF_PRODUCTION_SENSOR,
     CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
+    CONF_SETTLING_DURATION_S,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
     CONF_SOLAR_DONE_THRESHOLD,
@@ -233,6 +237,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_settle: float = float(
             options.get(CONF_IMPORT_GUARD_SETTLE_S, DEFAULT_IMPORT_GUARD_SETTLE_S)
         )
+
+        # Expert mode: controller tuning (fall back to defaults if not configured)
+        self._max_step_a: float = float(options.get(CONF_MAX_STEP_A, DEFAULT_MAX_STEP_A))
+        self._hysteresis_up: float = float(options.get(CONF_HYSTERESIS_UP, DEFAULT_HYSTERESIS_UP))
+        self._hysteresis_down: float = float(options.get(CONF_HYSTERESIS_DOWN, DEFAULT_HYSTERESIS_DOWN))
+        self._settling_duration_s: float = float(options.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S))
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -653,7 +663,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # fast enough due to cooldown / hysteresis / settling / alignment).
         if self._charging_on and self._committed_current is not None:
             gap = ema_current_a - self._committed_current
-            if gap >= DEFAULT_HYSTERESIS_UP:
+            if gap >= self._hysteresis_up:
                 _LOGGER.debug(
                     "AdaptiveCharge: ramp-up headroom — "
                     "surplus=%.0fW ema=%.2fA committed=%.1fA gap=+%.2fA "
@@ -1457,13 +1467,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return
 
         # Hysteresis check
-        if delta > 0 and delta < DEFAULT_HYSTERESIS_UP:
+        if delta > 0 and delta < self._hysteresis_up:
             return
-        if delta < 0 and abs(delta) < DEFAULT_HYSTERESIS_DOWN:
+        if delta < 0 and abs(delta) < self._hysteresis_down:
             return
 
-        # Rate limiting: max 1A per step
-        step = min(abs(delta), float(DEFAULT_MAX_STEP_A))
+        # Rate limiting: max step per modulation
+        step = min(abs(delta), float(self._max_step_a))
         if delta > 0:
             new_target = current_setpoint + step
         else:
@@ -1519,7 +1529,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
             # Start settling window to avoid self-induced dip flapping
             self._alignment.start_settling(
-                mono_now, DEFAULT_SETTLING_DURATION_S
+                mono_now, self._settling_duration_s
             )
 
     def _set_mode(self, new_mode: str, reason: str, source: str) -> None:
