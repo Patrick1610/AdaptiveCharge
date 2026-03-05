@@ -22,7 +22,6 @@ from .const import (
     CONF_CURRENT_RANGE_SENSOR,
     CONF_DEFAULT_CHARGE_LIMIT,
     CONF_DESIRED_RANGE,
-    CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
     CONF_EXPERT_MODE,
     CONF_FORECAST_SENSORS,
@@ -59,9 +58,6 @@ from .const import (
     CONF_SURPLUS_STOP_THRESHOLD_A,
     CONF_TONIGHT_START_HOUR,
     CONF_TONIGHT_START_MINUTE,
-    CONF_UTILITY_DAILY,
-    CONF_UTILITY_MONTHLY,
-    CONF_UTILITY_YEARLY,
     CONF_VOLTAGE_SENSOR,
     DEFAULT_BATTERY_CAPACITY_KWH,
     DEFAULT_CHARGE_BUFFER,
@@ -454,11 +450,9 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_additional_options(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Additional options: utility meters and show advanced."""
+        """Additional options: show advanced."""
         if user_input is not None:
             self._data = {**self._data, **user_input}
-            if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
-                return await self.async_step_utility_meters()
             if user_input.get(CONF_SHOW_ADVANCED, False):
                 return await self.async_step_advanced()
             return self.async_create_entry(
@@ -468,9 +462,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_ENABLE_UTILITY_METERS, default=False
-                ): selector.selector({"boolean": {}}),
                 vol.Optional(
                     CONF_SHOW_ADVANCED, default=False
                 ): selector.selector({"boolean": {}}),
@@ -581,28 +572,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="expert", data_schema=schema)
-
-    async def async_step_utility_meters(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
-        """Step 9: utility meter period selection."""
-        if user_input is not None:
-            self._data = {**self._data, **user_input}
-            if self._data.get(CONF_SHOW_ADVANCED, False):
-                return await self.async_step_advanced()
-            return self.async_create_entry(
-                title=self._data.get(CONF_NAME, "AdaptiveCharge"),
-                data=self._data,
-            )
-
-        schema = vol.Schema(
-            {
-                vol.Optional(CONF_UTILITY_DAILY, default=True): selector.selector({"boolean": {}}),
-                vol.Optional(CONF_UTILITY_MONTHLY, default=True): selector.selector({"boolean": {}}),
-                vol.Optional(CONF_UTILITY_YEARLY, default=True): selector.selector({"boolean": {}}),
-            }
-        )
-        return self.async_show_form(step_id="utility_meters", data_schema=schema)
 
     @staticmethod
     def async_get_options_flow(config_entry):
@@ -965,22 +934,16 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_additional_options(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Additional options: utility meters and show advanced."""
+        """Additional options: show advanced."""
         current = self._current()
         if user_input is not None:
             self._data.update(user_input)
-            if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
-                return await self.async_step_utility_meters()
             if user_input.get(CONF_SHOW_ADVANCED, False):
                 return await self.async_step_advanced()
             return self.async_create_entry(title="", data=self._data)
 
         schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_ENABLE_UTILITY_METERS,
-                    default=bool(current.get(CONF_ENABLE_UTILITY_METERS, False)),
-                ): selector.selector({"boolean": {}}),
                 vol.Optional(
                     CONF_SHOW_ADVANCED,
                     default=bool(current.get(CONF_SHOW_ADVANCED, False)),
@@ -1102,33 +1065,4 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="expert", data_schema=schema)
-
-    async def async_step_utility_meters(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
-        """Step 9: utility meter period selection."""
-        current = self._current()
-        if user_input is not None:
-            self._data.update(user_input)
-            if self._data.get(CONF_SHOW_ADVANCED, False):
-                return await self.async_step_advanced()
-            return self.async_create_entry(title="", data=self._data)
-
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_UTILITY_DAILY,
-                    default=bool(current.get(CONF_UTILITY_DAILY, True)),
-                ): selector.selector({"boolean": {}}),
-                vol.Optional(
-                    CONF_UTILITY_MONTHLY,
-                    default=bool(current.get(CONF_UTILITY_MONTHLY, True)),
-                ): selector.selector({"boolean": {}}),
-                vol.Optional(
-                    CONF_UTILITY_YEARLY,
-                    default=bool(current.get(CONF_UTILITY_YEARLY, True)),
-                ): selector.selector({"boolean": {}}),
-            }
-        )
-        return self.async_show_form(step_id="utility_meters", data_schema=schema)
 

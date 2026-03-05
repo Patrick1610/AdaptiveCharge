@@ -4,16 +4,14 @@ Uses homeassistant.helpers.storage.Store to persist energy
 counters to `.storage/adaptive_charge.counters` so that:
   - Data survives HA restart / reload / reboot.
   - Disabled entities can later be enabled and show correct values immediately.
-  - Rollover (daily/monthly/yearly) is detected even if HA was down at midnight.
 """
 from __future__ import annotations
 
 import logging
 import time
-from datetime import date
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,29 +23,9 @@ STORAGE_KEY_PREFIX = "adaptive_charge.counters"
 _FLUSH_THROTTLE_S = 30.0
 
 
-def _today_str() -> str:
-    """Return today's date as ISO string."""
-    return date.today().isoformat()
-
-
-def _this_month_str() -> str:
-    """Return first day of current month as ISO string."""
-    today = date.today()
-    return date(today.year, today.month, 1).isoformat()
-
-
-def _this_year_str() -> str:
-    """Return first day of current year as ISO string."""
-    return date(date.today().year, 1, 1).isoformat()
-
-
 def _empty_counters() -> dict[str, Any]:
     """Return a fresh counters dict with all fields initialised."""
     return {
-        # Period-start markers (used for rollover detection)
-        "daily_period_start": _today_str(),
-        "monthly_period_start": _this_month_str(),
-        "yearly_period_start": _this_year_str(),
         # Energy charged totals
         "energy_total_wh": 0.0,
         "energy_solar_wh": 0.0,
@@ -89,8 +67,6 @@ class AdaptiveChargeStore:
         else:
             self._data = _empty_counters()
             _LOGGER.debug("AdaptiveCharge store initialised (empty) for %s", self._entry_id)
-        # Check for rollovers that happened while HA was offline.
-        self._check_rollovers()
 
     async def async_save(self) -> None:
         """Force-write counters to disk (called on shutdown / unload)."""
@@ -115,32 +91,6 @@ class AdaptiveChargeStore:
         exc = task.exception()
         if exc is not None:
             _LOGGER.warning("AdaptiveCharge store flush failed: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Rollover logic
-    # ------------------------------------------------------------------
-
-    def _check_rollovers(self) -> None:
-        """Detect and apply any period rollovers (day/month/year)."""
-        today = _today_str()
-        month = _this_month_str()
-        year = _this_year_str()
-
-        if self._data.get("daily_period_start") != today:
-            _LOGGER.debug("AdaptiveCharge store: daily rollover detected")
-            self._data["daily_period_start"] = today
-
-        if self._data.get("monthly_period_start") != month:
-            _LOGGER.debug("AdaptiveCharge store: monthly rollover detected")
-            self._data["monthly_period_start"] = month
-
-        if self._data.get("yearly_period_start") != year:
-            _LOGGER.debug("AdaptiveCharge store: yearly rollover detected")
-            self._data["yearly_period_start"] = year
-
-    def check_rollovers(self) -> None:
-        """Public rollover check — call periodically (e.g. every tick)."""
-        self._check_rollovers()
 
     # ------------------------------------------------------------------
     # Counter updates

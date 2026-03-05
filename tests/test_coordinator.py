@@ -3630,75 +3630,6 @@ class TestDefinitiveRange:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Utility meter sensor logic
-# ---------------------------------------------------------------------------
-
-class TestUtilityMeterLogic:
-    """Test utility meter accumulation and reset logic."""
-
-    def test_delta_accumulation(self):
-        """Utility meter tracks positive deltas of source sensor."""
-        accumulated = 0.0
-        last_value = None
-        source_values = [0.0, 0.5, 1.0, 1.5, 2.0]
-        for val in source_values:
-            if last_value is not None:
-                delta = val - last_value
-                if delta > 0:
-                    accumulated += delta
-            last_value = val
-        assert abs(accumulated - 2.0) < 0.001
-
-    def test_no_accumulation_on_decrease(self):
-        """Source sensor decrease should not affect utility meter."""
-        accumulated = 0.0
-        last_value = None
-        source_values = [2.0, 1.5, 1.0]  # decreasing
-        for val in source_values:
-            if last_value is not None:
-                delta = val - last_value
-                if delta > 0:
-                    accumulated += delta
-            last_value = val
-        assert accumulated == 0.0
-
-    def test_reset_sets_to_zero(self):
-        """After reset, accumulated should be zero."""
-        accumulated = 5.5
-        accumulated = 0.0
-        assert accumulated == 0.0
-
-    def test_daily_reset_period(self):
-        """Daily period should trigger on every midnight."""
-        period = "daily"
-        assert period == "daily"
-
-    def test_monthly_reset_on_first(self):
-        """Monthly reset only on day 1."""
-        day = 1
-        should_reset = day == 1
-        assert should_reset is True
-
-    def test_monthly_no_reset_on_other_days(self):
-        """Monthly should not reset on day 15."""
-        day = 15
-        should_reset = day == 1
-        assert should_reset is False
-
-    def test_yearly_reset_on_jan_first(self):
-        """Yearly reset only on Jan 1."""
-        month, day = 1, 1
-        should_reset = month == 1 and day == 1
-        assert should_reset is True
-
-    def test_yearly_no_reset_on_other_dates(self):
-        """Yearly should not reset on Feb 1."""
-        month, day = 2, 1
-        should_reset = month == 1 and day == 1
-        assert should_reset is False
-
-
-# ---------------------------------------------------------------------------
 # Tests: Surplus thresholds in data dict
 # ---------------------------------------------------------------------------
 
@@ -3823,40 +3754,6 @@ class TestCurrentReconfirmAfterEnable:
         assert calls[0] == ("set_current", 3)
         assert calls[2] == ("enable_charging",)
         assert calls[4] == ("set_current", 3)
-
-
-# ---------------------------------------------------------------------------
-# Tests: Utility meters opt-in via config
-# ---------------------------------------------------------------------------
-
-class TestUtilityMetersOptIn:
-    """Test that utility meters are only created when enabled in config."""
-
-    def test_utility_off_by_default(self):
-        """Default config should not enable utility meters."""
-        options = {}
-        assert options.get("enable_utility_meters", False) is False
-
-    def test_utility_on_when_enabled(self):
-        """When explicitly enabled, should create utility meters."""
-        options = {"enable_utility_meters": True}
-        assert options.get("enable_utility_meters", False) is True
-
-    def test_utility_entity_count_when_disabled(self):
-        """With utility meters off, only core sensors are created."""
-        enable = False
-        core_count = 16
-        utility_count = 15
-        total = core_count + (utility_count if enable else 0)
-        assert total == 16
-
-    def test_utility_entity_count_when_enabled(self):
-        """With utility meters on, all sensors are created."""
-        enable = True
-        core_count = 16
-        utility_count = 15
-        total = core_count + (utility_count if enable else 0)
-        assert total == 31
 
 
 # ---------------------------------------------------------------------------

@@ -958,9 +958,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         ev_w = sensor_data.get("ev_w", 0.0) or 0.0
         computed_net_w = sensor_data.get("computed_net_w", 0.0) or 0.0
 
-        # Check for period rollovers in persistent store
-        self._store.check_rollovers()
-
         # --- Solar production accumulation ---
         solar_w_val = sensor_data.get("solar_w")
         if solar_w_val is not None and solar_w_val > 0:
