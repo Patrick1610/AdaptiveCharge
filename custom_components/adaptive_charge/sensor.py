@@ -504,6 +504,7 @@ class RangeUpperLimitSensor(_BaseAdaptiveChargeSensor):
         effective = self.coordinator.data.get("effective_range")
         if effective is None:
             return None
+        # Asymmetric hysteresis: upper limit equals effective_range (desired + buffer)
         return round(effective, 1)
 
     @property

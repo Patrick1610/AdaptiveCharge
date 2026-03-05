@@ -2357,7 +2357,7 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_initial_state_at_lower_boundary_starts_need(self):
-        """From cold start, range exactly below lower boundary → starts need.
+        """From cold start, range just below lower boundary → starts need.
         3% of 200 = 6km, start threshold = 194. 193 < 194 → need.
         """
         need = self._eval_need(current_range=193.0, effective_range=200.0, need_active=False)
@@ -4300,6 +4300,22 @@ class TestLowPowerAutoDetectPrimary:
             10.0, 20.0, self.THRESHOLD, 0.0,
             effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
         ) is False
+
+    def test_precise_mode_sufficient_outside_tonight_no_force(self):
+        """Precise mode outside tonight window: sufficient forecast → no force."""
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+            in_tonight_window=False,
+        ) is False
+
+    def test_precise_mode_insufficient_outside_tonight_forces(self):
+        """Precise mode outside tonight window: insufficient forecast → force."""
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+            in_tonight_window=False,
+        ) is True
 
     def test_precise_mode_insufficient_forecast_triggers_force(self):
         """Precise mode: expected EV kWh < energy needed → force charge."""
