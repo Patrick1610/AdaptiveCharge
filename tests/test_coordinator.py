@@ -1406,6 +1406,83 @@ class TestModeReasonTracking:
         assert transition == ""  # No change → no transition recorded
 
 
+
+# ---------------------------------------------------------------------------
+# Tests: Surplus start cable guard
+# ---------------------------------------------------------------------------
+
+class TestSurplusStartCableGuard:
+    """Surplus charging must not start when cable is known disconnected."""
+
+    def _should_start_surplus(
+        self,
+        ema_current: float,
+        charging_on: bool,
+        cable_connected: bool | None,
+        surplus_start_threshold_a: float = 2.0,
+    ) -> bool:
+        """Mirror the surplus-start gate in _run_control_logic."""
+        if not (ema_current >= surplus_start_threshold_a and not charging_on):
+            return False
+        if cable_connected is False:
+            return False
+        return True
+
+    def test_surplus_start_blocked_when_cable_disconnected(self):
+        """Should NOT start surplus when cable_connected=False."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=False,
+        )
+        assert result is False
+
+    def test_surplus_start_allowed_when_cable_connected(self):
+        """Should start surplus when cable_connected=True."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=True,
+        )
+        assert result is True
+
+    def test_surplus_start_allowed_when_no_cable_sensor(self):
+        """Should start surplus when cable sensor not configured (None)."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=None,
+        )
+        assert result is True
+
+    def test_surplus_start_not_triggered_when_already_charging(self):
+        """Guard not reached when already charging (existing gate)."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=True,
+            cable_connected=False,
+        )
+        assert result is False
+
+    def test_surplus_start_not_triggered_below_threshold(self):
+        """Guard not reached when ema_current is below threshold."""
+        result = self._should_start_surplus(
+            ema_current=1.0,
+            charging_on=False,
+            cable_connected=False,
+        )
+        assert result is False
+
+    def test_surplus_start_blocked_exactly_at_threshold_cable_off(self):
+        """At exactly the start threshold, cable disconnected still blocks."""
+        result = self._should_start_surplus(
+            ema_current=2.0,
+            charging_on=False,
+            cable_connected=False,
+        )
+        assert result is False
+
+
 # ---------------------------------------------------------------------------
 # Tests: Charge Tonight auto-off
 # ---------------------------------------------------------------------------
