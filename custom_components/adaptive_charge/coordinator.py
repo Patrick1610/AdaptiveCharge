@@ -32,7 +32,6 @@ from .const import (
     CONF_CHARGE_LIMIT_SENSOR,
     CONF_DEFAULT_CHARGE_LIMIT,
     CONF_FORECAST_SENSORS,
-    CONF_FORECAST_TOTAL_SENSORS,
     CONF_CHARGE_BUFFER,
     CONF_CHARGE_CURRENT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -45,11 +44,14 @@ from .const import (
     CONF_LOW_POWER_THRESHOLD,
     CONF_MAX_CURRENT_LIMIT,
     CONF_MIN_CURRENT_LIMIT,
+    CONF_HYSTERESIS_DOWN,
+    CONF_HYSTERESIS_UP,
     CONF_IMPORT_GUARD_CLEAR_DURATION_S,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_HYSTERESIS_W,
     CONF_IMPORT_GUARD_SETTLE_S,
     CONF_IMPORT_GUARD_THRESHOLD,
+    CONF_MAX_STEP_A,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
     CONF_NET_POWER_SENSOR,
@@ -59,6 +61,7 @@ from .const import (
     CONF_PRODUCTION_SENSOR,
     CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
+    CONF_SETTLING_DURATION_S,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
     CONF_SOLAR_DONE_THRESHOLD,
@@ -203,7 +206,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
         self._default_charge_limit: int = int(options.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT))
         self._forecast_sensors: list[str] = options.get(CONF_FORECAST_SENSORS, []) or []
-        self._forecast_total_sensors: list[str] = options.get(CONF_FORECAST_TOTAL_SENSORS, []) or []
         # Multi-select solar sensors with backward compat for old single-sensor config
         solar_sensors = options.get(CONF_SOLAR_SENSORS, []) or []
         old_solar = options.get(CONF_SOLAR_SENSOR)
@@ -235,6 +237,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_settle: float = float(
             options.get(CONF_IMPORT_GUARD_SETTLE_S, DEFAULT_IMPORT_GUARD_SETTLE_S)
         )
+
+        # Expert mode: controller tuning (fall back to defaults if not configured)
+        self._max_step_a: float = float(options.get(CONF_MAX_STEP_A, DEFAULT_MAX_STEP_A))
+        self._hysteresis_up: float = float(options.get(CONF_HYSTERESIS_UP, DEFAULT_HYSTERESIS_UP))
+        self._hysteresis_down: float = float(options.get(CONF_HYSTERESIS_DOWN, DEFAULT_HYSTERESIS_DOWN))
+        self._settling_duration_s: float = float(options.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S))
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -345,11 +353,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_wh: float = 0.0
         self._energy_session_solar_wh: float = 0.0
         self._energy_session_import_wh: float = 0.0
-        self._missed_solar_wh: float = 0.0
-        self._missed_solar_absence_wh: float = 0.0
-        self._missed_solar_cable_wh: float = 0.0
-        self._missed_solar_low_surplus_wh: float = 0.0
-        self._missed_solar_quantization_wh: float = 0.0
         self._solar_production_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
@@ -547,7 +550,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Phase 9: Build data dict ---
         data = self._build_data_dict(
             sensor_data, analysis, force_data, display_ema, display_available, now,
-            solar_to_ev_ratio,
         )
 
         self.async_set_updated_data(data)
@@ -583,18 +585,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             val = _get_float_state(self.hass, fid)
             if val is not None:
                 forecast_kwh = (forecast_kwh or 0.0) + val
-
-        # Total-day forecast sensors: convert to remaining by subtracting today's
-        # accumulated solar production (tracked in persistent store).
-        if forecast_kwh is None and self._forecast_total_sensors:
-            total_forecast: float | None = None
-            for fid in self._forecast_total_sensors:
-                val = _get_float_state(self.hass, fid)
-                if val is not None:
-                    total_forecast = (total_forecast or 0.0) + val
-            if total_forecast is not None:
-                produced_today_kwh = self._store.get("solar_production_daily_wh") / 1000.0
-                forecast_kwh = max(0.0, total_forecast - produced_today_kwh)
 
         net_w = _to_watts(net_raw, self._net_power_sensor, self.hass) if net_raw is not None else None
         consumption_w = _to_watts(consumption_raw, self._consumption_sensor, self.hass) if consumption_raw is not None else None
@@ -666,6 +656,21 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         ema_current_a = min(max(ema_current_a, 0.0), capped)
 
         raw_floored = min(max(int(raw_current_a), 0), int(capped))
+
+        # Debug: log surplus vs. committed current to diagnose ramp-up lag
+        # (morning "unused power" is caused by modulation rate limits, not
+        # start threshold — the charger is already ON but not stepping up
+        # fast enough due to cooldown / hysteresis / settling / alignment).
+        if self._charging_on and self._committed_current is not None:
+            gap = ema_current_a - self._committed_current
+            if gap >= self._hysteresis_up:
+                _LOGGER.debug(
+                    "AdaptiveCharge: ramp-up headroom — "
+                    "surplus=%.0fW ema=%.2fA committed=%.1fA gap=+%.2fA "
+                    "voltage=%.1fV confidence=%s",
+                    surplus_w, ema_current_a, self._committed_current,
+                    gap, voltage, self._confidence,
+                )
 
         self._confidence = compute_confidence(
             net_tracker=self._net_tracker,
@@ -932,7 +937,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         sensor_data: dict[str, Any],
         mono_now: float,
     ) -> None:
-        """Accumulate energy charged (split solar/import) and missed solar."""
+        """Accumulate energy charged (split solar/import)."""
         if self._last_energy_mono is None:
             self._last_energy_mono = mono_now
             return
@@ -946,9 +951,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         ev_w = sensor_data.get("ev_w", 0.0) or 0.0
         computed_net_w = sensor_data.get("computed_net_w", 0.0) or 0.0
-        presence = sensor_data.get("presence")
-        cable_connected = sensor_data.get("cable_connected")
-        surplus_w = (0.0 - computed_net_w) + ev_w
 
         # Check for period rollovers in persistent store
         self._store.check_rollovers()
@@ -984,39 +986,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._energy_session_import_wh += import_wh
             # Persist energy charged
             self._store.add_energy_charged(energy_wh, solar_wh, import_wh)
-
-        # --- Missed solar accumulation ---
-        if surplus_w > 0 and not self._charging_on:
-            missed_wh = surplus_w * dt_h
-            self._missed_solar_wh += missed_wh
-
-            voltage = sensor_data.get("voltage", 230.0) or 230.0
-            surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
-
-            if not presence:
-                self._missed_solar_absence_wh += missed_wh
-                self._store.add_missed_solar(missed_wh, "absence")
-            elif not cable_connected:
-                self._missed_solar_cable_wh += missed_wh
-                self._store.add_missed_solar(missed_wh, "cable")
-            elif surplus_a < self._surplus_start_threshold_a:
-                self._missed_solar_low_surplus_wh += missed_wh
-                self._store.add_missed_solar(missed_wh, "low_surplus")
-            else:
-                # Surplus above threshold but not charging — unclassified cause
-                # (e.g. presence + cable + surplus >= threshold, but still not
-                # charging due to other logic like min_on_time or settling).
-                self._store.add_missed_solar(missed_wh)
-
-        # --- Quantization missed solar (fractional surplus lost to integer current steps) ---
-        if self._charging_on and self._current_mode == MODE_SURPLUS and surplus_w > 0:
-            ev_w_val = sensor_data.get("ev_w", 0.0) or 0.0
-            fractional_w = surplus_w - ev_w_val
-            if fractional_w > 0:
-                fractional_wh = fractional_w * dt_h
-                self._missed_solar_wh += fractional_wh
-                self._missed_solar_quantization_wh += fractional_wh
-                self._store.add_missed_solar(fractional_wh, "quantization")
 
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
@@ -1115,7 +1084,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         display_ema: float,
         display_available: float,
         now: datetime,
-        solar_to_ev_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]
@@ -1256,32 +1224,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "energy_session_kwh": round(self._energy_session_wh / 1000.0, 3),
             "energy_session_solar_kwh": round(self._energy_session_solar_wh / 1000.0, 3),
             "energy_session_import_kwh": round(self._energy_session_import_wh / 1000.0, 3),
-            "missed_solar_kwh": round(self._missed_solar_wh / 1000.0, 3),
-            "missed_solar_absence_kwh": round(self._missed_solar_absence_wh / 1000.0, 3),
-            "missed_solar_cable_kwh": round(self._missed_solar_cable_wh / 1000.0, 3),
-            "missed_solar_low_surplus_kwh": round(self._missed_solar_low_surplus_wh / 1000.0, 3),
-            "missed_solar_quantization_kwh": round(self._missed_solar_quantization_wh / 1000.0, 3),
-            # Solar production and solar-to-EV ratio
             "solar_production_kwh": round(self._solar_production_wh / 1000.0, 3),
-            "solar_to_ev_ratio": round(solar_to_ev_ratio, 3) if solar_to_ev_ratio is not None else None,
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "estimated_battery_capacity_kwh": round(self._estimated_battery_capacity_kwh, 2),
-            # --- Persistent store period counters (kWh) ---
-            "store_missed_solar_daily_kwh": self._store.get_kwh("missed_solar_daily_wh"),
-            "store_missed_solar_monthly_kwh": self._store.get_kwh("missed_solar_monthly_wh"),
-            "store_missed_solar_yearly_kwh": self._store.get_kwh("missed_solar_yearly_wh"),
-            "store_missed_solar_absence_daily_kwh": self._store.get_kwh("missed_solar_absence_daily_wh"),
-            "store_missed_solar_absence_monthly_kwh": self._store.get_kwh("missed_solar_absence_monthly_wh"),
-            "store_missed_solar_absence_yearly_kwh": self._store.get_kwh("missed_solar_absence_yearly_wh"),
-            "store_missed_solar_cable_daily_kwh": self._store.get_kwh("missed_solar_cable_daily_wh"),
-            "store_missed_solar_cable_monthly_kwh": self._store.get_kwh("missed_solar_cable_monthly_wh"),
-            "store_missed_solar_cable_yearly_kwh": self._store.get_kwh("missed_solar_cable_yearly_wh"),
-            "store_missed_solar_low_surplus_daily_kwh": self._store.get_kwh("missed_solar_low_surplus_daily_wh"),
-            "store_missed_solar_low_surplus_monthly_kwh": self._store.get_kwh("missed_solar_low_surplus_monthly_wh"),
-            "store_missed_solar_low_surplus_yearly_kwh": self._store.get_kwh("missed_solar_low_surplus_yearly_wh"),
-            "store_missed_solar_quantization_daily_kwh": self._store.get_kwh("missed_solar_quantization_daily_wh"),
-            "store_missed_solar_quantization_monthly_kwh": self._store.get_kwh("missed_solar_quantization_monthly_wh"),
-            "store_missed_solar_quantization_yearly_kwh": self._store.get_kwh("missed_solar_quantization_yearly_wh"),
         }
 
     # ------------------------------------------------------------------
@@ -1452,6 +1397,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             if self._last_off_time is not None:
                 off_elapsed = mono_now - self._last_off_time
                 if off_elapsed < DEFAULT_MIN_OFF_TIME_S:
+                    _LOGGER.debug(
+                        "AdaptiveCharge: surplus start blocked by min-off-time "
+                        "(%.0fs / %.0fs), ema=%.2fA threshold=%.1fA",
+                        off_elapsed, DEFAULT_MIN_OFF_TIME_S,
+                        ema_current, self._surplus_start_threshold_a,
+                    )
                     return
             # Only schedule if not already pending — avoid resetting the
             # debounce timer every tick which would prevent it from completing.
@@ -1500,20 +1451,29 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # During alignment or settling, only allow decreases (safety), hold otherwise
         if (self._alignment.active or self._alignment.settling) and delta > 0:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked by alignment/settling "
+                "(alignment=%s settling=%s) delta=+%.2fA",
+                self._alignment.active, self._alignment.settling, delta,
+            )
             return
 
         # Confidence gating
         if delta > 0 and self._confidence == CONFIDENCE_LOW:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked by low confidence, delta=+%.2fA",
+                delta,
+            )
             return
 
         # Hysteresis check
-        if delta > 0 and delta < DEFAULT_HYSTERESIS_UP:
+        if delta > 0 and delta < self._hysteresis_up:
             return
-        if delta < 0 and abs(delta) < DEFAULT_HYSTERESIS_DOWN:
+        if delta < 0 and abs(delta) < self._hysteresis_down:
             return
 
-        # Rate limiting: max 1A per step
-        step = min(abs(delta), float(DEFAULT_MAX_STEP_A))
+        # Rate limiting: max step per modulation
+        step = min(abs(delta), float(self._max_step_a))
         if delta > 0:
             new_target = current_setpoint + step
         else:
@@ -1526,6 +1486,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             if self._last_up_time is not None:
                 up_elapsed = mono_now - self._last_up_time
                 if up_elapsed < DEFAULT_COOLDOWN_UP_S:
+                    _LOGGER.debug(
+                        "AdaptiveCharge: modulate up blocked by cooldown "
+                        "(%.0fs / %.0fs) target=%.1fA",
+                        up_elapsed, DEFAULT_COOLDOWN_UP_S, new_target,
+                    )
                     return
 
         reason = "modulate_up" if delta > 0 else "modulate_down"
@@ -1564,7 +1529,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
             # Start settling window to avoid self-induced dip flapping
             self._alignment.start_settling(
-                mono_now, DEFAULT_SETTLING_DURATION_S
+                mono_now, self._settling_duration_s
             )
 
     def _set_mode(self, new_mode: str, reason: str, source: str) -> None:
@@ -1902,19 +1867,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_total_wh = total_wh
         self._energy_solar_wh = solar_wh
         self._energy_import_wh = import_wh
-
-    def restore_missed_solar(self, missed_wh: float) -> None:
-        """Restore cumulative missed solar counter from persistent state."""
-        self._missed_solar_wh = missed_wh
-
-    def restore_missed_solar_split(
-        self, absence_wh: float, cable_wh: float, low_surplus_wh: float, quantization_wh: float = 0.0
-    ) -> None:
-        """Restore missed solar sub-category counters from persistent state."""
-        self._missed_solar_absence_wh = absence_wh
-        self._missed_solar_cable_wh = cable_wh
-        self._missed_solar_low_surplus_wh = low_surplus_wh
-        self._missed_solar_quantization_wh = quantization_wh
 
     def set_controller_enabled(self, value: bool) -> None:
         """Set the controller enabled flag (master switch).

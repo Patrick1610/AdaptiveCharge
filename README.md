@@ -21,8 +21,8 @@ A Home Assistant custom integration that intelligently controls EV charging base
 - **Solar Done detection**: detects when solar generation has finished for the day
 - **Enhanced import guard**: multi-stage protection (debounce → reduce → stop) with hysteresis
 - **Dynamic measurement alignment**: adaptive skew detection and coherence scoring
-- **Persistent storage**: missed solar and energy counters survive restarts
-- **Utility meters**: optional daily/monthly/yearly period tracking (store-backed, opt-in)
+- **Persistent storage**: energy counters survive restarts
+- **Utility meters**: optional daily/monthly/yearly energy tracking sensors (store-backed, opt-in)
 - **Mode tracking**: reason, source, timestamps, and transition history on every mode change
 - **Full debug attributes**: every sensor exposes source values, mode and last action
 
@@ -102,10 +102,10 @@ Set the start and end times (HH:MM) for the night charging window. The **Charge 
 | Night Charging Start | 22:00 | Earliest time to start overnight charging |
 | Night Charging End | 05:00 | Time at which Charge Tonight auto-disables |
 
-### Step 8 – Solar Sensor _(optional)_
+### Step 8 – Solar & Forecast Sensors _(optional)_
 
-A `sensor` for total solar yield (W or kW). Used to detect _Solar Done_ state.
-Optionally add one or more **Solar Forecast Sensors** (e.g. Solcast, Open-Meteo Solar) — multiple forecast values are summed.
+One or more `sensor` entities for total solar yield (W or kW). Used to detect _Solar Done_ state.
+Optionally add one or more **Remaining Forecast Today** sensors (e.g. Solcast `remaining_today`) — multiple values are summed.
 
 ### Step 9 – Actuators _(optional)_
 
@@ -242,10 +242,9 @@ The **Mode** sensor exposes:
 
 ### 11. Persistent Storage
 
-Energy counters (missed solar, energy charged) are persisted to `.storage/adaptive_charge.counters.<entry_id>` using HA's `Store` helper. Benefits:
+Energy counters (energy charged) are persisted to `.storage/adaptive_charge.counters.<entry_id>` using HA's `Store` helper. Benefits:
 - Data survives restarts, reloads, and reboots
 - Throttled writes (max once per 30s) to avoid disk I/O spam
-- Automatic rollover detection at day/month/year boundaries (even if HA was offline at midnight)
 - One-time migration from old `RestoreEntity` state on first run
 
 ---
@@ -345,7 +344,6 @@ When the cable sensor transitions off → on:
 | `sensor.adaptivecharge_alignment_diagnostics` _(diagnostic)_ | — | Alignment engine state and diagnostics |
 | `sensor.adaptivecharge_version` _(diagnostic)_ | — | Integration version from manifest |
 | `sensor.adaptivecharge_energy_charged_kwh` | kWh | Total energy charged |
-| `sensor.adaptivecharge_missed_solar_kwh` | kWh | Total missed solar energy |
 | `sensor.adaptivecharge_definitive_range_km` | km | Computed effective range |
 
 ### Binary Sensors
@@ -388,11 +386,6 @@ When **Enable Utility Meters** is turned on, these additional store-backed perio
 | `sensor.adaptivecharge_energy_charged_daily` | Daily |
 | `sensor.adaptivecharge_energy_charged_monthly` | Monthly |
 | `sensor.adaptivecharge_energy_charged_yearly` | Yearly |
-| `sensor.adaptivecharge_missed_solar_daily` | Daily |
-| `sensor.adaptivecharge_missed_solar_monthly` | Monthly |
-| `sensor.adaptivecharge_missed_solar_yearly` | Yearly |
-
-With **Split Missed Solar** enabled, per-cause breakdowns (absence, cable, low surplus, quantization) are also available for each period.
 
 ---
 

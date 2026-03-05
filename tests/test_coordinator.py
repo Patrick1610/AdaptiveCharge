@@ -3189,36 +3189,6 @@ class TestEnergyAccumulation:
         assert import_portion == 3000.0
         assert solar_portion == 0.0
 
-    def test_missed_solar_when_not_charging(self):
-        """Surplus > 0 and not charging → should accumulate missed solar."""
-        surplus_w = 2000.0
-        charging_on = False
-        dt_s = 10.0
-        missed_wh = 0.0
-        if surplus_w > 0 and not charging_on:
-            missed_wh += surplus_w * (dt_s / 3600.0)
-        assert abs(missed_wh - 5.556) < 0.01
-
-    def test_no_missed_solar_when_charging(self):
-        """If charging is on, surplus is not missed."""
-        surplus_w = 2000.0
-        charging_on = True
-        dt_s = 10.0
-        missed_wh = 0.0
-        if surplus_w > 0 and not charging_on:
-            missed_wh += surplus_w * (dt_s / 3600.0)
-        assert missed_wh == 0.0
-
-    def test_no_missed_solar_when_no_surplus(self):
-        """Negative surplus (import) → nothing missed."""
-        surplus_w = -500.0
-        charging_on = False
-        dt_s = 10.0
-        missed_wh = 0.0
-        if surplus_w > 0 and not charging_on:
-            missed_wh += surplus_w * (dt_s / 3600.0)
-        assert missed_wh == 0.0
-
     def test_session_reset(self):
         """Session counters should reset independently of totals."""
         total_wh = 5000.0
@@ -3451,7 +3421,6 @@ class TestBuildDataDictEnergy:
             "energy_session_kwh",
             "energy_session_solar_kwh",
             "energy_session_import_kwh",
-            "missed_solar_kwh",
         }
         data = {k: 0.0 for k in expected_energy_keys}
         assert set(data.keys()) == expected_energy_keys
@@ -3611,78 +3580,6 @@ class TestSurplusStartStopThresholds:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Missed solar sub-categories
-# ---------------------------------------------------------------------------
-
-class TestMissedSolarSubCategories:
-    """Test missed solar split into absence, cable, and low surplus."""
-
-    def _classify_missed(
-        self, surplus_w: float, presence: bool, cable_connected: bool,
-        voltage: float = 230.0, start_threshold_a: float = 2.0
-    ) -> str:
-        """Return category of missed solar, mirroring coordinator logic."""
-        surplus_a = surplus_w / (voltage * 3.0) if voltage > 0 else 0.0
-        if not presence:
-            return "absence"
-        if not cable_connected:
-            return "cable"
-        if surplus_a < start_threshold_a:
-            return "low_surplus"
-        return "none"
-
-    def test_missed_due_to_absence(self):
-        """Vehicle not home → missed classified as absence."""
-        assert self._classify_missed(2000.0, presence=False, cable_connected=False) == "absence"
-
-    def test_missed_due_to_cable(self):
-        """Vehicle home but cable disconnected → missed classified as cable."""
-        assert self._classify_missed(2000.0, presence=True, cable_connected=False) == "cable"
-
-    def test_missed_due_to_low_surplus(self):
-        """Vehicle home, cable connected, but surplus < start threshold (2A)."""
-        # surplus < 2A: 230 * 3 * 2 = 1380W
-        assert self._classify_missed(500.0, presence=True, cable_connected=True) == "low_surplus"
-
-    def test_surplus_above_threshold_no_category(self):
-        """Surplus >= start threshold (2A) → not classified (charging should be active)."""
-        # surplus > 2A: 230 * 3 * 2 = 1380W, so 1500W > 1380W → "none"
-        assert self._classify_missed(1500.0, presence=True, cable_connected=True) == "none"
-
-    def test_accumulation_per_category(self):
-        """Missed solar should accumulate into the correct sub-category."""
-        absence_wh = 0.0
-        cable_wh = 0.0
-        low_surplus_wh = 0.0
-        dt_h = 10.0 / 3600.0
-
-        # Tick 1: away from home, surplus 2000W
-        surplus_w = 2000.0
-        missed_wh = surplus_w * dt_h
-        cat = self._classify_missed(surplus_w, presence=False, cable_connected=False)
-        if cat == "absence":
-            absence_wh += missed_wh
-
-        # Tick 2: home, cable disconnected, surplus 1500W
-        surplus_w = 1500.0
-        missed_wh = surplus_w * dt_h
-        cat = self._classify_missed(surplus_w, presence=True, cable_connected=False)
-        if cat == "cable":
-            cable_wh += missed_wh
-
-        # Tick 3: home, cable connected, surplus 400W (< 690W = 1A)
-        surplus_w = 400.0
-        missed_wh = surplus_w * dt_h
-        cat = self._classify_missed(surplus_w, presence=True, cable_connected=True)
-        if cat == "low_surplus":
-            low_surplus_wh += missed_wh
-
-        assert absence_wh > 0
-        assert cable_wh > 0
-        assert low_surplus_wh > 0
-
-
-# ---------------------------------------------------------------------------
 # Tests: Definitive range sensor
 # ---------------------------------------------------------------------------
 
@@ -3783,22 +3680,11 @@ class TestUtilityMeterLogic:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Energy data dict includes missed solar sub-categories
+# Tests: Surplus thresholds in data dict
 # ---------------------------------------------------------------------------
 
-class TestBuildDataDictMissedSolarSplit:
-    """Test that data dict includes missed solar sub-category keys."""
-
-    def test_missed_solar_split_keys_present(self):
-        """Data dict should include missed solar sub-category keys."""
-        expected_keys = {
-            "missed_solar_kwh",
-            "missed_solar_absence_kwh",
-            "missed_solar_cable_kwh",
-            "missed_solar_low_surplus_kwh",
-        }
-        data = {k: 0.0 for k in expected_keys}
-        assert expected_keys.issubset(set(data.keys()))
+class TestBuildDataDictSurplusThresholds:
+    """Test that data dict includes surplus threshold keys."""
 
     def test_surplus_thresholds_in_data_dict(self):
         """Data dict should include surplus thresholds."""
@@ -4608,3 +4494,121 @@ class TestPreciseLowPowerCheck:
         # 80 kWh capacity, 0→20% = 16 kWh needed
         # Forecast 50 kWh but only 0.2 ratio → expected 10 kWh < 16 kWh
         assert _low_power_precise(0.0, 20.0, 50.0, 0.2, 80.0) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: Modulation ramp-up rate limits
+# ---------------------------------------------------------------------------
+
+# Mirror the constants from const.py used by _try_modulate
+_HYSTERESIS_UP = 0.2
+_MAX_STEP_A = 1
+_COOLDOWN_UP_S = 45.0
+_SETTLING_DURATION_S = 10.0
+
+
+def _simulate_ramp_up(
+    start_a: float,
+    target_a: float,
+    sample_interval_s: float = 10.0,
+    cooldown_s: float = _COOLDOWN_UP_S,
+    max_step: int = _MAX_STEP_A,
+    hysteresis: float = _HYSTERESIS_UP,
+    settling_s: float = _SETTLING_DURATION_S,
+) -> tuple[int, float]:
+    """Simulate how long it takes to ramp from start_a to target_a.
+
+    Returns (steps, total_seconds) reflecting the effective rate limited by:
+    - 1A max per step
+    - 45s cooldown between upward steps
+    - 10s settling window after each commit
+    - 0.2A hysteresis dead zone (requires delta >= 0.2A to trigger)
+    """
+    current = start_a
+    total_time = 0.0
+    steps = 0
+
+    while current < target_a:
+        delta = target_a - current
+        if delta < hysteresis:
+            break  # Stuck in hysteresis dead zone
+
+        step = min(delta, float(max_step))
+        current += step
+        steps += 1
+
+        # Each step incurs cooldown + settling
+        total_time += max(cooldown_s, settling_s)
+
+    return steps, total_time
+
+
+class TestModulationRampUpRate:
+    """Test that modulation ramp-up rate is correctly bounded.
+
+    The morning 'unused power' is caused by the charger already running
+    but not stepping up fast enough as surplus increases.  The rate limit
+    is: max 1 A per step, 45 s cooldown between up-steps, plus 10 s
+    settling window after each commit — effectively one step per ~45 s.
+    For 3-phase at 230 V, 1 A ≈ 690 W per step.
+
+    The upward hysteresis (0.2 A) is intentionally small so that fractional
+    surplus above the committed setpoint is captured quickly — the EMA
+    filter and cooldown already prevent flapping.
+    """
+
+    def test_single_step_delay(self):
+        """A single 1A up-step requires at least one cooldown period."""
+        steps, seconds = _simulate_ramp_up(2.0, 3.0)
+        assert steps == 1
+        assert seconds >= _COOLDOWN_UP_S
+
+    def test_multi_step_ramp(self):
+        """Ramping from 2A to 6A takes 4 steps × 45s = 180s minimum."""
+        steps, seconds = _simulate_ramp_up(2.0, 6.0)
+        assert steps == 4
+        assert seconds >= 4 * _COOLDOWN_UP_S
+
+    def test_hysteresis_blocks_tiny_delta(self):
+        """A delta < 0.2A is blocked by hysteresis — no step occurs."""
+        steps, seconds = _simulate_ramp_up(5.0, 5.1)
+        assert steps == 0
+        assert seconds == 0.0
+
+    def test_hysteresis_allows_small_surplus(self):
+        """A delta of 0.5A (> 0.2A hysteresis) triggers a step-up.
+
+        With the old 1.0A hysteresis this surplus would have been wasted.
+        """
+        steps, seconds = _simulate_ramp_up(5.0, 5.5)
+        assert steps == 1
+
+    def test_hysteresis_allows_exactly_threshold(self):
+        """A delta of exactly 0.2A passes the hysteresis check."""
+        steps, seconds = _simulate_ramp_up(5.0, 5.2)
+        assert steps == 1
+
+    def test_full_ramp_0_to_16a(self):
+        """Worst case: 0A → 16A takes 16 steps × 45s = 720s (12 minutes)."""
+        steps, seconds = _simulate_ramp_up(0.0, 16.0)
+        assert steps == 16
+        assert seconds == 16 * _COOLDOWN_UP_S
+
+    def test_ramp_up_power_gap_at_230v_3phase(self):
+        """At 230V 3-phase, each pending step represents ~690W unused power.
+
+        With 0.2A hysteresis, a 1.2A surplus triggers step-ups immediately
+        (only limited by cooldown), much better than the old 2.0A requirement.
+        The 1.2A gap is closed in 2 steps (1.0A + 0.2A) vs being entirely
+        blocked by the old 1.0A hysteresis.
+        """
+        voltage = 230.0
+        w_per_amp = voltage * 3.0  # 690 W/A for 3-phase
+        committed = 3.0
+        ema = 4.2  # 1.2A surplus — would have been blocked by old 1.0A hysteresis
+        gap_a = ema - committed
+        gap_w = gap_a * w_per_amp
+        assert gap_w == pytest.approx(828.0, abs=1.0)
+        steps, delay = _simulate_ramp_up(committed, ema)
+        assert steps == 2  # 1.0A step + 0.2A step (both above 0.2A hysteresis)
+        assert delay >= 2 * _COOLDOWN_UP_S

@@ -24,8 +24,10 @@ from .const import (
     CONF_DESIRED_RANGE,
     CONF_ENABLE_UTILITY_METERS,
     CONF_EV_POWER_SENSOR,
+    CONF_EXPERT_MODE,
     CONF_FORECAST_SENSORS,
-    CONF_FORECAST_TOTAL_SENSORS,
+    CONF_HYSTERESIS_DOWN,
+    CONF_HYSTERESIS_UP,
     CONF_IMPORT_GUARD_DURATION,
     CONF_IMPORT_GUARD_THRESHOLD,
     CONF_INVERT_NET_POWER,
@@ -33,6 +35,7 @@ from .const import (
     CONF_LOW_POWER_THRESHOLD,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_MAX_CURRENT_LIMIT,
+    CONF_MAX_STEP_A,
     CONF_MIN_CURRENT_LIMIT,
     CONF_MODULATE_MIN_INTERVAL,
     CONF_NET_POWER_MODE,
@@ -43,13 +46,13 @@ from .const import (
     CONF_PRODUCTION_SENSOR,
     CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
+    CONF_SETTLING_DURATION_S,
+    CONF_SHOW_ADVANCED,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
     CONF_SOLAR_DONE_THRESHOLD,
     CONF_SOLAR_SENSOR,
     CONF_SOLAR_SENSORS,
-    CONF_SHOW_FORECAST_TOTAL,
-    CONF_SPLIT_MISSED_SOLAR,
     CONF_START_DELAY,
     CONF_STOP_DELAY,
     CONF_SURPLUS_START_THRESHOLD_A,
@@ -64,17 +67,21 @@ from .const import (
     DEFAULT_CHARGE_BUFFER,
     DEFAULT_CHARGE_LIMIT,
     DEFAULT_DESIRED_RANGE,
+    DEFAULT_HYSTERESIS_DOWN,
+    DEFAULT_HYSTERESIS_UP,
     DEFAULT_IMPORT_GUARD_DURATION_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
     DEFAULT_LOW_POWER_FORECAST_THRESHOLD_KWH,
     DEFAULT_LOW_POWER_THRESHOLD,
     DEFAULT_MAX_CURRENT_LIMIT,
+    DEFAULT_MAX_STEP_A,
     DEFAULT_MIN_CURRENT_LIMIT,
     DEFAULT_MODULATE_MIN_INTERVAL,
     DEFAULT_NIGHT_OFF_HOUR,
     DEFAULT_NIGHT_OFF_MINUTE,
     DEFAULT_RANGE_HYSTERESIS_PCT,
     DEFAULT_SAMPLE_INTERVAL,
+    DEFAULT_SETTLING_DURATION_S,
     DEFAULT_SMOOTHING_WINDOW,
     DEFAULT_SOLAR_DONE_DURATION,
     DEFAULT_SOLAR_DONE_THRESHOLD,
@@ -406,8 +413,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Step 8: optional solar sensor(s) and forecast sensors."""
         if user_input is not None:
             cleaned = {k: v for k, v in user_input.items() if v or isinstance(v, list)}
-            # Remove the toggle itself from persisted data
-            cleaned.pop(CONF_SHOW_FORECAST_TOTAL, None)
             self._data = {**self._data, **cleaned}
             return await self.async_step_actuators_optional()
 
@@ -417,12 +422,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {"entity": {"domain": "sensor", "multiple": True}}
                 ),
                 vol.Optional(CONF_FORECAST_SENSORS): selector.selector(
-                    {"entity": {"domain": "sensor", "multiple": True}}
-                ),
-                vol.Optional(
-                    CONF_SHOW_FORECAST_TOTAL, default=False
-                ): selector.selector({"boolean": {}}),
-                vol.Optional(CONF_FORECAST_TOTAL_SENSORS): selector.selector(
                     {"entity": {"domain": "sensor", "multiple": True}}
                 ),
             }
@@ -435,7 +434,7 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Step 7: optional charge switch, current number, and charge limit number."""
         if user_input is not None:
             self._data = {**self._data, **{k: v for k, v in user_input.items() if v is not None and v != ""}}
-            return await self.async_step_advanced()
+            return await self.async_step_additional_options()
 
         schema = vol.Schema(
             {
@@ -452,14 +451,41 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="actuators_optional", data_schema=schema)
 
+    async def async_step_additional_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Additional options: utility meters and show advanced."""
+        if user_input is not None:
+            self._data = {**self._data, **user_input}
+            if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
+                return await self.async_step_utility_meters()
+            if user_input.get(CONF_SHOW_ADVANCED, False):
+                return await self.async_step_advanced()
+            return self.async_create_entry(
+                title=self._data.get(CONF_NAME, "AdaptiveCharge"),
+                data=self._data,
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_ENABLE_UTILITY_METERS, default=False
+                ): selector.selector({"boolean": {}}),
+                vol.Optional(
+                    CONF_SHOW_ADVANCED, default=False
+                ): selector.selector({"boolean": {}}),
+            }
+        )
+        return self.async_show_form(step_id="additional_options", data_schema=schema)
+
     async def async_step_advanced(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
         """Step 8: advanced timing settings."""
         if user_input is not None:
             self._data = {**self._data, **user_input}
-            if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
-                return await self.async_step_utility_meters()
+            if user_input.get(CONF_EXPERT_MODE, False):
+                return await self.async_step_expert()
             return self.async_create_entry(
                 title=self._data.get(CONF_NAME, "AdaptiveCharge"),
                 data=self._data,
@@ -513,11 +539,48 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {"number": {"min": 5, "max": 120, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Optional(
-                    CONF_ENABLE_UTILITY_METERS, default=False
+                    CONF_EXPERT_MODE, default=False
                 ): selector.selector({"boolean": {}}),
             }
         )
         return self.async_show_form(step_id="advanced", data_schema=schema)
+
+    async def async_step_expert(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Expert mode: controller tuning parameters."""
+        if user_input is not None:
+            self._data = {**self._data, **user_input}
+            return self.async_create_entry(
+                title=self._data.get(CONF_NAME, "AdaptiveCharge"),
+                data=self._data,
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_MAX_STEP_A, default=DEFAULT_MAX_STEP_A
+                ): selector.selector(
+                    {"number": {"min": 1, "max": 5, "step": 1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_HYSTERESIS_UP, default=DEFAULT_HYSTERESIS_UP
+                ): selector.selector(
+                    {"number": {"min": 0.1, "max": 2.0, "step": 0.1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_HYSTERESIS_DOWN, default=DEFAULT_HYSTERESIS_DOWN
+                ): selector.selector(
+                    {"number": {"min": 0.1, "max": 3.0, "step": 0.1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_SETTLING_DURATION_S, default=DEFAULT_SETTLING_DURATION_S
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 60, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
+                ),
+            }
+        )
+        return self.async_show_form(step_id="expert", data_schema=schema)
 
     async def async_step_utility_meters(
         self, user_input: dict[str, Any] | None = None
@@ -525,6 +588,8 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Step 9: utility meter period selection."""
         if user_input is not None:
             self._data = {**self._data, **user_input}
+            if self._data.get(CONF_SHOW_ADVANCED, False):
+                return await self.async_step_advanced()
             return self.async_create_entry(
                 title=self._data.get(CONF_NAME, "AdaptiveCharge"),
                 data=self._data,
@@ -535,7 +600,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_UTILITY_DAILY, default=True): selector.selector({"boolean": {}}),
                 vol.Optional(CONF_UTILITY_MONTHLY, default=True): selector.selector({"boolean": {}}),
                 vol.Optional(CONF_UTILITY_YEARLY, default=True): selector.selector({"boolean": {}}),
-                vol.Optional(CONF_SPLIT_MISSED_SOLAR, default=False): selector.selector({"boolean": {}}),
             }
         )
         return self.async_show_form(step_id="utility_meters", data_schema=schema)
@@ -848,8 +912,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         current = self._current()
         if user_input is not None:
             cleaned = {k: v for k, v in user_input.items() if v or isinstance(v, list)}
-            # Remove the toggle itself from persisted data
-            cleaned.pop(CONF_SHOW_FORECAST_TOTAL, None)
             self._data.update(cleaned)
             return await self.async_step_actuators_optional()
 
@@ -858,8 +920,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         solar_default = current.get(CONF_SOLAR_SENSORS, [])
         if not solar_default and old_solar:
             solar_default = [old_solar]
-
-        has_total = bool(current.get(CONF_FORECAST_TOTAL_SENSORS, []))
 
         schema = vol.Schema(
             {
@@ -870,13 +930,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_FORECAST_SENSORS,
                     description={"suggested_value": current.get(CONF_FORECAST_SENSORS, [])},
-                ): selector.selector({"entity": {"domain": "sensor", "multiple": True}}),
-                vol.Optional(
-                    CONF_SHOW_FORECAST_TOTAL, default=has_total,
-                ): selector.selector({"boolean": {}}),
-                vol.Optional(
-                    CONF_FORECAST_TOTAL_SENSORS,
-                    description={"suggested_value": current.get(CONF_FORECAST_TOTAL_SENSORS, [])},
                 ): selector.selector({"entity": {"domain": "sensor", "multiple": True}}),
             }
         )
@@ -889,7 +942,7 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         current = self._current()
         if user_input is not None:
             self._data.update({k: v for k, v in user_input.items() if v is not None and v != ""})
-            return await self.async_step_advanced()
+            return await self.async_step_additional_options()
 
         schema = vol.Schema(
             {
@@ -909,6 +962,33 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         )
         return self.async_show_form(step_id="actuators_optional", data_schema=schema)
 
+    async def async_step_additional_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Additional options: utility meters and show advanced."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
+                return await self.async_step_utility_meters()
+            if user_input.get(CONF_SHOW_ADVANCED, False):
+                return await self.async_step_advanced()
+            return self.async_create_entry(title="", data=self._data)
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_ENABLE_UTILITY_METERS,
+                    default=bool(current.get(CONF_ENABLE_UTILITY_METERS, False)),
+                ): selector.selector({"boolean": {}}),
+                vol.Optional(
+                    CONF_SHOW_ADVANCED,
+                    default=bool(current.get(CONF_SHOW_ADVANCED, False)),
+                ): selector.selector({"boolean": {}}),
+            }
+        )
+        return self.async_show_form(step_id="additional_options", data_schema=schema)
+
     async def async_step_advanced(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
@@ -916,8 +996,8 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         current = self._current()
         if user_input is not None:
             self._data.update(user_input)
-            if user_input.get(CONF_ENABLE_UTILITY_METERS, False):
-                return await self.async_step_utility_meters()
+            if user_input.get(CONF_EXPERT_MODE, False):
+                return await self.async_step_expert()
             return self.async_create_entry(title="", data=self._data)
 
         schema = vol.Schema(
@@ -977,12 +1057,51 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     {"number": {"min": 5, "max": 120, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
                 ),
                 vol.Optional(
-                    CONF_ENABLE_UTILITY_METERS,
-                    default=bool(current.get(CONF_ENABLE_UTILITY_METERS, False)),
+                    CONF_EXPERT_MODE,
+                    default=bool(current.get(CONF_EXPERT_MODE, False)),
                 ): selector.selector({"boolean": {}}),
             }
         )
         return self.async_show_form(step_id="advanced", data_schema=schema)
+
+    async def async_step_expert(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Expert mode: controller tuning parameters."""
+        current = self._current()
+        if user_input is not None:
+            self._data.update(user_input)
+            return self.async_create_entry(title="", data=self._data)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_MAX_STEP_A,
+                    default=float(current.get(CONF_MAX_STEP_A, DEFAULT_MAX_STEP_A)),
+                ): selector.selector(
+                    {"number": {"min": 1, "max": 5, "step": 1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_HYSTERESIS_UP,
+                    default=float(current.get(CONF_HYSTERESIS_UP, DEFAULT_HYSTERESIS_UP)),
+                ): selector.selector(
+                    {"number": {"min": 0.1, "max": 2.0, "step": 0.1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_HYSTERESIS_DOWN,
+                    default=float(current.get(CONF_HYSTERESIS_DOWN, DEFAULT_HYSTERESIS_DOWN)),
+                ): selector.selector(
+                    {"number": {"min": 0.1, "max": 3.0, "step": 0.1, "unit_of_measurement": "A", "mode": "box"}}
+                ),
+                vol.Required(
+                    CONF_SETTLING_DURATION_S,
+                    default=float(current.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S)),
+                ): selector.selector(
+                    {"number": {"min": 0, "max": 60, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
+                ),
+            }
+        )
+        return self.async_show_form(step_id="expert", data_schema=schema)
 
     async def async_step_utility_meters(
         self, user_input: dict[str, Any] | None = None
@@ -991,6 +1110,8 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
         current = self._current()
         if user_input is not None:
             self._data.update(user_input)
+            if self._data.get(CONF_SHOW_ADVANCED, False):
+                return await self.async_step_advanced()
             return self.async_create_entry(title="", data=self._data)
 
         schema = vol.Schema(
@@ -1006,10 +1127,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_UTILITY_YEARLY,
                     default=bool(current.get(CONF_UTILITY_YEARLY, True)),
-                ): selector.selector({"boolean": {}}),
-                vol.Optional(
-                    CONF_SPLIT_MISSED_SOLAR,
-                    default=bool(current.get(CONF_SPLIT_MISSED_SOLAR, True)),
                 ): selector.selector({"boolean": {}}),
             }
         )

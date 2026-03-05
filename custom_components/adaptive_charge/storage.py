@@ -1,6 +1,6 @@
 """Persistent storage for AdaptiveCharge counters.
 
-Uses homeassistant.helpers.storage.Store to persist missed-solar and energy
+Uses homeassistant.helpers.storage.Store to persist energy
 counters to `.storage/adaptive_charge.counters` so that:
   - Data survives HA restart / reload / reboot.
   - Disabled entities can later be enabled and show correct values immediately.
@@ -44,32 +44,9 @@ def _this_year_str() -> str:
 def _empty_counters() -> dict[str, Any]:
     """Return a fresh counters dict with all fields initialised."""
     return {
-        # Cumulative totals (never reset)
-        "missed_solar_total_wh": 0.0,
-        "missed_solar_absence_wh": 0.0,
-        "missed_solar_cable_wh": 0.0,
-        "missed_solar_low_surplus_wh": 0.0,
-        "missed_solar_quantization_wh": 0.0,
-        # Daily period
-        "missed_solar_daily_wh": 0.0,
-        "missed_solar_absence_daily_wh": 0.0,
-        "missed_solar_cable_daily_wh": 0.0,
-        "missed_solar_low_surplus_daily_wh": 0.0,
-        "missed_solar_quantization_daily_wh": 0.0,
+        # Period-start markers (used for rollover detection)
         "daily_period_start": _today_str(),
-        # Monthly period
-        "missed_solar_monthly_wh": 0.0,
-        "missed_solar_absence_monthly_wh": 0.0,
-        "missed_solar_cable_monthly_wh": 0.0,
-        "missed_solar_low_surplus_monthly_wh": 0.0,
-        "missed_solar_quantization_monthly_wh": 0.0,
         "monthly_period_start": _this_month_str(),
-        # Yearly period
-        "missed_solar_yearly_wh": 0.0,
-        "missed_solar_absence_yearly_wh": 0.0,
-        "missed_solar_cable_yearly_wh": 0.0,
-        "missed_solar_low_surplus_yearly_wh": 0.0,
-        "missed_solar_quantization_yearly_wh": 0.0,
         "yearly_period_start": _this_year_str(),
         # Energy charged totals
         "energy_total_wh": 0.0,
@@ -77,20 +54,11 @@ def _empty_counters() -> dict[str, Any]:
         "energy_import_wh": 0.0,
         # Solar production total (used for solar-to-EV ratio)
         "solar_production_total_wh": 0.0,
-        # Solar production today (used for total-forecast → remaining conversion)
-        "solar_production_daily_wh": 0.0,
         # Auto-detected battery capacity (EMA over sessions)
         "battery_capacity_estimate_kwh": 0.0,
         # Migration flag
         "migrated": False,
     }
-
-
-# Suffixes used to construct per-cause keys.
-_CAUSE_SUFFIXES = ("absence", "cable", "low_surplus", "quantization")
-
-# Period names used for rollover.
-_PERIODS = ("daily", "monthly", "yearly")
 
 
 class AdaptiveChargeStore:
@@ -160,26 +128,15 @@ class AdaptiveChargeStore:
 
         if self._data.get("daily_period_start") != today:
             _LOGGER.debug("AdaptiveCharge store: daily rollover detected")
-            self._reset_period("daily")
-            self._data["solar_production_daily_wh"] = 0.0
             self._data["daily_period_start"] = today
 
         if self._data.get("monthly_period_start") != month:
             _LOGGER.debug("AdaptiveCharge store: monthly rollover detected")
-            self._reset_period("monthly")
             self._data["monthly_period_start"] = month
 
         if self._data.get("yearly_period_start") != year:
             _LOGGER.debug("AdaptiveCharge store: yearly rollover detected")
-            self._reset_period("yearly")
             self._data["yearly_period_start"] = year
-
-    def _reset_period(self, period: str) -> None:
-        """Reset all counters for the given period to 0."""
-        self._data[f"missed_solar_{period}_wh"] = 0.0
-        for cause in _CAUSE_SUFFIXES:
-            self._data[f"missed_solar_{cause}_{period}_wh"] = 0.0
-        self._dirty = True
 
     def check_rollovers(self) -> None:
         """Public rollover check — call periodically (e.g. every tick)."""
@@ -188,23 +145,6 @@ class AdaptiveChargeStore:
     # ------------------------------------------------------------------
     # Counter updates
     # ------------------------------------------------------------------
-
-    def add_missed_solar(
-        self,
-        total_wh: float,
-        cause: str | None = None,
-    ) -> None:
-        """Add *total_wh* to total + all periods, optionally to a cause bucket."""
-        if total_wh <= 0:
-            return
-        self._data["missed_solar_total_wh"] += total_wh
-        for period in _PERIODS:
-            self._data[f"missed_solar_{period}_wh"] += total_wh
-        if cause and cause in _CAUSE_SUFFIXES:
-            self._data[f"missed_solar_{cause}_wh"] += total_wh
-            for period in _PERIODS:
-                self._data[f"missed_solar_{cause}_{period}_wh"] += total_wh
-        self.schedule_flush()
 
     def add_energy_charged(self, total_wh: float, solar_wh: float, import_wh: float) -> None:
         """Add energy charged deltas to persistent totals."""
@@ -220,7 +160,6 @@ class AdaptiveChargeStore:
         if wh < 0:
             return
         self._data["solar_production_total_wh"] += wh
-        self._data["solar_production_daily_wh"] = self._data.get("solar_production_daily_wh", 0.0) + wh
         self.schedule_flush()
 
     def set_battery_capacity_estimate(self, kwh: float) -> None:
@@ -251,29 +190,18 @@ class AdaptiveChargeStore:
 
     def seed_from_old_state(
         self,
-        total_wh: float,
-        absence_wh: float,
-        cable_wh: float,
-        low_surplus_wh: float,
-        quantization_wh: float,
         energy_total_wh: float = 0.0,
         energy_solar_wh: float = 0.0,
         energy_import_wh: float = 0.0,
     ) -> None:
         """Seed counters from old entity states (best-effort migration)."""
-        self._data["missed_solar_total_wh"] = total_wh
-        self._data["missed_solar_absence_wh"] = absence_wh
-        self._data["missed_solar_cable_wh"] = cable_wh
-        self._data["missed_solar_low_surplus_wh"] = low_surplus_wh
-        self._data["missed_solar_quantization_wh"] = quantization_wh
         self._data["energy_total_wh"] = energy_total_wh
         self._data["energy_solar_wh"] = energy_solar_wh
         self._data["energy_import_wh"] = energy_import_wh
         self._data["migrated"] = True
         _LOGGER.info(
             "AdaptiveCharge store: migrated counters from old entities "
-            "(total=%.1f Wh, energy=%.1f Wh)",
-            total_wh,
+            "(energy=%.1f Wh)",
             energy_total_wh,
         )
         self.schedule_flush()
