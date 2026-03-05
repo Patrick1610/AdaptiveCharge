@@ -550,6 +550,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Phase 9: Build data dict ---
         data = self._build_data_dict(
             sensor_data, analysis, force_data, display_ema, display_available, now,
+            solar_to_ev_ratio,
         )
 
         self.async_set_updated_data(data)
@@ -787,9 +788,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     ) -> dict[str, Any]:
         """Evaluate force charge, need, tonight condition, and earliest-start gate.
 
-        Symmetric hysteresis (Option B): the hysteresis band is centered on
-        effective_range.  start threshold = effective_range - hyst/2,
-        stop threshold = effective_range + hyst/2.
+        Asymmetric hysteresis: the upper limit is exactly effective_range
+        (desired + buffer) and the hysteresis band extends only downward.
+          start threshold = effective_range - hysteresis_km
+          stop  threshold = effective_range
 
         Both buffer and hysteresis are percentages of desired_range:
           effective_range = desired_range × (1 + buffer%)
@@ -823,15 +825,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """
         effective_range = self._desired_range * (1.0 + self._charge_buffer / 100.0)
         hysteresis_km = self._desired_range * (self._range_hysteresis_pct / 100.0)
-        half_hyst = hysteresis_km / 2.0
         prev_need_active = self._need_active
         if current_range is not None:
             if self._need_active:
-                # Stop only when range reaches upper band
-                self._need_active = current_range < (effective_range + half_hyst)
+                # Stop when range reaches effective_range (desired + buffer)
+                self._need_active = current_range < effective_range
             else:
-                # Start when range drops below lower band
-                self._need_active = current_range < (effective_range - half_hyst)
+                # Start when range drops below effective_range - hysteresis
+                self._need_active = current_range < (effective_range - hysteresis_km)
         else:
             self._need_active = False
         need = self._need_active
@@ -868,7 +869,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         )
 
         # Low power protection: force charge when SoC is below threshold and
-        # the solar forecast does not promise enough generation to handle it.
+        # either (a) we are inside the charge-tonight window, or (b) the solar
+        # forecast does not promise enough generation to handle it.
         # A threshold of 0 disables the feature entirely.
         low_power_active = False
         if (
@@ -878,7 +880,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and bool(presence)
             and bool(cable_connected)
         ):
-            if forecast_kwh is None:
+            if after_start:
+                # Inside the tonight window → always force charge to protect
+                # the battery; solar is not expected during this period.
+                low_power_active = True
+            elif forecast_kwh is None:
                 # No forecast at all → force charge
                 low_power_active = True
             else:
@@ -951,9 +957,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         ev_w = sensor_data.get("ev_w", 0.0) or 0.0
         computed_net_w = sensor_data.get("computed_net_w", 0.0) or 0.0
-
-        # Check for period rollovers in persistent store
-        self._store.check_rollovers()
 
         # --- Solar production accumulation ---
         solar_w_val = sensor_data.get("solar_w")
@@ -1084,6 +1087,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         display_ema: float,
         display_available: float,
         now: datetime,
+        solar_to_ev_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]
@@ -1227,6 +1231,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "solar_production_kwh": round(self._solar_production_wh / 1000.0, 3),
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "estimated_battery_capacity_kwh": round(self._estimated_battery_capacity_kwh, 2),
+            # --- Solar-to-EV ratio ---
+            "solar_to_ev_ratio": (
+                round(solar_to_ev_ratio, 4) if solar_to_ev_ratio is not None else None
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -1561,7 +1569,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     async def _action_start_force(self) -> None:
         max_a = int(self._max_current_limit)
-        source = self._force_source or "charge_now_switch"
+        source = self._force_source or "unknown"
         # Tonight reentry (range dropped back) uses lower current;
         # charge_now always overrules and uses full power.
         if self._tonight_reentry and source == "charge_tonight":
@@ -1588,7 +1596,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_commit_reason = "start_force"
 
     async def _action_stop_force(self) -> None:
-        source = self._force_source or "charge_now_switch"
+        source = self._force_source or "unknown"
         _LOGGER.info("AdaptiveCharge: stop_force (source=%s)", source)
         await self._disable_charging()
         self._charging_on = False
