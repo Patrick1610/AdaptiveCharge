@@ -486,7 +486,7 @@ def _range_threshold_attributes(data: dict[str, Any]) -> dict[str, Any]:
 class RangeUpperLimitSensor(_BaseAdaptiveChargeSensor):
     """Upper charge threshold: charging stops when current range reaches this value.
 
-    upper_limit = effective_range + hysteresis_km / 2
+    upper_limit = effective_range (desired + buffer)
     """
 
     _attr_name = "Range Upper Limit"
@@ -502,10 +502,9 @@ class RangeUpperLimitSensor(_BaseAdaptiveChargeSensor):
         if self.coordinator.data is None:
             return None
         effective = self.coordinator.data.get("effective_range")
-        hyst = self.coordinator.data.get("range_hysteresis_km")
-        if effective is None or hyst is None:
+        if effective is None:
             return None
-        return round(effective + hyst / 2.0, 1)
+        return round(effective, 1)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -515,7 +514,7 @@ class RangeUpperLimitSensor(_BaseAdaptiveChargeSensor):
 class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
     """Lower charge threshold: charging starts when current range drops below this value.
 
-    lower_limit = effective_range - hysteresis_km / 2
+    lower_limit = effective_range - hysteresis_km
     """
 
     _attr_name = "Range Lower Limit"
@@ -534,7 +533,7 @@ class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
         hyst = self.coordinator.data.get("range_hysteresis_km")
         if effective is None or hyst is None:
             return None
-        return round(effective - hyst / 2.0, 1)
+        return round(effective - hyst, 1)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

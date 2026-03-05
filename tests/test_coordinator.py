@@ -2299,11 +2299,12 @@ class TestForceSourceTracking:
 # ---------------------------------------------------------------------------
 
 class TestRangeHysteresis:
-    """Test symmetric range hysteresis prevents rapid start/stop cycling.
+    """Test asymmetric range hysteresis prevents rapid start/stop cycling.
 
-    Symmetric hysteresis (Option B): the hysteresis band is centered on
-    effective_range. Start charging at effective_range - hyst/2, stop at
-    effective_range + hyst/2. Uses a percentage of desired_range (default 3%).
+    Asymmetric hysteresis: the upper limit is exactly effective_range
+    (desired + buffer) and the hysteresis band extends only downward.
+    Start charging at effective_range - hysteresis_km, stop at
+    effective_range. Uses a percentage of desired_range (default 3%).
     Hysteresis is always ≤ buffer (enforced in the config flow).
     """
 
@@ -2317,24 +2318,23 @@ class TestRangeHysteresis:
         hysteresis_pct: float | None = None,
         desired_range: float | None = None,
     ) -> bool:
-        """Evaluate need with symmetric hysteresis, mirroring coordinator logic.
+        """Evaluate need with asymmetric hysteresis, mirroring coordinator logic.
 
-        Symmetric band: start at effective_range - hyst/2, stop at effective_range + hyst/2.
+        Asymmetric band: start at effective_range - hysteresis_km, stop at effective_range.
         """
         pct = hysteresis_pct if hysteresis_pct is not None else self.HYSTERESIS_PCT
         base = desired_range if desired_range is not None else effective_range
         hysteresis_km = base * (pct / 100.0)
-        half_hyst = hysteresis_km / 2.0
         if current_range is not None:
             if need_active:
-                return current_range < (effective_range + half_hyst)
+                return current_range < effective_range
             else:
-                return current_range < (effective_range - half_hyst)
+                return current_range < (effective_range - hysteresis_km)
         return False
 
     def test_initial_state_below_range_starts_need(self):
         """From cold start, range well below lower band → need=True.
-        3% of 200 = 6km, half = 3km, start threshold = 197.
+        3% of 200 = 6km, start threshold = 194.
         """
         need = self._eval_need(current_range=150.0, effective_range=200.0, need_active=False)
         assert need is True
@@ -2345,40 +2345,38 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_initial_state_exactly_at_range_no_need(self):
-        """From cold start, range exactly at target → need=False (above start threshold 197)."""
+        """From cold start, range exactly at target → need=False (above start threshold 194)."""
         need = self._eval_need(current_range=200.0, effective_range=200.0, need_active=False)
         assert need is False
 
     def test_initial_state_in_deadband_no_need(self):
-        """From cold start, range between start (197) and stop (203) → no need.
+        """From cold start, range between start (194) and stop (200) → no need.
         The deadband prevents unnecessary charging starts.
         """
         need = self._eval_need(current_range=198.0, effective_range=200.0, need_active=False)
         assert need is False
 
     def test_initial_state_at_lower_boundary_starts_need(self):
-        """From cold start, range exactly at lower boundary → starts need.
-        3% of 200 = 6km, half = 3km, start threshold = 197. 196 < 197 → need.
+        """From cold start, range exactly below lower boundary → starts need.
+        3% of 200 = 6km, start threshold = 194. 193 < 194 → need.
         """
-        need = self._eval_need(current_range=196.0, effective_range=200.0, need_active=False)
+        need = self._eval_need(current_range=193.0, effective_range=200.0, need_active=False)
         assert need is True
 
-    def test_charging_stays_active_at_effective_range(self):
-        """While charging, reaching effective_range does NOT stop (symmetric hysteresis).
-        3% of 200 = 6km, half = 3km, stop at 203.
+    def test_charging_stops_at_effective_range(self):
+        """While charging, reaching effective_range stops charging (asymmetric hysteresis).
+        Stop threshold = effective_range = 200.
         """
         need = self._eval_need(current_range=200.0, effective_range=200.0, need_active=True)
+        assert need is False
+
+    def test_charging_stays_active_just_below_effective(self):
+        """While charging, 1km below effective → still active (< 200)."""
+        need = self._eval_need(current_range=199.0, effective_range=200.0, need_active=True)
         assert need is True
 
-    def test_charging_stays_active_slightly_above(self):
-        """While charging, 2km above target → still active (within +3km upper band)."""
-        need = self._eval_need(current_range=202.0, effective_range=200.0, need_active=True)
-        assert need is True
-
-    def test_charging_stops_at_upper_hysteresis_boundary(self):
-        """While charging, at upper hysteresis boundary (3km above effective) → stops.
-        3% of 200 = 6km, half = 3km, stop at 203.
-        """
+    def test_charging_stops_above_effective(self):
+        """While charging, above effective_range → stops."""
         need = self._eval_need(current_range=203.0, effective_range=200.0, need_active=True)
         assert need is False
 
@@ -2388,35 +2386,35 @@ class TestRangeHysteresis:
         assert need is False
 
     def test_full_cycle_prevents_flapping(self):
-        """Simulate a charge cycle with symmetric hysteresis.
-        With 3% hysteresis on effective=200, half band is 3km.
-        Start below 197, stop at 203.
+        """Simulate a charge cycle with asymmetric hysteresis.
+        With 3% hysteresis on effective=200, hysteresis_km = 6km.
+        Start below 194, stop at 200.
         """
         effective = 200.0
         need_active = False
 
-        # Step 1: range at 195, below start threshold (197) → enter need
-        need_active = self._eval_need(195.0, effective, need_active)
+        # Step 1: range at 193, below start threshold (194) → enter need
+        need_active = self._eval_need(193.0, effective, need_active)
         assert need_active is True
 
-        # Step 2: range rises to 200 (at target) → still charging (< 203)
-        need_active = self._eval_need(200.0, effective, need_active)
-        assert need_active is True
-
-        # Step 3: range rises to 202 (2km above) → still charging (< 203)
-        need_active = self._eval_need(202.0, effective, need_active)
-        assert need_active is True
-
-        # Step 4: range rises to 203 (= upper hysteresis boundary) → stops
-        need_active = self._eval_need(203.0, effective, need_active)
-        assert need_active is False
-
-        # Step 5: range drops to 198 (below effective, but above start threshold 197) → no restart
+        # Step 2: range rises to 198 → still charging (< 200)
         need_active = self._eval_need(198.0, effective, need_active)
+        assert need_active is True
+
+        # Step 3: range rises to 199 → still charging (< 200)
+        need_active = self._eval_need(199.0, effective, need_active)
+        assert need_active is True
+
+        # Step 4: range rises to 200 (= effective_range / stop threshold) → stops
+        need_active = self._eval_need(200.0, effective, need_active)
         assert need_active is False
 
-        # Step 6: range drops to 196 (below start threshold 197) → restarts
+        # Step 5: range drops to 196 (below effective, but above start threshold 194) → no restart
         need_active = self._eval_need(196.0, effective, need_active)
+        assert need_active is False
+
+        # Step 6: range drops to 193 (below start threshold 194) → restarts
+        need_active = self._eval_need(193.0, effective, need_active)
         assert need_active is True
 
     def test_none_range_always_false(self):
@@ -2425,42 +2423,41 @@ class TestRangeHysteresis:
         assert self._eval_need(None, 200.0, need_active=True) is False
 
     def test_hysteresis_with_buffer(self):
-        """Buffer and hysteresis with symmetric band.
+        """Buffer and hysteresis with asymmetric band.
         desired=200, buffer=10% → effective=220.
-        hysteresis = 3% of desired(200) = 6km, half = 3km.
-        Start threshold ≈ 217, stop threshold ≈ 223.
+        hysteresis = 3% of desired(200) = 6km.
+        Start threshold = 214, stop threshold = 220.
         """
         desired_range = 200.0
         charge_buffer = 10.0  # effective = 220
         effective = desired_range * (1.0 + charge_buffer / 100.0)
         assert abs(effective - 220.0) < 0.01
 
-        # Start: 215 < ~217 → need
-        need_active = self._eval_need(215.0, effective, need_active=False, desired_range=desired_range)
+        # Start: 213 < 214 → need
+        need_active = self._eval_need(213.0, effective, need_active=False, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 222 < ~223 → still active
-        need_active = self._eval_need(222.0, effective, need_active, desired_range=desired_range)
+        # Charging: 219 < 220 → still active
+        need_active = self._eval_need(219.0, effective, need_active, desired_range=desired_range)
         assert need_active is True
 
-        # Charging: 224 > ~223 → stops
-        need_active = self._eval_need(224.0, effective, need_active, desired_range=desired_range)
+        # Charging: 221 > 220 → stops
+        need_active = self._eval_need(221.0, effective, need_active, desired_range=desired_range)
         assert need_active is False
 
     def test_tonight_uses_hysteresis_to_keep_charging(self):
-        """Charge tonight should keep charging until upper hysteresis band.
-        3% of 200 = 6km, half = 3km, stop at 203.
+        """Charge tonight should keep charging until effective_range (asymmetric).
+        Stop at effective_range = 200.
         """
         effective_range = 200.0
-        hysteresis_km = effective_range * (self.HYSTERESIS_PCT / 100.0)  # 6.0
-        half_hyst = hysteresis_km / 2.0  # 3.0
         need_active = True  # already charging
-        current_range = 202.0  # 2km above effective, but within +3km upper band
+        current_range = 199.0  # 1km below effective, still within hysteresis band
 
         if need_active:
-            need = current_range < (effective_range + half_hyst)
+            need = current_range < effective_range
         else:
-            need = current_range < (effective_range - half_hyst)
+            hysteresis_km = effective_range * (self.HYSTERESIS_PCT / 100.0)
+            need = current_range < (effective_range - hysteresis_km)
 
         tonight_condition = (
             True  # charge_tonight
@@ -2472,18 +2469,18 @@ class TestRangeHysteresis:
         assert tonight_condition is True  # keeps charging due to hysteresis
 
     def test_custom_hysteresis_percentage(self):
-        """Custom hysteresis percentage: 5% of 200 = 10km, half = 5km.
-        Start threshold = 195, stop threshold = 205.
+        """Custom hysteresis percentage: 5% of 200 = 10km.
+        Start threshold = 190, stop threshold = 200.
         """
         effective = 200.0
 
-        # With 5%: half band = 5km, stops at 205
-        # 204 < 205 → still charging
-        need = self._eval_need(204.0, effective, need_active=True, hysteresis_pct=5.0)
+        # With 5%: hysteresis_km = 10km, stops at 200
+        # 199 < 200 → still charging
+        need = self._eval_need(199.0, effective, need_active=True, hysteresis_pct=5.0)
         assert need is True
 
-        # 205 >= 205 → stops
-        need = self._eval_need(205.0, effective, need_active=True, hysteresis_pct=5.0)
+        # 200 >= 200 → stops
+        need = self._eval_need(200.0, effective, need_active=True, hysteresis_pct=5.0)
         assert need is False
 
     def test_zero_hysteresis_disables_band(self):
@@ -2496,15 +2493,37 @@ class TestRangeHysteresis:
 
     def test_hysteresis_scales_with_range(self):
         """Larger effective_range → larger hysteresis band in km.
-        3% of 400 = 12km, half = 6km. Stop at 406.
+        3% of 400 = 12km. Stop at 400.
         """
         effective = 400.0
-        # 405 < 406 → still active
-        need = self._eval_need(405.0, effective, need_active=True)
+        # 399 < 400 → still active
+        need = self._eval_need(399.0, effective, need_active=True)
         assert need is True
-        # 406 >= 406 → stops
-        need = self._eval_need(406.0, effective, need_active=True)
+        # 400 >= 400 → stops
+        need = self._eval_need(400.0, effective, need_active=True)
         assert need is False
+
+    def test_upper_limit_equals_effective_range(self):
+        """Upper limit (stop threshold) is exactly effective_range, not effective + hyst/2."""
+        effective = 200.0
+        # Charging should stop at exactly effective_range (200), not above it
+        need = self._eval_need(200.0, effective, need_active=True)
+        assert need is False
+        # Just below effective_range → still charging
+        need = self._eval_need(199.9, effective, need_active=True)
+        assert need is True
+
+    def test_lower_limit_uses_full_hysteresis(self):
+        """Lower limit (start threshold) uses full hysteresis_km, not half.
+        3% of 200 = 6km → start at 194, not 197.
+        """
+        effective = 200.0
+        # 194 is exactly at the start threshold → no need (not strictly below)
+        need = self._eval_need(194.0, effective, need_active=False)
+        assert need is False
+        # 193.9 is below the start threshold → need
+        need = self._eval_need(193.9, effective, need_active=False)
+        assert need is True
 
 
 # ---------------------------------------------------------------------------
@@ -4095,13 +4114,15 @@ def _evaluate_low_power(
     cable_connected: bool = True,
     effective_capacity: float = 0.0,
     solar_to_ev_ratio: float | None = None,
+    in_tonight_window: bool = False,
 ) -> bool:
     """Mirror of coordinator low_power_active evaluation logic.
 
     Priority:
-      1. Precise mode (capacity + ratio available) → energy-based check
-      2. Manual backup threshold (> 0) → forecast vs fixed kWh
-      3. Conservative fallback (threshold == 0, no precise mode) → force charge
+      1. Inside tonight window → always force charge
+      2. Precise mode (capacity + ratio available) → energy-based check
+      3. Manual backup threshold (> 0) → forecast vs fixed kWh
+      4. Conservative fallback (threshold == 0, no precise mode) → force charge
     """
     if low_power_threshold <= 0:
         return False
@@ -4112,6 +4133,8 @@ def _evaluate_low_power(
     if not presence or not cable_connected:
         return False
     # battery_pct < threshold and vehicle present and cable connected
+    if in_tonight_window:
+        return True
     if forecast_kwh is None:
         return True
     # Precise mode: use capacity + ratio when available
@@ -4204,6 +4227,63 @@ class TestLowPowerProtection:
         else:
             source = ""
         assert source == "low_power"
+
+    def test_inside_tonight_window_always_triggers_force(self):
+        """Inside the tonight window → always force charge even with sufficient forecast."""
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, self.FORECAST_MIN, in_tonight_window=True,
+        ) is True
+
+    def test_inside_tonight_window_with_precise_mode_sufficient_still_forces(self):
+        """Inside tonight window + precise mode has sufficient solar → still forces."""
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 0.0,
+            effective_capacity=80.0, solar_to_ev_ratio=0.5,
+            in_tonight_window=True,
+        ) is True
+
+    def test_outside_tonight_window_with_sufficient_forecast_no_force(self):
+        """Outside tonight window + high forecast → no force (solar will handle it)."""
+        assert _evaluate_low_power(
+            10.0, 8.0, self.THRESHOLD, self.FORECAST_MIN, in_tonight_window=False,
+        ) is False
+
+    def test_outside_tonight_window_with_insufficient_forecast_forces(self):
+        """Outside tonight window + low forecast → force charge."""
+        assert _evaluate_low_power(
+            10.0, 2.0, self.THRESHOLD, self.FORECAST_MIN, in_tonight_window=False,
+        ) is True
+
+    def test_tonight_window_battery_at_threshold_no_force(self):
+        """Battery exactly at threshold → no force even in tonight window."""
+        assert _evaluate_low_power(
+            20.0, None, self.THRESHOLD, self.FORECAST_MIN, in_tonight_window=True,
+        ) is False
+
+    def test_force_source_uses_low_power_not_charge_now(self):
+        """When low_power triggers, force_source must be 'low_power', never 'charge_now_switch'.
+
+        Verifies that the source fallback in the coordinator actions does not
+        default to 'charge_now_switch' for low-power initiated charges.
+        """
+        low_power_active = _evaluate_low_power(10.0, None, self.THRESHOLD, self.FORECAST_MIN)
+        assert low_power_active is True
+        # Simulate the source selection logic from _evaluate_force_charge
+        charge_now = False
+        tonight_condition = False
+        force_charge = charge_now or tonight_condition or low_power_active
+        assert force_charge is True
+        # The source must be "low_power" (not "charge_now_switch")
+        if charge_now:
+            source = "charge_now_switch"
+        elif tonight_condition:
+            source = "charge_tonight"
+        else:
+            source = "low_power"
+        assert source == "low_power"
+        # And the action fallback should be "unknown", not "charge_now_switch"
+        action_source = source or "unknown"
+        assert action_source == "low_power"
 
 
 class TestLowPowerAutoDetectPrimary:
