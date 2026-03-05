@@ -218,16 +218,20 @@ async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -
                 existing_ids.remove(um_entry_id)
                 continue
             # Check if this tracked entry matches the current cycle
-            if um_entry.data.get("cycle") == cycle and um_entry.data.get("source") == source_entity_id:
+            # SchemaConfigFlowHandler stores config in options, not data
+            um_cfg = {**um_entry.data, **um_entry.options}
+            if um_cfg.get("cycle") == cycle and um_cfg.get("source") == source_entity_id:
                 already_exists = True
                 break
 
         # Also scan all utility_meter entries to avoid creating duplicates
         if not already_exists:
             for existing_entry in hass.config_entries.async_entries(_UTILITY_METER_DOMAIN):
+                # SchemaConfigFlowHandler stores config in options, not data
+                ex_cfg = {**existing_entry.data, **existing_entry.options}
                 if (
-                    existing_entry.data.get("source") == source_entity_id
-                    and existing_entry.data.get("cycle") == cycle
+                    ex_cfg.get("source") == source_entity_id
+                    and ex_cfg.get("cycle") == cycle
                 ):
                     already_exists = True
                     if existing_entry.entry_id not in existing_ids:
