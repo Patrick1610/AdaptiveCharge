@@ -4501,7 +4501,7 @@ class TestPreciseLowPowerCheck:
 # ---------------------------------------------------------------------------
 
 # Mirror the constants from const.py used by _try_modulate
-_HYSTERESIS_UP = 1.0
+_HYSTERESIS_UP = 0.2
 _MAX_STEP_A = 1
 _COOLDOWN_UP_S = 45.0
 _SETTLING_DURATION_S = 10.0
@@ -4522,7 +4522,7 @@ def _simulate_ramp_up(
     - 1A max per step
     - 45s cooldown between upward steps
     - 10s settling window after each commit
-    - 1.0A hysteresis dead zone (requires delta >= 1.0A to trigger)
+    - 0.2A hysteresis dead zone (requires delta >= 0.2A to trigger)
     """
     current = start_a
     total_time = 0.0
@@ -4546,11 +4546,15 @@ def _simulate_ramp_up(
 class TestModulationRampUpRate:
     """Test that modulation ramp-up rate is correctly bounded.
 
-    The morning 'unused power' (~1 kW) is caused by the charger already
-    running but not stepping up fast enough as surplus increases.  The
-    rate limit is: max 1 A per step, 45 s cooldown between up-steps,
-    plus 10 s settling window after each commit — effectively one step
-    per ~45 s.  For 3-phase at 230 V, 1 A ≈ 690 W per step.
+    The morning 'unused power' is caused by the charger already running
+    but not stepping up fast enough as surplus increases.  The rate limit
+    is: max 1 A per step, 45 s cooldown between up-steps, plus 10 s
+    settling window after each commit — effectively one step per ~45 s.
+    For 3-phase at 230 V, 1 A ≈ 690 W per step.
+
+    The upward hysteresis (0.2 A) is intentionally small so that fractional
+    surplus above the committed setpoint is captured quickly — the EMA
+    filter and cooldown already prevent flapping.
     """
 
     def test_single_step_delay(self):
@@ -4565,15 +4569,23 @@ class TestModulationRampUpRate:
         assert steps == 4
         assert seconds >= 4 * _COOLDOWN_UP_S
 
-    def test_hysteresis_blocks_fractional_step(self):
-        """A delta < 1.0A is blocked by hysteresis — no step occurs."""
-        steps, seconds = _simulate_ramp_up(5.0, 5.5)
+    def test_hysteresis_blocks_tiny_delta(self):
+        """A delta < 0.2A is blocked by hysteresis — no step occurs."""
+        steps, seconds = _simulate_ramp_up(5.0, 5.1)
         assert steps == 0
         assert seconds == 0.0
 
-    def test_hysteresis_allows_exactly_1a(self):
-        """A delta of exactly 1.0A passes the hysteresis check."""
-        steps, seconds = _simulate_ramp_up(5.0, 6.0)
+    def test_hysteresis_allows_small_surplus(self):
+        """A delta of 0.5A (> 0.2A hysteresis) triggers a step-up.
+
+        With the old 1.0A hysteresis this surplus would have been wasted.
+        """
+        steps, seconds = _simulate_ramp_up(5.0, 5.5)
+        assert steps == 1
+
+    def test_hysteresis_allows_exactly_threshold(self):
+        """A delta of exactly 0.2A passes the hysteresis check."""
+        steps, seconds = _simulate_ramp_up(5.0, 5.2)
         assert steps == 1
 
     def test_full_ramp_0_to_16a(self):
@@ -4585,17 +4597,18 @@ class TestModulationRampUpRate:
     def test_ramp_up_power_gap_at_230v_3phase(self):
         """At 230V 3-phase, each pending step represents ~690W unused power.
 
-        If the EMA says 5A but committed is 3A, the 'gap' is 2 steps
-        = ~1380W of unused surplus waiting for cooldown to expire.
+        With 0.2A hysteresis, a 1.2A surplus triggers step-ups immediately
+        (only limited by cooldown), much better than the old 2.0A requirement.
+        The 1.2A gap is closed in 2 steps (1.0A + 0.2A) vs being entirely
+        blocked by the old 1.0A hysteresis.
         """
         voltage = 230.0
         w_per_amp = voltage * 3.0  # 690 W/A for 3-phase
         committed = 3.0
-        ema = 5.0
+        ema = 4.2  # 1.2A surplus — would have been blocked by old 1.0A hysteresis
         gap_a = ema - committed
         gap_w = gap_a * w_per_amp
-        # 2A gap at 690 W/A = 1380W — this is the ~1kW morning unused power
-        assert gap_w == pytest.approx(1380.0, abs=1.0)
+        assert gap_w == pytest.approx(828.0, abs=1.0)
         steps, delay = _simulate_ramp_up(committed, ema)
-        assert steps == 2
-        assert delay >= 2 * _COOLDOWN_UP_S  # At least 90 seconds to close gap
+        assert steps == 2  # 1.0A step + 0.2A step (both above 0.2A hysteresis)
+        assert delay >= 2 * _COOLDOWN_UP_S
