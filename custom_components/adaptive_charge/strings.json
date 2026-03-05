@@ -44,25 +44,39 @@
         }
       },
       "range": {
-        "title": "Charge Buffer, Hysteresis & Default Limit",
-        "description": "Set the charge buffer, range hysteresis, and the default charge limit to reset to when the car disconnects. Hysteresis must be ≤ buffer.",
+        "title": "Charge Targets & Low-Power Protection",
+        "description": "Configure charge buffer, range hysteresis, default charge limit, and low-power force-charge thresholds.",
         "data": {
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)",
-          "default_charge_limit": "Default Charge Limit (%)",
-          "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
-          "low_power_forecast_threshold_kwh": "Low Power Forecast Backup Threshold (kWh, 0 = auto-only)",
-          "battery_capacity_kwh": "Battery Capacity (kWh, 0 = use auto-detection)"
+          "default_charge_limit": "Default Charge Limit (%) — optional",
+          "low_power_threshold_pct": "Low Power SoC Threshold (%) — optional, 0 = disabled",
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh) — optional, 0 = auto-only",
+          "battery_capacity_kwh": "Battery Capacity (kWh) — optional, 0 = auto-detect"
+        },
+        "data_description": {
+          "charge_buffer": "Extra percentage to add above the desired range as a safety margin.",
+          "range_hysteresis_pct": "Prevents start/stop cycling by requiring the range to drop this much below the target before restarting. Must be ≤ buffer.",
+          "default_charge_limit": "The charge limit percentage to reset to when the vehicle disconnects.",
+          "low_power_threshold_pct": "Force-charge when battery SoC drops below this. Set to 0 to disable.",
+          "low_power_forecast_threshold_kwh": "Force-charge when today’s remaining solar forecast is below this value (kWh). 0 means auto-only (uses ratio-based calculation).",
+          "battery_capacity_kwh": "Your EV battery capacity in kWh. Used for precise forecast evaluation. 0 = rely on auto-detection from the vehicle."
         }
       },
       "surplus_settings": {
         "title": "Surplus Charging Thresholds & Current Limits",
-        "description": "Set surplus start/stop thresholds and the min/max charge current. Min current must be ≤ max current.",
+        "description": "Configure when surplus charging starts and stops, and the current range your charger supports.",
         "data": {
-          "surplus_start_threshold_a": "Surplus Start Threshold (A)",
-          "surplus_stop_threshold_a": "Surplus Stop Threshold (A)",
-          "min_current_limit": "Minimum Current (A)",
-          "max_current_limit": "Maximum Current (A)"
+          "surplus_start_threshold_a": "Surplus Start Threshold (A) — minimum surplus current to start charging",
+          "surplus_stop_threshold_a": "Surplus Stop Threshold (A) — surplus drops below this to stop",
+          "min_current_limit": "Minimum Current (A) — lowest current your charger accepts",
+          "max_current_limit": "Maximum Current (A) — highest current your charger supports"
+        },
+        "data_description": {
+          "surplus_start_threshold_a": "The charger turns on when available surplus exceeds this value. Must be ≥ stop threshold.",
+          "surplus_stop_threshold_a": "The charger turns off when surplus drops below this value. Must be ≤ start threshold.",
+          "min_current_limit": "The minimum charging current your charger hardware supports. Set to 0 to allow the controller to fully stop.",
+          "max_current_limit": "The maximum charging current your charger hardware supports."
         }
       },
       "charge_window": {
@@ -74,27 +88,46 @@
         }
       },
       "solar_optional": {
-        "title": "Solar & Forecast Sensors (Optional)",
-        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today). Enable the toggle to also configure 'Total Day Forecast' sensors for providers that only report the full-day total.",
+        "title": "Solar & Forecast Sensors",
+        "description": "Optional. Select solar generation sensor(s) and/or forecast sensors to enable solar-aware charging decisions.",
         "data": {
-          "solar_sensors": "Solar Sensor(s)",
-          "forecast_sensors": "Remaining Forecast Today Sensor(s)",
-          "show_forecast_total": "I also have Total Day Forecast sensors",
-          "forecast_total_sensors": "Total Day Forecast Sensor(s)"
+          "solar_sensors": "Solar Generation Sensor(s) — optional",
+          "forecast_sensors": "Remaining Forecast Today (kWh) — optional"
+        },
+        "data_description": {
+          "solar_sensors": "One or more sensors reporting current solar power output (W or kW).",
+          "forecast_sensors": "Sensors reporting remaining solar energy expected today in kWh (e.g. Solcast ‘remaining_today’)."
         }
       },
       "actuators_optional": {
-        "title": "Actuators (Optional)",
-        "description": "Optionally select the charge switch, charge current number, and charge limit number entities. The charge limit number controls the vehicle's charge limit percentage.",
+        "title": "Charger Control Entities",
+        "description": "Optional. Select the entities used to control your charger. Without these, the integration operates in monitor-only mode.",
         "data": {
-          "charge_switch": "Charge Switch",
-          "charge_current_number": "Charge Current Number",
-          "charge_limit_number": "Charge Limit Number (vehicle %)"
+          "charge_switch": "Charge Switch — optional",
+          "charge_current_number": "Charge Current Number — optional",
+          "charge_limit_number": "Charge Limit Number (vehicle %) — optional"
+        },
+        "data_description": {
+          "charge_switch": "Switch entity to start/stop the charger.",
+          "charge_current_number": "Number entity to set the charge current (A).",
+          "charge_limit_number": "Number entity to set the vehicle’s charge limit percentage."
+        }
+      },
+      "additional_options": {
+        "title": "Additional Options",
+        "description": "Enable optional features. Utility meters track energy over time periods. Advanced settings let you fine-tune the controller.",
+        "data": {
+          "enable_utility_meters": "Enable Utility Meters",
+          "show_advanced": "Show Advanced Settings"
+        },
+        "data_description": {
+          "enable_utility_meters": "Creates daily/monthly/yearly energy tracking sensors for the energy charged.",
+          "show_advanced": "Shows the advanced settings screen where you can tune timing and safety parameters."
         }
       },
       "advanced": {
         "title": "Advanced Settings",
-        "description": "Fine-tune timing parameters for the charging control algorithm.",
+        "description": "Fine-tune timing and safety parameters. These affect how quickly the controller reacts to changes in surplus power.",
         "data": {
           "smoothing_window": "Smoothing Window (s)",
           "sample_interval": "Sample Interval (s)",
@@ -105,17 +138,44 @@
           "modulate_min_interval": "Modulate Min Interval (s)",
           "import_guard_threshold_w": "Import Guard Threshold (W)",
           "import_guard_duration_s": "Import Guard Duration (s)",
-          "enable_utility_meters": "Enable Utility Meters"
+          "expert_mode": "Enable Expert Mode"
+        },
+        "data_description": {
+          "smoothing_window": "Time window in seconds for the EMA (exponential moving average) filter that smooths power readings.",
+          "sample_interval": "How often (in seconds) the controller evaluates power conditions.",
+          "solar_done_threshold": "Solar output (W) below which the system considers solar production finished for the day.",
+          "solar_done_duration": "How long (s) solar must stay below the threshold before declaring ‘solar done’.",
+          "start_delay": "Seconds to wait after conditions are met before starting the charger.",
+          "stop_delay": "Seconds to wait after conditions are lost before stopping the charger.",
+          "modulate_min_interval": "Minimum seconds between current adjustment commands.",
+          "import_guard_threshold_w": "Grid import power (W) that triggers the import guard safety mechanism.",
+          "import_guard_duration_s": "How long (s) import must exceed the threshold before the guard activates.",
+          "expert_mode": "⚠️ Enables an additional screen with low-level controller tuning parameters. Only change these if you understand modulation rate limiting."
+        }
+      },
+      "expert": {
+        "title": "⚠️ Expert Mode — Controller Tuning",
+        "description": "These parameters control the modulation rate limiter that prevents charger flapping. Incorrect values may cause unstable charging behavior, grid import spikes, or charger hardware issues. Only change these if you understand how they interact.",
+        "data": {
+          "max_step_a": "Max Step Size (A)",
+          "hysteresis_up": "Upward Hysteresis (A)",
+          "hysteresis_down": "Downward Hysteresis (A)",
+          "settling_duration_s": "Settling Duration (s)"
+        },
+        "data_description": {
+          "max_step_a": "Maximum current increase per modulation step. Higher = faster ramp-up but more aggressive. At 3-phase 230V, each A ≈ 690W.",
+          "hysteresis_up": "Minimum surplus above the current setpoint needed to trigger an upward step. Lower = more responsive but more sensitive to noise. Default 0.2A ≈ 138W at 3-phase 230V.",
+          "hysteresis_down": "Minimum deficit below the current setpoint needed to trigger a downward step. Higher = more conservative about reducing current. Default 1.0A ≈ 690W at 3-phase 230V.",
+          "settling_duration_s": "Seconds to wait after each current change before allowing another adjustment. Prevents self-induced measurement feedback loops."
         }
       },
       "utility_meters": {
         "title": "Utility Meter Periods",
-        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "description": "Select which periods to track.",
         "data": {
           "utility_daily": "Daily",
           "utility_monthly": "Monthly",
-          "utility_yearly": "Yearly",
-          "split_missed_solar": "Split Missed Solar Sensors"
+          "utility_yearly": "Yearly"
         }
       }
     },
@@ -179,25 +239,39 @@
         }
       },
       "range": {
-        "title": "Charge Buffer, Hysteresis & Default Limit",
-        "description": "Set the charge buffer, range hysteresis, and the default charge limit to reset to when the car disconnects. Hysteresis must be ≤ buffer.",
+        "title": "Charge Targets & Low-Power Protection",
+        "description": "Configure charge buffer, range hysteresis, default charge limit, and low-power force-charge thresholds.",
         "data": {
           "charge_buffer": "Charge Buffer (%)",
           "range_hysteresis_pct": "Range Hysteresis (%)",
-          "default_charge_limit": "Default Charge Limit (%)",
-          "low_power_threshold_pct": "Low Power Threshold (% SoC, 0 = disabled)",
-          "low_power_forecast_threshold_kwh": "Low Power Forecast Backup Threshold (kWh, 0 = auto-only)",
-          "battery_capacity_kwh": "Battery Capacity (kWh, 0 = use auto-detection)"
+          "default_charge_limit": "Default Charge Limit (%) — optional",
+          "low_power_threshold_pct": "Low Power SoC Threshold (%) — optional, 0 = disabled",
+          "low_power_forecast_threshold_kwh": "Low Power Forecast Threshold (kWh) — optional, 0 = auto-only",
+          "battery_capacity_kwh": "Battery Capacity (kWh) — optional, 0 = auto-detect"
+        },
+        "data_description": {
+          "charge_buffer": "Extra percentage to add above the desired range as a safety margin.",
+          "range_hysteresis_pct": "Prevents start/stop cycling by requiring the range to drop this much below the target before restarting. Must be ≤ buffer.",
+          "default_charge_limit": "The charge limit percentage to reset to when the vehicle disconnects.",
+          "low_power_threshold_pct": "Force-charge when battery SoC drops below this. Set to 0 to disable.",
+          "low_power_forecast_threshold_kwh": "Force-charge when today’s remaining solar forecast is below this value (kWh). 0 means auto-only (uses ratio-based calculation).",
+          "battery_capacity_kwh": "Your EV battery capacity in kWh. Used for precise forecast evaluation. 0 = rely on auto-detection from the vehicle."
         }
       },
       "surplus_settings": {
         "title": "Surplus Charging Thresholds & Current Limits",
-        "description": "Set surplus start/stop thresholds and the min/max charge current. Min current must be ≤ max current.",
+        "description": "Configure when surplus charging starts and stops, and the current range your charger supports.",
         "data": {
-          "surplus_start_threshold_a": "Surplus Start Threshold (A)",
-          "surplus_stop_threshold_a": "Surplus Stop Threshold (A)",
-          "min_current_limit": "Minimum Current (A)",
-          "max_current_limit": "Maximum Current (A)"
+          "surplus_start_threshold_a": "Surplus Start Threshold (A) — minimum surplus current to start charging",
+          "surplus_stop_threshold_a": "Surplus Stop Threshold (A) — surplus drops below this to stop",
+          "min_current_limit": "Minimum Current (A) — lowest current your charger accepts",
+          "max_current_limit": "Maximum Current (A) — highest current your charger supports"
+        },
+        "data_description": {
+          "surplus_start_threshold_a": "The charger turns on when available surplus exceeds this value. Must be ≥ stop threshold.",
+          "surplus_stop_threshold_a": "The charger turns off when surplus drops below this value. Must be ≤ start threshold.",
+          "min_current_limit": "The minimum charging current your charger hardware supports. Set to 0 to allow the controller to fully stop.",
+          "max_current_limit": "The maximum charging current your charger hardware supports."
         }
       },
       "charge_window": {
@@ -209,27 +283,46 @@
         }
       },
       "solar_optional": {
-        "title": "Solar & Forecast Sensors (Optional)",
-        "description": "Select one or more solar generation sensors and/or forecast sensors. Use 'Remaining Forecast Today' for sensors reporting kWh still expected today (e.g. Solcast remaining_today). Enable the toggle to also configure 'Total Day Forecast' sensors for providers that only report the full-day total.",
+        "title": "Solar & Forecast Sensors",
+        "description": "Optional. Select solar generation sensor(s) and/or forecast sensors to enable solar-aware charging decisions.",
         "data": {
-          "solar_sensors": "Solar Sensor(s)",
-          "forecast_sensors": "Remaining Forecast Today Sensor(s)",
-          "show_forecast_total": "I also have Total Day Forecast sensors",
-          "forecast_total_sensors": "Total Day Forecast Sensor(s)"
+          "solar_sensors": "Solar Generation Sensor(s) — optional",
+          "forecast_sensors": "Remaining Forecast Today (kWh) — optional"
+        },
+        "data_description": {
+          "solar_sensors": "One or more sensors reporting current solar power output (W or kW).",
+          "forecast_sensors": "Sensors reporting remaining solar energy expected today in kWh (e.g. Solcast ‘remaining_today’)."
         }
       },
       "actuators_optional": {
-        "title": "Actuators (Optional)",
-        "description": "Optionally select the charge switch, charge current number, and charge limit number entities. The charge limit number controls the vehicle's charge limit percentage.",
+        "title": "Charger Control Entities",
+        "description": "Optional. Select the entities used to control your charger. Without these, the integration operates in monitor-only mode.",
         "data": {
-          "charge_switch": "Charge Switch",
-          "charge_current_number": "Charge Current Number",
-          "charge_limit_number": "Charge Limit Number (vehicle %)"
+          "charge_switch": "Charge Switch — optional",
+          "charge_current_number": "Charge Current Number — optional",
+          "charge_limit_number": "Charge Limit Number (vehicle %) — optional"
+        },
+        "data_description": {
+          "charge_switch": "Switch entity to start/stop the charger.",
+          "charge_current_number": "Number entity to set the charge current (A).",
+          "charge_limit_number": "Number entity to set the vehicle’s charge limit percentage."
+        }
+      },
+      "additional_options": {
+        "title": "Additional Options",
+        "description": "Enable optional features. Utility meters track energy over time periods. Advanced settings let you fine-tune the controller.",
+        "data": {
+          "enable_utility_meters": "Enable Utility Meters",
+          "show_advanced": "Show Advanced Settings"
+        },
+        "data_description": {
+          "enable_utility_meters": "Creates daily/monthly/yearly energy tracking sensors for the energy charged.",
+          "show_advanced": "Shows the advanced settings screen where you can tune timing and safety parameters."
         }
       },
       "advanced": {
         "title": "Advanced Settings",
-        "description": "Fine-tune timing parameters for the charging control algorithm.",
+        "description": "Fine-tune timing and safety parameters. These affect how quickly the controller reacts to changes in surplus power.",
         "data": {
           "smoothing_window": "Smoothing Window (s)",
           "sample_interval": "Sample Interval (s)",
@@ -240,17 +333,44 @@
           "modulate_min_interval": "Modulate Min Interval (s)",
           "import_guard_threshold_w": "Import Guard Threshold (W)",
           "import_guard_duration_s": "Import Guard Duration (s)",
-          "enable_utility_meters": "Enable Utility Meters"
+          "expert_mode": "Enable Expert Mode"
+        },
+        "data_description": {
+          "smoothing_window": "Time window in seconds for the EMA (exponential moving average) filter that smooths power readings.",
+          "sample_interval": "How often (in seconds) the controller evaluates power conditions.",
+          "solar_done_threshold": "Solar output (W) below which the system considers solar production finished for the day.",
+          "solar_done_duration": "How long (s) solar must stay below the threshold before declaring ‘solar done’.",
+          "start_delay": "Seconds to wait after conditions are met before starting the charger.",
+          "stop_delay": "Seconds to wait after conditions are lost before stopping the charger.",
+          "modulate_min_interval": "Minimum seconds between current adjustment commands.",
+          "import_guard_threshold_w": "Grid import power (W) that triggers the import guard safety mechanism.",
+          "import_guard_duration_s": "How long (s) import must exceed the threshold before the guard activates.",
+          "expert_mode": "⚠️ Enables an additional screen with low-level controller tuning parameters. Only change these if you understand modulation rate limiting."
+        }
+      },
+      "expert": {
+        "title": "⚠️ Expert Mode — Controller Tuning",
+        "description": "These parameters control the modulation rate limiter that prevents charger flapping. Incorrect values may cause unstable charging behavior, grid import spikes, or charger hardware issues. Only change these if you understand how they interact.",
+        "data": {
+          "max_step_a": "Max Step Size (A)",
+          "hysteresis_up": "Upward Hysteresis (A)",
+          "hysteresis_down": "Downward Hysteresis (A)",
+          "settling_duration_s": "Settling Duration (s)"
+        },
+        "data_description": {
+          "max_step_a": "Maximum current increase per modulation step. Higher = faster ramp-up but more aggressive. At 3-phase 230V, each A ≈ 690W.",
+          "hysteresis_up": "Minimum surplus above the current setpoint needed to trigger an upward step. Lower = more responsive but more sensitive to noise. Default 0.2A ≈ 138W at 3-phase 230V.",
+          "hysteresis_down": "Minimum deficit below the current setpoint needed to trigger a downward step. Higher = more conservative about reducing current. Default 1.0A ≈ 690W at 3-phase 230V.",
+          "settling_duration_s": "Seconds to wait after each current change before allowing another adjustment. Prevents self-induced measurement feedback loops."
         }
       },
       "utility_meters": {
         "title": "Utility Meter Periods",
-        "description": "Select which periods to track and whether to split missed solar by cause.",
+        "description": "Select which periods to track.",
         "data": {
           "utility_daily": "Daily",
           "utility_monthly": "Monthly",
-          "utility_yearly": "Yearly",
-          "split_missed_solar": "Split Missed Solar Sensors"
+          "utility_yearly": "Yearly"
         }
       }
     }
@@ -287,18 +407,6 @@
       "energy_charged_kwh": {
         "name": "Energy Charged (kWh)"
       },
-      "missed_solar_kwh": {
-        "name": "Missed Solar (kWh)"
-      },
-      "missed_solar_absence_kwh": {
-        "name": "Missed Solar Absence (kWh)"
-      },
-      "missed_solar_cable_kwh": {
-        "name": "Missed Solar Cable (kWh)"
-      },
-      "missed_solar_low_surplus_kwh": {
-        "name": "Missed Solar Low Surplus (kWh)"
-      },
       "definitive_range_km": {
         "name": "Definitive Range (km)"
       },
@@ -310,45 +418,6 @@
       },
       "energy_charged_yearly": {
         "name": "Energy Charged Yearly (kWh)"
-      },
-      "missed_solar_daily": {
-        "name": "Missed Solar Daily (kWh)"
-      },
-      "missed_solar_monthly": {
-        "name": "Missed Solar Monthly (kWh)"
-      },
-      "missed_solar_yearly": {
-        "name": "Missed Solar Yearly (kWh)"
-      },
-      "missed_solar_absence_daily": {
-        "name": "Missed Solar Absence Daily (kWh)"
-      },
-      "missed_solar_absence_monthly": {
-        "name": "Missed Solar Absence Monthly (kWh)"
-      },
-      "missed_solar_absence_yearly": {
-        "name": "Missed Solar Absence Yearly (kWh)"
-      },
-      "missed_solar_cable_daily": {
-        "name": "Missed Solar Cable Daily (kWh)"
-      },
-      "missed_solar_cable_monthly": {
-        "name": "Missed Solar Cable Monthly (kWh)"
-      },
-      "missed_solar_cable_yearly": {
-        "name": "Missed Solar Cable Yearly (kWh)"
-      },
-      "missed_solar_low_surplus_daily": {
-        "name": "Missed Solar Low Surplus Daily (kWh)"
-      },
-      "missed_solar_low_surplus_monthly": {
-        "name": "Missed Solar Low Surplus Monthly (kWh)"
-      },
-      "missed_solar_low_surplus_yearly": {
-        "name": "Missed Solar Low Surplus Yearly (kWh)"
-      },
-      "solar_to_ev_ratio": {
-        "name": "Solar to EV Ratio"
       }
     },
     "binary_sensor": {
