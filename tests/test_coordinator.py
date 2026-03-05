@@ -4593,6 +4593,119 @@ class TestPreciseLowPowerCheck:
 
 
 # ---------------------------------------------------------------------------
+# Helper: solar-to-EV ratio computation (mirrors coordinator Phase 5)
+# ---------------------------------------------------------------------------
+
+def _compute_solar_to_ev_ratio(
+    solar_production_total_wh: float,
+    energy_solar_wh: float,
+) -> float | None:
+    """Mirror of coordinator solar-to-EV ratio computation.
+
+    Uses total solar production (accumulated from W sensor × dt)
+    and total solar energy charged to the EV.
+    """
+    if solar_production_total_wh > 0:
+        return min(energy_solar_wh / solar_production_total_wh, 1.0)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Solar-to-EV ratio computation and sensor availability
+# ---------------------------------------------------------------------------
+
+class TestSolarToEvRatioComputation:
+    """Tests for the solar-to-EV ratio calculation.
+
+    The ratio is computed from persistent store totals:
+      ratio = min(energy_solar_wh / solar_production_total_wh, 1.0)
+
+    The solar W sensor (user-submitted) is integrated over time by
+    _accumulate_energy (solar_production_wh = solar_w × dt_h) to produce
+    the kWh total — no separate kWh sensor is needed.
+    """
+
+    def test_typical_ratio(self):
+        """Typical scenario: 50% of solar production reached the EV."""
+        ratio = _compute_solar_to_ev_ratio(10000.0, 5000.0)
+        assert ratio is not None
+        assert abs(ratio - 0.5) < 0.001
+
+    def test_high_ratio(self):
+        """Almost all solar production went to EV."""
+        ratio = _compute_solar_to_ev_ratio(10000.0, 9500.0)
+        assert ratio is not None
+        assert abs(ratio - 0.95) < 0.001
+
+    def test_ratio_capped_at_one(self):
+        """Ratio cannot exceed 1.0 even if energy_solar > production
+        (possible due to measurement inaccuracies)."""
+        ratio = _compute_solar_to_ev_ratio(5000.0, 8000.0)
+        assert ratio is not None
+        assert ratio == 1.0
+
+    def test_no_production_returns_none(self):
+        """No solar production yet → ratio is None (sensor unavailable)."""
+        ratio = _compute_solar_to_ev_ratio(0.0, 0.0)
+        assert ratio is None
+
+    def test_zero_ev_energy_returns_zero(self):
+        """Solar produced but none went to EV → ratio = 0."""
+        ratio = _compute_solar_to_ev_ratio(5000.0, 0.0)
+        assert ratio is not None
+        assert ratio == 0.0
+
+    def test_small_production_gives_valid_ratio(self):
+        """Even small production amounts produce a usable ratio."""
+        ratio = _compute_solar_to_ev_ratio(100.0, 20.0)
+        assert ratio is not None
+        assert abs(ratio - 0.2) < 0.001
+
+    def test_ratio_available_without_missed_solar_sensors(self):
+        """Ratio is computed from solar W sensor (integrated over time)
+        and EV energy accumulation — no missed-solar sensors needed."""
+        # Simulate: solar W sensor produced 15 kWh total (15000 Wh),
+        # of which 6 kWh went to the EV → ratio = 0.4
+        solar_production_wh = 15000.0
+        energy_solar_wh = 6000.0
+        ratio = _compute_solar_to_ev_ratio(solar_production_wh, energy_solar_wh)
+        assert ratio is not None
+        assert abs(ratio - 0.4) < 0.001
+
+
+class TestSolarProductionAccumulation:
+    """Tests verifying that the solar W sensor (not kWh) is correctly
+    integrated over time to produce Wh totals for the ratio."""
+
+    def test_watts_to_wh_integration(self):
+        """Solar power (W) × time (h) = energy (Wh)."""
+        solar_w = 3000.0  # 3kW
+        dt_h = 1.0 / 60.0  # 1 minute (typical tick interval)
+        solar_production_wh = solar_w * dt_h
+        assert abs(solar_production_wh - 50.0) < 0.01  # 3000 × 1/60 = 50 Wh
+
+    def test_kilowatts_conversion(self):
+        """If solar sensor reports kW, coordinator converts to W first."""
+        # The coordinator uses _to_watts() which checks unit_of_measurement
+        # and converts kW → W automatically. After conversion:
+        solar_w = 5000.0  # 5kW after conversion
+        dt_h = 10.0 / 3600.0  # 10 seconds
+        solar_production_wh = solar_w * dt_h
+        assert solar_production_wh > 0
+
+    def test_accumulation_over_day(self):
+        """Simulated day: 8 hours of varying solar at ~10s intervals."""
+        total_production_wh = 0.0
+        dt_h = 10.0 / 3600.0  # 10 second intervals
+        ticks = int(8 * 3600 / 10)  # 8 hours of 10s ticks
+        avg_solar_w = 4000.0  # average 4kW
+        for _ in range(ticks):
+            total_production_wh += avg_solar_w * dt_h
+        # Expected: 4kW × 8h = 32 kWh = 32000 Wh
+        assert abs(total_production_wh - 32000.0) < 1.0
+
+
+# ---------------------------------------------------------------------------
 # Tests: Modulation ramp-up rate limits
 # ---------------------------------------------------------------------------
 

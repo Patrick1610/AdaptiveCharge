@@ -550,6 +550,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Phase 9: Build data dict ---
         data = self._build_data_dict(
             sensor_data, analysis, force_data, display_ema, display_available, now,
+            solar_to_ev_ratio,
         )
 
         self.async_set_updated_data(data)
@@ -1089,6 +1090,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         display_ema: float,
         display_available: float,
         now: datetime,
+        solar_to_ev_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]
@@ -1232,6 +1234,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "solar_production_kwh": round(self._solar_production_wh / 1000.0, 3),
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "estimated_battery_capacity_kwh": round(self._estimated_battery_capacity_kwh, 2),
+            # --- Solar-to-EV ratio ---
+            "solar_to_ev_ratio": (
+                round(solar_to_ev_ratio, 4) if solar_to_ev_ratio is not None else None
+            ),
         }
 
     # ------------------------------------------------------------------

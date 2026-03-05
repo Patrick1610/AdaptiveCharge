@@ -51,6 +51,8 @@ async def async_setup_entry(
         VersionSensor(coordinator, entry),
         # Energy tracking
         EnergyChargedSensor(coordinator, entry),
+        # Solar-to-EV ratio (used by low-power protection)
+        SolarToEvRatioSensor(coordinator, entry),
         # Range thresholds
         RangeUpperLimitSensor(coordinator, entry),
         RangeLowerLimitSensor(coordinator, entry),
@@ -463,6 +465,45 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             "session_solar_kwh": data.get("energy_session_solar_kwh", 0.0),
             "session_import_kwh": data.get("energy_session_import_kwh", 0.0),
             "battery_pct": data.get("battery_pct"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Solar-to-EV ratio sensor
+# ---------------------------------------------------------------------------
+
+class SolarToEvRatioSensor(_BaseAdaptiveChargeSensor):
+    """Lifetime ratio of solar energy that reached the EV vs total solar produced.
+
+    Computed as: energy_solar_wh / solar_production_total_wh (capped at 1.0).
+    Used internally by low-power protection to estimate how much of the remaining
+    solar forecast will actually reach the car.
+    """
+
+    _attr_name = "Solar to EV Ratio"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:solar-power-variant"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_solar_to_ev_ratio"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("solar_to_ev_ratio")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "energy_solar_kwh": data.get("energy_solar_kwh", 0.0),
+            "solar_production_kwh": data.get("solar_production_kwh", 0.0),
+            "low_power_active": data.get("low_power_active"),
+            "low_power_threshold_pct": data.get("low_power_threshold_pct"),
         }
 
 
