@@ -533,6 +533,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 import_safety=import_guard_triggered,
                 coherence=analysis["coherence"],
                 control_reason=analysis["control_reason"],
+                cable_connected=sensor_data["cable_connected"],
             )
 
         self._last_raw_floored = analysis["raw_floored"]
@@ -1328,6 +1329,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         import_safety: bool,
         coherence: float,
         control_reason: str,
+        cable_connected: bool | None = None,
     ) -> None:
         """Evaluate and schedule control actions."""
         force_changed = force_charge != self._force_charge_prev
@@ -1401,6 +1403,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Start surplus charging ---
         if ema_current >= self._surplus_start_threshold_a and not self._charging_on:
+            # Don't start when cable is known to be disconnected
+            if cable_connected is False:
+                _LOGGER.debug(
+                    "AdaptiveCharge: surplus start blocked — cable not connected "
+                    "(ema=%.2fA threshold=%.1fA)",
+                    ema_current, self._surplus_start_threshold_a,
+                )
+                return
             # Respect min-off time
             if self._last_off_time is not None:
                 off_elapsed = mono_now - self._last_off_time
