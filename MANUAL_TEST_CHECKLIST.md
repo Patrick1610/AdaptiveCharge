@@ -171,11 +171,43 @@ For each entity below, confirm it is available and has a sensible value:
 
 ---
 
+## 14. Reload Stability — Energy Charged & Utility Meters
+
+- [ ] While charging is active (Energy Charged sensor showing e.g. 0.3 kWh):
+  - [ ] Reload the AdaptiveCharge integration via **Settings → Devices & Services → ⋮ → Reload**
+  - [ ] **Energy Charged** sensor never dips below its pre-reload value — no brief 0 or lower value visible in the history graph
+  - [ ] Daily / Monthly / Yearly utility meters do **not** jump up after the reload
+  - [ ] **Solar to EV Ratio** sensor stays at its pre-reload value throughout the reload
+
+---
+
+## 15. Live Charging Overhead
+
+- [ ] Configure the **EV Battery Energy Sensor** in integration options
+- [ ] Plug in the EV and let at least 0.5 kWh charge
+- [ ] Observe **Charging Overhead** sensor — it should update live (every 10–30 s depending on the EV sensor's update cadence)
+- [ ] Unplug the cable:
+  - [ ] **Charging Overhead** reverts to showing the lifetime rolling average from completed sessions only
+  - [ ] No double-count: the overhead % should not spike on disconnect
+
+---
+
+## 16. Expert Mode Entity Enabling
+
+- [ ] Enable **Expert Mode** in integration options (reconfigure flow)
+  - [ ] **Alignment Diagnostics** sensor becomes visible and shows data
+  - [ ] **Input Skew** sensor becomes visible and shows data
+- [ ] Disable **Expert Mode** in integration options
+  - [ ] Both sensors remain enabled — they are NOT automatically disabled
+  - [ ] Sensors can still be manually disabled via **Settings → Devices & Services → AdaptiveCharge → Entities**
+
+---
+
 ## Tests Run (automated)
 
 ```
 pytest tests/ -v
-232 passed in 0.28s
+628 passed in 0.83s
 ```
 
 All tests cover:
@@ -194,6 +226,9 @@ All tests cover:
 - **NEW**: Mode reason tracking (mode_reason, mode_source, mode_since, last_transition)
 - **NEW**: Charge Tonight auto-off (cable unplug, solar_done on→off)
 - **NEW**: Import guard state tracking (ok/reducing/stopped)
+- **NEW**: Energy counters restored from store before first tick (no 0-drop on reload)
+- **NEW**: Live charging overhead blended from current session + lifetime store
+- **NEW**: Expert mode entity enabling logic (integration-disabled only, user prefs respected)
 
 ## Simulation Scenarios
 
