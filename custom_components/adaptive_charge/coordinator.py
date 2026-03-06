@@ -133,6 +133,9 @@ from .const import (
     MODE_NET_ONLY,
     MODE_STOPPED,
     MODE_SURPLUS,
+    CONF_PRIORITY_BIAS_W,
+    DEFAULT_PRIORITY_BIAS_W,
+    PRIORITY_BALANCE,
     PRIORITY_EXPORT,
     PRIORITY_IMPORT,
     PRIORITY_ZERO_PREFER_EXPORT,
@@ -252,6 +255,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._hysteresis_up: float = float(options.get(CONF_HYSTERESIS_UP, DEFAULT_HYSTERESIS_UP))
         self._hysteresis_down: float = float(options.get(CONF_HYSTERESIS_DOWN, DEFAULT_HYSTERESIS_DOWN))
         self._settling_duration_s: float = float(options.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S))
+        self._priority_bias_w: float = float(options.get(CONF_PRIORITY_BIAS_W, DEFAULT_PRIORITY_BIAS_W))
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -286,8 +290,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Master controller switch — default OFF for safe first install
         self._controller_enabled: bool = False
 
-        # Charging priority mode — controls surplus offset and import guard behaviour
-        self._charging_priority: str = PRIORITY_ZERO_PREFER_EXPORT
+        # Charging priority mode — controls current bias and import guard behaviour
+        self._charging_priority: str = PRIORITY_BALANCE
 
         # Control state
         self._charging_on: bool = False
@@ -684,17 +688,21 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         Applied AFTER the surplus/EMA calculation so surplus_w and the displayed
         ema_current_a remain clean for monitoring purposes.
 
-          zero_prefer_import  → +0.72 A (≈ 500 W at 230 V 3-phase): allows the
-                                controller to start charging and to modulate upward
-                                even when the actual surplus is slightly below zero,
-                                targeting ~500 W of deliberate grid import.
-          zero_prefer_export  → 0 A (default, no bias — aim for 0 W net)
+          balance             → 0 A (default — aim for exactly 0 W net, pure surplus)
+          zero_prefer_import  → +bias A: controller starts/modulates even when the
+                                actual surplus is slightly below zero, targeting
+                                ~priority_bias_w of deliberate grid import.
+          zero_prefer_export  → −bias A: controller requires an actual surplus above
+                                the bias before starting/modulating, targeting
+                                ~priority_bias_w of grid export above the start point.
           export_priority     → 0 A (surplus charging blocked in control logic)
           import_priority     → 0 A (handled via force charge path, not bias)
         """
+        bias_a = self._priority_bias_w / (230.0 * 3.0)
         if self._charging_priority == PRIORITY_ZERO_PREFER_IMPORT:
-            # Target ~500 W of deliberate grid import: 500 W / (230 V × 3 phases) ≈ 0.72 A
-            return 500.0 / (230.0 * 3.0)
+            return bias_a
+        if self._charging_priority == PRIORITY_ZERO_PREFER_EXPORT:
+            return -bias_a
         return 0.0
 
     def _analyze_measurements(

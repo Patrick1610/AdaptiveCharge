@@ -11,6 +11,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     DOMAIN,
+    PRIORITY_BALANCE,
     PRIORITY_EXPORT,
     PRIORITY_IMPORT,
     PRIORITY_ZERO_PREFER_EXPORT,
@@ -22,6 +23,7 @@ from .helpers import device_info, get_version
 _LOGGER = logging.getLogger(__name__)
 
 _PRIORITY_OPTIONS = [
+    PRIORITY_BALANCE,
     PRIORITY_ZERO_PREFER_EXPORT,
     PRIORITY_ZERO_PREFER_IMPORT,
     PRIORITY_EXPORT,
@@ -47,8 +49,9 @@ class ChargingPrioritySelect(RestoreEntity, SelectEntity):
     """Select entity to choose the charging priority mode.
 
     Options:
-      zero_prefer_export  — balance near 0 W, prefer slight export (default)
-      zero_prefer_import  — balance near 0 W, allow slight import (~500 W)
+      balance             — aim for exactly 0 W net (pure surplus, original default)
+      zero_prefer_export  — require surplus above the bias before starting; prefers export
+      zero_prefer_import  — allow slight import as neutral; bias toward charging
       export_priority     — don't charge at all; maximise grid export
       import_priority     — charge at maximum current regardless of solar
     """
@@ -71,7 +74,7 @@ class ChargingPrioritySelect(RestoreEntity, SelectEntity):
         state = await self.async_get_last_state()
         if state is not None and state.state in _PRIORITY_OPTIONS:
             self._coordinator.set_charging_priority(state.state)
-        # Default is already PRIORITY_ZERO_PREFER_EXPORT (set in coordinator __init__)
+        # Default is already PRIORITY_BALANCE (set in coordinator __init__)
 
     @property
     def current_option(self) -> str:

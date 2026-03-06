@@ -5367,38 +5367,58 @@ class TestLiveChargingOverhead:
 # Tests: Charging priority current bias and control behaviour
 # ---------------------------------------------------------------------------
 
+PRIORITY_BALANCE = "balance"
 PRIORITY_ZERO_PREFER_EXPORT = "zero_prefer_export"
 PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
 PRIORITY_EXPORT = "export_priority"
 PRIORITY_IMPORT = "import_priority"
 
+_DEFAULT_BIAS_W = 500.0
 
-def _priority_current_bias_a(priority: str) -> float:
+
+def _priority_current_bias_a(priority: str, bias_w: float = _DEFAULT_BIAS_W) -> float:
     """Mirror of coordinator._get_priority_current_bias_a.
 
     Returns amps to add to the EMA current for control logic only.
     Surplus is NOT affected — monitoring stays clean.
+      balance            → 0 A (pure surplus, exact 0 W net aim)
+      zero_prefer_import → +bias_w / (230 × 3): start/modulate even with slight import
+      zero_prefer_export → −bias_w / (230 × 3): require surplus above bias before reacting
+      export_priority    → 0 A (blocked in control logic)
+      import_priority    → 0 A (force-charge path)
     """
+    bias_a = bias_w / (230.0 * 3.0)
     if priority == PRIORITY_ZERO_PREFER_IMPORT:
-        return 500.0 / (230.0 * 3.0)  # ≈ 0.72 A
+        return bias_a
+    if priority == PRIORITY_ZERO_PREFER_EXPORT:
+        return -bias_a
     return 0.0
 
 
-def apply_priority_bias(ema_a: float, priority: str, max_a: int = 16) -> float:
+def apply_priority_bias(ema_a: float, priority: str, bias_w: float = _DEFAULT_BIAS_W, max_a: int = 16) -> float:
     """Apply priority current bias and clamp to [0, max_a]."""
-    biased = ema_a + _priority_current_bias_a(priority)
+    biased = ema_a + _priority_current_bias_a(priority, bias_w)
     return min(max(biased, 0.0), float(max_a))
 
 
 class TestChargingPriorityCurrentBias:
     """Verify that surplus is kept clean and only the control current is biased."""
 
-    def test_zero_prefer_export_has_no_bias(self):
-        assert _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT) == 0.0
+    def test_balance_has_no_bias(self):
+        assert _priority_current_bias_a(PRIORITY_BALANCE) == 0.0
+
+    def test_zero_prefer_export_has_negative_bias(self):
+        bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT)
+        assert abs(bias - (-500.0 / (230.0 * 3.0))) < 1e-6
 
     def test_zero_prefer_import_has_positive_bias(self):
         bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT)
         assert abs(bias - 500.0 / (230.0 * 3.0)) < 1e-6
+
+    def test_prefer_export_and_prefer_import_are_symmetric(self):
+        export_bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT)
+        import_bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT)
+        assert abs(export_bias + import_bias) < 1e-9
 
     def test_export_priority_has_no_bias(self):
         """export_priority blocks surplus in control logic, not via current bias."""
@@ -5411,11 +5431,15 @@ class TestChargingPriorityCurrentBias:
     def test_unknown_priority_defaults_to_zero(self):
         assert _priority_current_bias_a("unknown_mode") == 0.0
 
+    def test_configurable_bias_w(self):
+        """Bias is proportional to priority_bias_w config value."""
+        bias_200 = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT, bias_w=200.0)
+        assert abs(bias_200 - 200.0 / (230.0 * 3.0)) < 1e-9
+
     def test_surplus_is_unaffected_by_priority(self):
         """Surplus calculation does NOT include any priority offset."""
-        # Same surplus regardless of priority — monitoring stays clean
         s = compute_surplus(-1000.0, 0.0)
-        for prio in [PRIORITY_ZERO_PREFER_EXPORT, PRIORITY_ZERO_PREFER_IMPORT,
+        for prio in [PRIORITY_BALANCE, PRIORITY_ZERO_PREFER_EXPORT, PRIORITY_ZERO_PREFER_IMPORT,
                      PRIORITY_EXPORT, PRIORITY_IMPORT]:
             assert compute_surplus(-1000.0, 0.0) == s
 
@@ -5423,12 +5447,17 @@ class TestChargingPriorityCurrentBias:
 class TestChargingPriorityControlEffect:
     """Verify priority modes affect the controller correctly without polluting monitoring."""
 
+    def test_balance_does_not_affect_control_current(self):
+        """balance mode passes raw ema straight through."""
+        raw = compute_raw_current(compute_surplus(-1000.0, 0.0), 230.0)
+        assert apply_priority_bias(raw, PRIORITY_BALANCE) == min(max(raw, 0.0), 16.0)
+
     def test_zero_prefer_import_enables_charging_on_slight_import(self):
         """zero_prefer_import allows charging when net is slightly positive (import).
 
         Without bias: ema = -0.5A → no start. With bias: ~0.22A → can start.
         """
-        # Net importing 300 W → surplus = -300 W → raw = -0.43 A → ema ≈ -0.43 A
+        # Net importing 300 W → surplus = -300 W → raw = -0.43 A
         raw_current_a = compute_raw_current(compute_surplus(300.0, 0.0), 230.0)
         ema_unbiased = max(raw_current_a, 0.0)  # 0.0 after floor
         assert ema_unbiased == 0.0
@@ -5437,10 +5466,20 @@ class TestChargingPriorityControlEffect:
         biased = apply_priority_bias(raw_current_a, PRIORITY_ZERO_PREFER_IMPORT)
         assert biased > 0.0
 
-    def test_zero_prefer_export_surplus_unchanged(self):
-        """zero_prefer_export applies no bias — exact same result as no priority."""
-        raw = compute_raw_current(compute_surplus(-1500.0, 0.0), 230.0)
-        assert apply_priority_bias(raw, PRIORITY_ZERO_PREFER_EXPORT) == max(min(raw, 16.0), 0.0)
+    def test_zero_prefer_export_requires_extra_surplus_before_charging(self):
+        """zero_prefer_export needs >bias_w of surplus before controller acts.
+
+        e.g. 300 W actual surplus → raw ≈ +0.43 A, but after −0.72 A bias → 0 A.
+        """
+        # 300 W surplus → raw ≈ 0.43 A; bias = −0.72 A → net = −0.29 A → clamped 0
+        raw_current_a = compute_raw_current(compute_surplus(-300.0, 0.0), 230.0)
+        biased = apply_priority_bias(raw_current_a, PRIORITY_ZERO_PREFER_EXPORT)
+        assert biased == 0.0
+
+        # 800 W surplus → raw ≈ 1.16 A; after −0.72 A bias → 0.44 A → control starts
+        raw_large = compute_raw_current(compute_surplus(-800.0, 0.0), 230.0)
+        biased_large = apply_priority_bias(raw_large, PRIORITY_ZERO_PREFER_EXPORT)
+        assert biased_large > 0.0
 
     def test_bias_is_clamped_to_max(self):
         """Biased current is capped to max_a (16A)."""
@@ -5449,7 +5488,6 @@ class TestChargingPriorityControlEffect:
 
     def test_import_priority_uses_force_charge(self):
         """import_priority should trigger force charge — reflected as import_priority force source."""
-        # Simulate the _evaluate_force_charge logic for import_priority
         charge_now = False
         tonight_condition = False
         low_power_active = False
@@ -5469,5 +5507,4 @@ class TestChargingPriorityControlEffect:
     def test_export_priority_does_not_affect_surplus(self):
         """export_priority keeps surplus unchanged — control logic handles the block."""
         surplus = compute_surplus(-3000.0, 0.0)
-        # surplus is determined only by net_w and ev_w — priority has no effect here
         assert surplus == 3000.0
