@@ -372,6 +372,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._solar_production_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
+        # --- Solar capture factor (operational control) ---
+        # Rolling EMA of (session_solar_wh / session_solar_production_wh) per
+        # completed charging session.  Used by low-power forecast logic instead
+        # of the lifetime solar-to-EV ratio KPI, so short-term capture
+        # efficiency (clouds, shading, panel degradation) is reflected faster.
+        self._solar_capture_factor: float = 0.0
+        # Per-session solar production accumulation for capture factor.
+        self._session_solar_production_wh: float = 0.0
+
         # --- EV battery-side energy tracking ---
         # Snapshot of EV battery energy remaining at session start (kWh).
         self._session_start_battery_kwh: float | None = None
@@ -450,6 +459,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Restore solar production total so the solar_production_kwh attribute
         # is also correct from the first tick (used by SolarToEvRatioSensor).
         self._solar_production_wh = self._store.get("solar_production_total_wh")
+        # Restore rolling solar capture factor for low-power forecast logic.
+        stored_capture = self._store.get("solar_capture_factor")
+        if stored_capture > 0:
+            self._solar_capture_factor = stored_capture
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -496,6 +509,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._pending_task.cancel()
         if self._pending_modulate_task and not self._pending_modulate_task.done():
             self._pending_modulate_task.cancel()
+        # Best-effort session finalization on shutdown so capacity/overhead/
+        # capture factor are persisted even if the cable is never unplugged.
+        self._finalize_session_if_needed("shutdown")
         # Flush persistent counters to disk on shutdown
         await self._store.async_save()
 
@@ -600,6 +616,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 coherence=analysis["coherence"],
                 control_reason=analysis["control_reason"],
                 cable_connected=sensor_data["cable_connected"],
+                net_power_valid=sensor_data["net_power_valid"],
             )
 
         self._last_raw_floored = analysis["raw_floored"]
@@ -664,7 +681,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # solar_w already summed and converted above
         solar_w = solar_raw
 
+        # Determine net power validity: True when the underlying sensor(s)
+        # provided a real numeric value, False when the value is unknown/
+        # unavailable and we are falling back to 0 W.
+        net_power_valid: bool
         if self._net_power_mode == MODE_NET_ONLY:
+            net_power_valid = net_w is not None
             computed_net_w = net_w if net_w is not None else 0.0
             # Apply invert if configured (flip sign for sensors with reversed convention)
             if self._invert_net_power:
@@ -672,13 +694,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         else:
             if consumption_w is not None and production_w is not None:
                 computed_net_w = consumption_w - production_w
+                net_power_valid = True
             elif consumption_w is not None:
                 computed_net_w = consumption_w
+                net_power_valid = True
             else:
                 computed_net_w = 0.0
+                net_power_valid = False
 
         return {
             "computed_net_w": computed_net_w,
+            "net_power_valid": net_power_valid,
             "ev_w": ev_w,
             "voltage": voltage,
             "solar_w": solar_w,
@@ -989,10 +1015,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     if self._battery_capacity_kwh > 0
                     else self._estimated_battery_capacity_kwh
                 )
+                # Use the rolling solar capture factor for operational
+                # decisions.  Fall back to the lifetime ratio only when
+                # the capture factor has not been populated yet.
+                control_factor = (
+                    self._solar_capture_factor
+                    if self._solar_capture_factor > 0
+                    else (solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0)
+                )
                 if (
                     effective_capacity > 0
-                    and solar_to_ev_ratio is not None
-                    and solar_to_ev_ratio > 0
+                    and control_factor > 0
                 ):
                     # Precise mode: wall-energy-based capacity already includes
                     # charging losses, so energy_needed is pre-overhead.
@@ -1000,7 +1033,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         0.0,
                         (self._low_power_threshold - battery_pct) / 100.0 * effective_capacity,
                     )
-                    expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+                    expected_ev_kwh = forecast_kwh * control_factor
                     low_power_active = expected_ev_kwh < energy_needed_kwh
                 else:
                     # Fallback: use manual kWh threshold if configured, otherwise
@@ -1066,6 +1099,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if solar_w_val is not None and solar_w_val > 0:
             solar_production_wh = solar_w_val * dt_h
             self._solar_production_wh += solar_production_wh
+            self._session_solar_production_wh += solar_production_wh
             self._store.add_solar_production(solar_production_wh)
 
         # --- Energy charged accumulation ---
@@ -1098,6 +1132,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_wh = 0.0
         self._energy_session_solar_wh = 0.0
         self._energy_session_import_wh = 0.0
+        self._session_solar_production_wh = 0.0
         # Snapshot the current SoC as the session baseline for capacity estimation.
         self._session_start_soc = _get_float_state(self.hass, self._battery_sensor)
         # Snapshot EV battery energy remaining for battery-side delta tracking.
@@ -1144,7 +1179,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         delta = current - self._session_start_battery_kwh
         return round(max(delta, 0.0), 2)
 
-    def _compute_overhead_pct(self) -> float | None:
+    def _compute_overhead_pct(self, session_battery_delta: float | None = None) -> float | None:
         """Return the rolling charging overhead percentage.
 
         overhead% = (1 − battery_received / wall_energy) × 100
@@ -1167,6 +1202,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         snapshot taken at the same instant as the battery reading, both sides
         of the ratio advance together and the displayed value stays stable.
 
+        Args:
+            session_battery_delta: Pre-computed battery delta for the current
+                session (kWh).  When provided, avoids a redundant sensor read
+                in _compute_session_battery_delta.
+
         Returns None when insufficient data.
         """
         wall = self._store.get("overhead_wall_wh")
@@ -1176,7 +1216,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # _cable_prev holds the most recently observed cable state — updated
         # by _detect_cable_plugin (Phase 6) before _build_data_dict calls this.
         if self._cable_prev:
-            session_battery_delta = self._compute_session_battery_delta()
             # Use the wall snapshot from the last battery sensor change rather
             # than the live accumulator (see docstring above).
             session_wall_wh = self._session_battery_wall_snapshot_wh
@@ -1268,6 +1307,56 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._committed_current = None
             self._last_committed_int = None
             self._last_commit_reason = "stale_charge_reset"
+            self._finalize_session_if_needed("stale_charge_reset")
+
+    # ------------------------------------------------------------------
+    # Session finalizer
+    # ------------------------------------------------------------------
+
+    # EMA weight for the solar capture factor (same as capacity EMA).
+    _CAPTURE_FACTOR_EMA_ALPHA: float = 0.3
+
+    def _finalize_session_if_needed(self, trigger: str) -> None:
+        """Central session finalization: capacity estimate, overhead, capture factor.
+
+        Idempotent — only runs when there is meaningful session data
+        (session_start_soc set, session energy > 0).
+
+        Triggers: cable_disconnect, stale_charge_reset, shutdown.
+        """
+        if self._session_start_soc is None and self._energy_session_wh <= 0:
+            return
+
+        _LOGGER.info(
+            "AdaptiveCharge: finalizing session (trigger=%s, "
+            "session_wh=%.1f, session_solar_wh=%.1f)",
+            trigger, self._energy_session_wh, self._energy_session_solar_wh,
+        )
+
+        # 1. Update battery capacity estimate + overhead
+        self._update_capacity_estimate()
+
+        # 2. Update rolling solar capture factor
+        if (
+            self._session_solar_production_wh > 0
+            and self._energy_session_solar_wh >= 0
+        ):
+            session_factor = min(
+                self._energy_session_solar_wh / self._session_solar_production_wh, 1.0
+            )
+            if self._solar_capture_factor > 0:
+                self._solar_capture_factor = (
+                    self._CAPTURE_FACTOR_EMA_ALPHA * session_factor
+                    + (1.0 - self._CAPTURE_FACTOR_EMA_ALPHA) * self._solar_capture_factor
+                )
+            else:
+                self._solar_capture_factor = session_factor
+            self._store.set_solar_capture_factor(self._solar_capture_factor)
+            _LOGGER.info(
+                "AdaptiveCharge: solar capture factor updated to %.4f "
+                "(session=%.4f, trigger=%s)",
+                self._solar_capture_factor, session_factor, trigger,
+            )
 
     # ------------------------------------------------------------------
     # Build data dict
@@ -1286,8 +1375,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]
         skew = analysis["skew"]
+        # Compute session battery delta ONCE to avoid double sensor reads
+        # with side-effects (snapshot capture).
+        session_battery_delta = self._compute_session_battery_delta()
         return {
             "net_w": computed_net_w,
+            "net_power_valid": sensor_data.get("net_power_valid", True),
             "ev_w": sensor_data["ev_w"],
             "voltage": sensor_data["voltage"],
             "surplus_w": analysis["surplus_w"],
@@ -1425,15 +1518,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "solar_production_kwh": round(self._solar_production_wh / 1000.0, 3),
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "estimated_battery_capacity_kwh": round(self._estimated_battery_capacity_kwh, 2),
-            # --- Solar-to-EV ratio ---
+            # --- Solar-to-EV ratio (lifetime KPI) ---
             "solar_to_ev_ratio": (
                 round(solar_to_ev_ratio, 4) if solar_to_ev_ratio is not None else None
+            ),
+            # --- Solar capture factor (operational control) ---
+            "solar_capture_factor": (
+                round(self._solar_capture_factor, 4)
+                if self._solar_capture_factor > 0 else None
             ),
             # --- EV battery-side metrics ---
             "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
             "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
-            "session_battery_delta_kwh": self._compute_session_battery_delta(),
-            "charging_overhead_pct": self._compute_overhead_pct(),
+            "session_battery_delta_kwh": session_battery_delta,
+            "charging_overhead_pct": self._compute_overhead_pct(session_battery_delta),
             # --- Charging priority ---
             "charging_priority": self._charging_priority,
         }
@@ -1530,6 +1628,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         coherence: float,
         control_reason: str,
         cable_connected: bool | None = None,
+        net_power_valid: bool = True,
     ) -> None:
         """Evaluate and schedule control actions."""
         force_changed = force_charge != self._force_charge_prev
@@ -1614,11 +1713,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Start surplus charging ---
         if ema_current >= self._surplus_start_threshold_a and not self._charging_on:
-            # Don't start when cable is known to be disconnected
-            if cable_connected is False:
+            # Don't start when cable is not confirmed connected (None=unknown or False=disconnected)
+            if cable_connected is not True:
                 _LOGGER.debug(
-                    "AdaptiveCharge: surplus start blocked — cable not connected "
-                    "(ema=%.2fA threshold=%.1fA)",
+                    "AdaptiveCharge: surplus start blocked — cable not confirmed "
+                    "connected (cable=%s, ema=%.2fA threshold=%.1fA)",
+                    cable_connected, ema_current, self._surplus_start_threshold_a,
+                )
+                return
+            # Don't start when net power sensor is invalid/unavailable
+            if not net_power_valid:
+                _LOGGER.debug(
+                    "AdaptiveCharge: surplus start blocked — net power sensor "
+                    "invalid/unavailable (ema=%.2fA threshold=%.1fA)",
                     ema_current, self._surplus_start_threshold_a,
                 )
                 return
@@ -1666,9 +1773,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and self._current_mode == MODE_SURPLUS
             and self._committed_current is not None
         ):
-            await self._try_modulate(ema_current, mono_now)
+            await self._try_modulate(ema_current, mono_now, net_power_valid=net_power_valid)
 
-    async def _try_modulate(self, ema_current: float, mono_now: float) -> None:
+    async def _try_modulate(self, ema_current: float, mono_now: float, *, net_power_valid: bool = True) -> None:
         """Apply hysteresis and rate limiting to modulate current."""
         current_setpoint = self._committed_current
         if current_setpoint is None:
@@ -1691,6 +1798,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if delta > 0 and self._confidence == CONFIDENCE_LOW:
             _LOGGER.debug(
                 "AdaptiveCharge: modulate up blocked by low confidence, delta=+%.2fA",
+                delta,
+            )
+            return
+
+        # Net power validity gating — block upward modulation when net sensor
+        # is invalid/unavailable (surplus is unreliable); downward is allowed.
+        if delta > 0 and not net_power_valid:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked — net power sensor "
+                "invalid/unavailable, delta=+%.2fA",
                 delta,
             )
             return
@@ -1877,9 +1994,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         there is no risk of a current spike. It ensures the EVSE is in a ready
         state for the next session (or for charging elsewhere at full power).
         """
-        # Update battery capacity estimate from the completed session before
+        # Finalize the session (capacity, overhead, capture factor) before
         # energy counters are reset by the next plug-in.
-        self._update_capacity_estimate()
+        self._finalize_session_if_needed("cable_disconnect")
         if self._charging_on:
             await self._action_stop_surplus()
         max_a = int(min(self._max_current_limit, MAX_CURRENT_ABS))
