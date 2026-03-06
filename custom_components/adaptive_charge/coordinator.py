@@ -28,6 +28,7 @@ from .const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGING_PRIORITY,
     CONF_EV_BATTERY_ENERGY_SENSOR,
     CONF_EV_ENERGY_ADDED_SENSOR,
     CONF_CHARGE_LIMIT_NUMBER,
@@ -132,6 +133,10 @@ from .const import (
     MODE_NET_ONLY,
     MODE_STOPPED,
     MODE_SURPLUS,
+    PRIORITY_EXPORT,
+    PRIORITY_IMPORT,
+    PRIORITY_ZERO_PREFER_EXPORT,
+    PRIORITY_ZERO_PREFER_IMPORT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -280,6 +285,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # Master controller switch — default OFF for safe first install
         self._controller_enabled: bool = False
+
+        # Charging priority mode — controls surplus offset and import guard behaviour
+        self._charging_priority: str = PRIORITY_ZERO_PREFER_EXPORT
 
         # Control state
         self._charging_on: bool = False
@@ -543,6 +551,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         import_guard_triggered = self._check_import_guard(
             sensor_data["computed_net_w"], mono_now
         )
+        # When explicitly targeting import (PRIORITY_IMPORT), the user accepts
+        # grid draw — disable import guard so it does not reduce current.
+        if self._charging_priority == PRIORITY_IMPORT:
+            import_guard_triggered = False
 
         # --- Phase 7b: Energy accumulation ---
         self._accumulate_energy(sensor_data, mono_now)
@@ -657,6 +669,23 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # Phase 2: Alignment, EMA, confidence
     # ------------------------------------------------------------------
 
+    def _get_priority_surplus_offset_w(self) -> float:
+        """Return surplus power offset (W) for the current charging priority mode.
+
+        The offset is added to the surplus calculation to bias the controller:
+          export_priority      → large negative offset: surplus always ≈ 0 → no charging
+          import_priority      → large positive offset: surplus always at max → max charging
+          zero_prefer_import   → small positive offset: target ~500 W of grid import
+          zero_prefer_export   → zero offset (current default, aim for 0 W net)
+        """
+        if self._charging_priority == PRIORITY_EXPORT:
+            return -1_000_000.0
+        if self._charging_priority == PRIORITY_IMPORT:
+            return 1_000_000.0
+        if self._charging_priority == PRIORITY_ZERO_PREFER_IMPORT:
+            return 500.0
+        return 0.0  # PRIORITY_ZERO_PREFER_EXPORT — default, no offset
+
     def _analyze_measurements(
         self, sensor_data: dict[str, Any], mono_now: float
     ) -> dict[str, Any]:
@@ -681,7 +710,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._prev_ev_w = ev_w
         self._prev_net_w = computed_net_w
 
-        surplus_w = (0.0 - computed_net_w) + ev_w
+        surplus_w = (0.0 - computed_net_w) + ev_w + self._get_priority_surplus_offset_w()
         raw_current_a = (surplus_w / (voltage * 3.0)) if voltage > 0 else 0.0
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
 
@@ -1332,6 +1361,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
             "session_battery_delta_kwh": self._compute_session_battery_delta(),
             "charging_overhead_pct": self._compute_overhead_pct(),
+            # --- Charging priority ---
+            "charging_priority": self._charging_priority,
         }
 
     # ------------------------------------------------------------------
@@ -2016,6 +2047,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""
         self._max_current_limit = value
+
+    def set_charging_priority(self, value: str) -> None:
+        """Set the charging priority mode."""
+        self._charging_priority = value
+
+    @property
+    def charging_priority(self) -> str:
+        """Return the current charging priority mode."""
+        return self._charging_priority
 
     def restore_energy_state(
         self, total_wh: float, solar_wh: float, import_wh: float

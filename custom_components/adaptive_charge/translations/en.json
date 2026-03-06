@@ -458,6 +458,17 @@
       "charge_tonight": {
         "name": "Charge Tonight"
       }
+    },
+    "select": {
+      "charging_priority": {
+        "name": "Charging Priority",
+        "state": {
+          "zero_prefer_export": "Balance (prefer export)",
+          "zero_prefer_import": "Balance (prefer import)",
+          "export_priority": "Export Priority",
+          "import_priority": "Import Priority"
+        }
+      }
     }
   }
 }

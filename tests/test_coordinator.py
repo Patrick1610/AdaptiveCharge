@@ -5361,3 +5361,97 @@ class TestLiveChargingOverhead:
         )
         assert result_early == 10.0
         assert result_later == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charging priority surplus offset
+# ---------------------------------------------------------------------------
+
+PRIORITY_ZERO_PREFER_EXPORT = "zero_prefer_export"
+PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
+PRIORITY_EXPORT = "export_priority"
+PRIORITY_IMPORT = "import_priority"
+
+
+def _priority_surplus_offset(priority: str) -> float:
+    """Mirror of coordinator._get_priority_surplus_offset_w."""
+    if priority == PRIORITY_EXPORT:
+        return -1_000_000.0
+    if priority == PRIORITY_IMPORT:
+        return 1_000_000.0
+    if priority == PRIORITY_ZERO_PREFER_IMPORT:
+        return 500.0
+    return 0.0
+
+
+def compute_surplus_with_priority(net_w: float, ev_w: float, priority: str) -> float:
+    """Compute surplus including the priority offset."""
+    return (0.0 - net_w) + ev_w + _priority_surplus_offset(priority)
+
+
+class TestChargingPriorityOffset:
+    def test_zero_prefer_export_has_no_offset(self):
+        offset = _priority_surplus_offset(PRIORITY_ZERO_PREFER_EXPORT)
+        assert offset == 0.0
+
+    def test_zero_prefer_import_has_positive_offset(self):
+        offset = _priority_surplus_offset(PRIORITY_ZERO_PREFER_IMPORT)
+        assert offset == 500.0
+
+    def test_export_priority_has_large_negative_offset(self):
+        offset = _priority_surplus_offset(PRIORITY_EXPORT)
+        assert offset == -1_000_000.0
+
+    def test_import_priority_has_large_positive_offset(self):
+        offset = _priority_surplus_offset(PRIORITY_IMPORT)
+        assert offset == 1_000_000.0
+
+    def test_unknown_priority_defaults_to_zero(self):
+        """Any unknown value falls back to zero offset (safe default)."""
+        offset = _priority_surplus_offset("unknown_mode")
+        assert offset == 0.0
+
+
+class TestChargingPrioritySurplusEffect:
+    """Verify that priority modes shift the effective surplus as expected."""
+
+    def test_export_priority_blocks_charging(self):
+        """With export_priority, surplus is always hugely negative → raw_current = 0."""
+        # Scenario: 2000 W solar surplus available
+        surplus = compute_surplus_with_priority(-2000.0, 0.0, PRIORITY_EXPORT)
+        raw_current = compute_raw_current(surplus, 230.0)
+        assert floor_current(raw_current) == 0
+
+    def test_import_priority_forces_max_charging(self):
+        """With import_priority, surplus is always hugely positive → raw_current = max."""
+        # Scenario: net importing 500 W (no solar)
+        surplus = compute_surplus_with_priority(500.0, 0.0, PRIORITY_IMPORT)
+        raw_current = compute_raw_current(surplus, 230.0)
+        assert floor_current(raw_current) == 16  # clamped to max
+
+    def test_zero_prefer_export_uses_actual_surplus(self):
+        """zero_prefer_export is the default — no offset applied."""
+        # 1000 W solar surplus → ~1.4 A at 230V 3-phase
+        surplus_default = compute_surplus(- 1000.0, 0.0)
+        surplus_pref_export = compute_surplus_with_priority(-1000.0, 0.0, PRIORITY_ZERO_PREFER_EXPORT)
+        assert surplus_default == surplus_pref_export
+
+    def test_zero_prefer_import_allows_extra_charging(self):
+        """zero_prefer_import adds 500W, enabling charging even with slight import."""
+        # Net importing 300 W, no EV
+        surplus_default = compute_surplus(300.0, 0.0)  # -300 → no charging
+        surplus_pref_import = compute_surplus_with_priority(300.0, 0.0, PRIORITY_ZERO_PREFER_IMPORT)
+        assert surplus_default < 0
+        assert surplus_pref_import > 0  # +500 offset pushes it positive
+
+    def test_export_priority_stops_even_with_large_solar(self):
+        """Export priority prevents charging even with 5000 W solar surplus."""
+        surplus = compute_surplus_with_priority(-5000.0, 2000.0, PRIORITY_EXPORT)
+        assert surplus < 0
+
+    def test_import_priority_charges_even_when_importing(self):
+        """Import priority forces charging even when importing 3000 W from grid."""
+        surplus = compute_surplus_with_priority(3000.0, 0.0, PRIORITY_IMPORT)
+        assert surplus > 0
+        raw_current = compute_raw_current(surplus, 230.0)
+        assert floor_current(raw_current) == 16
