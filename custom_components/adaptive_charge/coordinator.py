@@ -1036,13 +1036,22 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Return the battery-side energy delta for the current session (kWh).
 
         Uses the EV battery energy remaining sensor: end − start snapshot.
-        Returns None if the sensor is not configured or snapshots are unavailable.
+        Returns None if the sensor is not configured or currently unavailable.
+
+        The start snapshot is captured lazily: if it was never set (e.g. the
+        integration restarted while the cable was already connected, or the
+        sensor was temporarily unavailable at actual plug-in time) the first
+        valid sensor reading becomes the new baseline and 0.0 is returned.
         """
-        if self._session_start_battery_kwh is None:
-            return None
         current = _get_float_state(self.hass, self._ev_battery_energy_sensor)
         if current is None:
             return None
+        # Lazily capture snapshot when not yet set (restart / sensor-not-ready
+        # at plug-in time).  Return 0.0 for this tick; subsequent ticks will
+        # produce the real delta.
+        if self._session_start_battery_kwh is None:
+            self._session_start_battery_kwh = current
+            return 0.0
         delta = current - self._session_start_battery_kwh
         return round(max(delta, 0.0), 2)
 
