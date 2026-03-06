@@ -212,3 +212,116 @@ class TestUtilityMeterDedup:
         # Fixed check (merged):
         um_cfg = {**um_entry.data, **um_entry.options}
         assert um_cfg.get("cycle") == "daily"
+
+
+# ---------------------------------------------------------------------------
+# Mirror utility meter naming logic — name must include entry title
+# ---------------------------------------------------------------------------
+
+# Period map mirrors __init__._PERIOD_MAP
+_PERIOD_MAP_MIRROR = {
+    "utility_daily": ("daily", "Energy Charged Daily"),
+    "utility_monthly": ("monthly", "Energy Charged Monthly"),
+    "utility_yearly": ("yearly", "Energy Charged Yearly"),
+}
+
+
+def _build_meter_name(entry_title: str, name_suffix: str) -> str:
+    """Mirror of the naming logic in _async_setup_utility_meters."""
+    return f"{entry_title} {name_suffix}"
+
+
+class TestUtilityMeterNaming:
+    """Verify that utility meter names include the entry title (instance name)."""
+
+    def test_name_includes_entry_title(self):
+        """Meter name must be prefixed with the config entry title."""
+        name = _build_meter_name("Tesla Model 3", "Energy Charged Daily")
+        assert name == "Tesla Model 3 Energy Charged Daily"
+
+    def test_default_title(self):
+        """Default entry title 'AdaptiveCharge' is included."""
+        name = _build_meter_name("AdaptiveCharge", "Energy Charged Monthly")
+        assert name == "AdaptiveCharge Energy Charged Monthly"
+
+    def test_all_periods_include_title(self):
+        """All period names include the entry title."""
+        title = "My EV"
+        for _conf_key, (_cycle, suffix) in _PERIOD_MAP_MIRROR.items():
+            name = _build_meter_name(title, suffix)
+            assert name.startswith("My EV ")
+            assert suffix in name
+
+
+# ---------------------------------------------------------------------------
+# Mirror utility meter source-based discovery logic for removal
+# ---------------------------------------------------------------------------
+
+def _discover_utility_meters_by_source(
+    entries: list[_FakeConfigEntry],
+    source_entity_id: str,
+) -> list[str]:
+    """Mirror of the source-based scan in _async_remove_utility_meters.
+
+    Returns entry IDs of utility meters whose source matches the given entity.
+    """
+    found: list[str] = []
+    for entry in entries:
+        cfg = {**entry.data, **entry.options}
+        if cfg.get("source") == source_entity_id:
+            found.append(entry.entry_id)
+    return found
+
+
+class TestUtilityMeterSourceDiscovery:
+    """Verify that utility meters can be discovered by source entity for removal."""
+
+    def test_finds_meters_by_source_in_options(self):
+        entries = [
+            _FakeConfigEntry("um1", data={}, options={"source": "sensor.energy", "cycle": "daily"}),
+            _FakeConfigEntry("um2", data={}, options={"source": "sensor.energy", "cycle": "monthly"}),
+        ]
+        found = _discover_utility_meters_by_source(entries, "sensor.energy")
+        assert found == ["um1", "um2"]
+
+    def test_finds_meters_by_source_in_data(self):
+        entries = [
+            _FakeConfigEntry("um1", data={"source": "sensor.energy", "cycle": "yearly"}),
+        ]
+        found = _discover_utility_meters_by_source(entries, "sensor.energy")
+        assert found == ["um1"]
+
+    def test_ignores_different_source(self):
+        entries = [
+            _FakeConfigEntry("um1", data={}, options={"source": "sensor.other", "cycle": "daily"}),
+        ]
+        found = _discover_utility_meters_by_source(entries, "sensor.energy")
+        assert found == []
+
+    def test_empty_entries(self):
+        found = _discover_utility_meters_by_source([], "sensor.energy")
+        assert found == []
+
+    def test_mixed_sources(self):
+        """Only meters matching the given source are returned."""
+        entries = [
+            _FakeConfigEntry("um1", data={}, options={"source": "sensor.energy_a", "cycle": "daily"}),
+            _FakeConfigEntry("um2", data={}, options={"source": "sensor.energy_b", "cycle": "daily"}),
+            _FakeConfigEntry("um3", data={}, options={"source": "sensor.energy_a", "cycle": "monthly"}),
+        ]
+        found = _discover_utility_meters_by_source(entries, "sensor.energy_a")
+        assert found == ["um1", "um3"]
+
+    def test_options_overrides_data_source(self):
+        """When both data and options have source, options wins."""
+        entries = [
+            _FakeConfigEntry(
+                "um1",
+                data={"source": "sensor.old"},
+                options={"source": "sensor.energy"},
+            ),
+        ]
+        found = _discover_utility_meters_by_source(entries, "sensor.energy")
+        assert found == ["um1"]
+        found_old = _discover_utility_meters_by_source(entries, "sensor.old")
+        assert found_old == []
