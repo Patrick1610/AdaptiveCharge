@@ -27,7 +27,8 @@ A Home Assistant custom integration that intelligently controls EV charging base
 - **Mode tracking**: reason, source, timestamps, and transition history on every mode change
 - **Solar-to-EV ratio**: lifetime percentage of solar energy that reached the EV vs. total produced (displayed as `%` with 2 decimal places)
 - **Battery energy tracking**: live battery-side energy delta and AC→DC charging overhead per session (requires EV battery energy sensor)
-- **Expert mode**: unlocks advanced controller-tuning sensors and parameters
+- **Charging priority**: five selectable modes control whether surplus, export, or import is preferred — without affecting any monitoring sensor values
+- **Expert mode**: unlocks advanced controller-tuning sensors, parameters, and priority bias
 - **Full debug attributes**: every sensor exposes source values, mode and last action
 
 ---
@@ -146,6 +147,7 @@ Enable **Expert Mode** to access advanced controller-tuning parameters:
 | Hysteresis Up (A) | 0.2 A | Minimum EMA increase required before stepping up |
 | Hysteresis Down (A) | 1.0 A | Minimum EMA decrease required before stepping down |
 | Settling Duration (s) | 10 s | Post-commit window during which upward steps are suppressed |
+| Priority Bias | 500 W | Power offset for `zero_prefer_export` / `zero_prefer_import` modes (converted to A at runtime) |
 
 Expert mode also **automatically enables** two normally-hidden diagnostic sensors:
 - **Alignment Diagnostics** — full alignment engine state
@@ -256,7 +258,31 @@ overhead% = (1 − battery_received_kwh / wall_energy_kwh) × 100
 
 Live blending only activates once at least 0.5 kWh has been charged in the current session to avoid noisy readings at session start.
 
-### Diagnostics
+The live blend uses a **wall-energy snapshot** — the wall value captured at the exact moment the battery sensor last changed — rather than the continuously-growing live accumulator. This keeps the displayed overhead stable between car API polls (typically every ~3 minutes) and prevents a sawtooth pattern where the overhead would drift up between updates and snap back down on each new battery reading.
+
+### 14. Charging Priority
+
+The **Charging Priority** select entity (`select.adaptivecharge_charging_priority`) lets you shift the charging bias without affecting any monitoring sensor. `surplus_w`, `ema_current_a`, and all display values are always computed from real measurements; the priority only influences the internal control decision.
+
+| Mode | Effect |
+|------|--------|
+| `balance` _(default)_ | Pure surplus — charges exactly when solar exceeds house load, targeting 0 W net. The original behaviour. |
+| `zero_prefer_export` | Requires real surplus > **Priority Bias** (default 500 W) before starting or modulating. Biases slightly toward grid export. |
+| `zero_prefer_import` | Starts and modulates even when importing up to **Priority Bias** (default 500 W). Biases slightly toward grid import. |
+| `export_priority` | Stops any active surplus session and prevents new ones. All solar is exported. **Overridden** by `Charge Now`, `Charge Tonight`, and low-power protection when the solar forecast is insufficient. |
+| `import_priority` | Permanent force-charge whenever the cable is connected — equivalent to leaving `Charge Now` on. Import guard is automatically bypassed. |
+
+`zero_prefer_export` and `zero_prefer_import` are exact mirrors: same bias magnitude, opposite sign. The bias magnitude is set via **Priority Bias** in Expert Mode (0–2000 W, default 500 W).
+
+#### Override hierarchy for `export_priority`
+
+`export_priority` is a soft block — it only prevents *surplus* charging. The following always override it (highest to lowest priority):
+
+1. **Charge Now** switch — force charge immediately
+2. **Charge Tonight** switch — overnight range-target charging
+3. **Low-power protection** — force charge when battery SoC is below the threshold *and* the solar forecast is genuinely insufficient to cover the deficit (the precise-mode forecast check determines this)
+
+
 
 The **Alignment Diagnostics** sensor _(enabled automatically in Expert Mode)_ exposes:
 
@@ -419,6 +445,12 @@ _Optional sensors are only created when the EV Battery Energy Sensor is configur
 | `switch.adaptivecharge_charge_now` | Force charge at maximum current immediately |
 | `switch.adaptivecharge_charge_tonight` | Enable overnight charge-to-range scheduling |
 
+### Select Entities
+
+| Entity | Options | Description |
+|--------|---------|-------------|
+| `select.adaptivecharge_charging_priority` | `balance`, `zero_prefer_export`, `zero_prefer_import`, `export_priority`, `import_priority` | Charging priority mode (see §14) |
+
 ### Services
 
 | Service | Description |
@@ -506,6 +538,9 @@ Every sensor exposes the following extra attributes:
 - The Battery Energy Delta is already updated live each coordinator tick.
 - The Charging Overhead becomes live once ≥0.5 kWh has been charged in the current session (threshold avoids noisy early-session readings).
 - Both sensors depend on the EV Battery Energy Sensor being configured and its update frequency — they are only as fresh as the source sensor.
+
+**Charging Overhead shows a sawtooth / flickering pattern**
+- Fixed in v4.2.2. The live overhead blend now uses a wall-energy snapshot (taken at the moment the battery sensor last changed) rather than the live wall accumulator. This prevents the ~2 pp sawtooth that previously appeared every time the car API delivered a new battery reading (~3 min apart).
 
 **Alignment Diagnostics / Input Skew sensor not visible**
 - These sensors are hidden by default. Enable **Expert Mode** in the integration options to make them appear automatically. Alternatively, enable them manually via **Settings → Devices & Services → AdaptiveCharge → Entities**.

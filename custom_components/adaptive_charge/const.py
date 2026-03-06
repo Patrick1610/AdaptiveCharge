@@ -67,6 +67,15 @@ MODE_SURPLUS = "surplus"
 MODE_STOPPED = "stopped"
 MODE_NIGHT_TARGET = "night_target"
 
+# --- Charging Priority ---
+CONF_CHARGING_PRIORITY = "charging_priority"
+CONF_PRIORITY_BIAS_W = "priority_bias_w"
+PRIORITY_BALANCE = "balance"
+PRIORITY_EXPORT = "export_priority"
+PRIORITY_IMPORT = "import_priority"
+PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
+PRIORITY_ZERO_PREFER_EXPORT = "zero_prefer_export"
+
 # --- Confidence Levels ---
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_MEDIUM = "medium"
@@ -129,6 +138,7 @@ DEFAULT_IMPORT_SAFETY_DURATION_S = 3.0
 DEFAULT_HYSTERESIS_UP = 0.2
 DEFAULT_HYSTERESIS_DOWN = 1.0
 DEFAULT_MAX_STEP_A = 1
+DEFAULT_PRIORITY_BIAS_W = 500
 DEFAULT_COOLDOWN_UP_S = 45.0
 DEFAULT_COOLDOWN_DOWN_S = 0.0
 DEFAULT_MIN_ON_TIME_S = 300.0
@@ -139,7 +149,7 @@ DEFAULT_SETTLING_DURATION_S = 10.0
 DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S = 10.0
 
 # --- Platforms ---
-PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]
+PLATFORMS = ["sensor", "binary_sensor", "number", "switch", "select"]
 
 # --- Service names ---
 SERVICE_FORCE_START = "force_start"

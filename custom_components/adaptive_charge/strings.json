@@ -166,13 +166,15 @@
           "max_step_a": "Max Step Size (A)",
           "hysteresis_up": "Upward Hysteresis (A)",
           "hysteresis_down": "Downward Hysteresis (A)",
-          "settling_duration_s": "Settling Duration (s)"
+          "settling_duration_s": "Settling Duration (s)",
+          "priority_bias_w": "Priority Bias (W)"
         },
         "data_description": {
           "max_step_a": "Maximum current increase per modulation step. Higher = faster ramp-up but more aggressive. At 3-phase 230V, each A ≈ 690W.",
           "hysteresis_up": "Minimum surplus above the current setpoint needed to trigger an upward step. Lower = more responsive but more sensitive to noise. Default 0.2A ≈ 138W at 3-phase 230V.",
           "hysteresis_down": "Minimum deficit below the current setpoint needed to trigger a downward step. Higher = more conservative about reducing current. Default 1.0A ≈ 690W at 3-phase 230V.",
-          "settling_duration_s": "Seconds to wait after each current change before allowing another adjustment. Prevents self-induced measurement feedback loops."
+          "settling_duration_s": "Seconds to wait after each current change before allowing another adjustment. Prevents self-induced measurement feedback loops.",
+          "priority_bias_w": "Bias power (W) for the 'prefer export' and 'prefer import' modes. Prefer-import: controller starts charging even when importing up to this many watts from the grid. Prefer-export: controller only starts charging when there is at least this much real surplus available. Default 500W. Raise to require more surplus (conservative); lower for a quicker response."
         }
       },
       "utility_meters": {
@@ -367,13 +369,15 @@
           "max_step_a": "Max Step Size (A)",
           "hysteresis_up": "Upward Hysteresis (A)",
           "hysteresis_down": "Downward Hysteresis (A)",
-          "settling_duration_s": "Settling Duration (s)"
+          "settling_duration_s": "Settling Duration (s)",
+          "priority_bias_w": "Priority Bias (W)"
         },
         "data_description": {
           "max_step_a": "Maximum current increase per modulation step. Higher = faster ramp-up but more aggressive. At 3-phase 230V, each A ≈ 690W.",
           "hysteresis_up": "Minimum surplus above the current setpoint needed to trigger an upward step. Lower = more responsive but more sensitive to noise. Default 0.2A ≈ 138W at 3-phase 230V.",
           "hysteresis_down": "Minimum deficit below the current setpoint needed to trigger a downward step. Higher = more conservative about reducing current. Default 1.0A ≈ 690W at 3-phase 230V.",
-          "settling_duration_s": "Seconds to wait after each current change before allowing another adjustment. Prevents self-induced measurement feedback loops."
+          "settling_duration_s": "Seconds to wait after each current change before allowing another adjustment. Prevents self-induced measurement feedback loops.",
+          "priority_bias_w": "Bias power (W) for the 'prefer export' and 'prefer import' modes. Prefer-import: controller starts charging even when importing up to this many watts from the grid. Prefer-export: controller only starts charging when there is at least this much real surplus available. Default 500W. Raise to require more surplus (conservative); lower for a quicker response."
         }
       },
       "utility_meters": {
@@ -457,6 +461,18 @@
       },
       "charge_tonight": {
         "name": "Charge Tonight"
+      }
+    },
+    "select": {
+      "charging_priority": {
+        "name": "Charging Priority",
+        "state": {
+          "balance": "Balance (exact 0 W net)",
+          "zero_prefer_export": "Balance (prefer export)",
+          "zero_prefer_import": "Balance (prefer import)",
+          "export_priority": "Export Priority",
+          "import_priority": "Import Priority"
+        }
       }
     }
   }

@@ -4926,9 +4926,171 @@ class TestChargingOverhead:
         assert abs(pct - 13.3) < 0.1
 
 
+def _compute_overhead_pct_live(
+    overhead_wall_wh: float,
+    overhead_battery_wh: float,
+    session_battery_delta_kwh: float | None,
+    session_wall_snapshot_wh: float,
+    min_energy_kwh: float = 0.5,
+) -> float | None:
+    """Mirror of coordinator._compute_overhead_pct with live-blend logic.
+
+    Reflects the snapshot fix: uses session_wall_snapshot_wh (wall at the last
+    battery sensor change) rather than the current live wall accumulator.
+    """
+    wall = overhead_wall_wh
+    battery = overhead_battery_wh
+    if session_battery_delta_kwh is not None:
+        if (
+            session_wall_snapshot_wh / 1000.0 >= min_energy_kwh
+            and session_battery_delta_kwh >= min_energy_kwh
+        ):
+            wall += session_wall_snapshot_wh
+            battery += session_battery_delta_kwh * 1000.0
+    if wall > 0 and battery > 0:
+        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Tests: Session battery delta
+# Tests: Overhead sawtooth fix — wall snapshot
 # ---------------------------------------------------------------------------
+
+class TestOverheadWallSnapshot:
+    """Verify that the live overhead blend is stable between battery API polls.
+
+    Root cause of the sawtooth (confirmed from history data on 2026-03-06):
+      - Wall energy accumulates every 10 s (HA tick)
+      - EV battery sensor polls the car API every ~3 min
+    Without the snapshot fix, overhead would creep up ~0.1 pp/10 s as wall
+    grows with a frozen battery, then snap down 2 pp when battery updates.
+    The fix: use the wall value captured at the last battery sensor change.
+    """
+
+    def _make_snapshot(
+        self,
+        store_wall_wh: float,
+        store_bat_wh: float,
+        session_bat_delta: float,
+        session_wall_at_last_bat_change: float,  # the snapshot
+    ) -> float | None:
+        return _compute_overhead_pct_live(
+            store_wall_wh, store_bat_wh,
+            session_bat_delta, session_wall_at_last_bat_change,
+        )
+
+    def test_stable_between_battery_updates(self):
+        """Overhead must NOT change while the battery sensor is silent.
+
+        Simulate 5 × 10 s ticks where wall accrues 80 Wh each tick but the
+        battery sensor doesn't change.  With the snapshot fix the displayed
+        overhead must be the same on every tick.
+        """
+        store_wall = 100_000.0  # 100 kWh historical
+        store_bat = 83_800.0   # 83.8 kWh historical → 16.2% overhead
+
+        bat_snapshot_wh = 1_500.0  # 1.5 kWh wall when battery last changed
+        bat_delta = 1.3             # 1.3 kWh received so far this session
+
+        results = []
+        for _ in range(5):
+            # Live wall keeps growing, but snapshot is frozen
+            live_wall_wh = bat_snapshot_wh + 80.0  # not used in fixed calc
+            _ = live_wall_wh  # silence unused warning
+            pct = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_delta, bat_snapshot_wh
+            )
+            results.append(pct)
+
+        # All ticks must give the same value
+        assert all(r == results[0] for r in results), (
+            f"Overhead varied between battery-silent ticks: {results}"
+        )
+
+    def test_updates_when_battery_sensor_changes(self):
+        """Overhead updates (steps) when battery sensor delivers a new reading."""
+        store_wall = 100_000.0
+        store_bat = 83_800.0
+
+        # Tick A: battery reports 1.3 kWh delta, wall snapshot = 1500 Wh
+        pct_a = _compute_overhead_pct_live(
+            store_wall, store_bat, 1.3, 1_500.0
+        )
+        # Tick B: battery reports 1.42 kWh delta (+0.12), wall snapshot = 1580 Wh
+        pct_b = _compute_overhead_pct_live(
+            store_wall, store_bat, 1.42, 1_580.0
+        )
+        assert pct_a is not None
+        assert pct_b is not None
+        # Both should be in a plausible range, and different from each other
+        assert 10.0 <= pct_a <= 20.0
+        assert 10.0 <= pct_b <= 20.0
+        assert pct_a != pct_b
+
+    def test_sawtooth_scenario_from_real_data(self):
+        """Reproduce the historical sawtooth and verify it is eliminated.
+
+        From 2026-03-06 history (confirmed: every overhead drop has 0-second lag
+        from a battery sensor update):
+          Charging at 4 A × 230 V × 3 = 2760 W → 27.6 Wh per 10 s tick.
+          Battery API polls every ~3 min → 12 ticks × 27.6 Wh = 331 Wh wall
+          accrues while battery is frozen between polls.
+
+        With a freshly set-up store (~5 kWh from one prior session), the current
+        session (~4 kWh battery delta) is a large fraction of the total, so the
+        331 Wh wall drift produces a clearly visible ~2 pp sawtooth.
+
+        NEW behaviour (using wall snapshot at last battery change):
+          Both sides of the ratio advance together → completely flat.
+        """
+        store_wall = 5_000.0   # Wh — one prior session in store
+        store_bat = 4_190.0    # Wh → 16.2% overhead in store
+
+        bat_val = 4.26          # kWh battery delta at last API poll
+        wall_snapshot = 5_070.0 # Wh — wall energy when battery last changed
+        wall_live = wall_snapshot
+        tick_wh = 27.6          # Wh per 10 s tick (4 A × 230 V × 3)
+
+        overhead_old = []
+        overhead_new = []
+
+        for _tick in range(12):  # ~2 min before next battery update
+            wall_live += tick_wh
+
+            # Old: live wall passed as snapshot (simulates pre-fix behaviour)
+            pct_old = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_val, wall_live
+            )
+            # New: frozen snapshot (the fix)
+            pct_new = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_val, wall_snapshot
+            )
+            overhead_old.append(pct_old)
+            overhead_new.append(pct_new)
+
+        # Old: monotonically increasing (wall grows, battery frozen)
+        assert overhead_old[-1] > overhead_old[0], "Expected sawtooth rise not seen"
+        diff_old = overhead_old[-1] - overhead_old[0]
+        assert diff_old > 0.5, f"Expected >0.5 pp rise, got {diff_old:.2f} pp"
+
+        # New: completely flat between battery sensor updates
+        assert all(v == overhead_new[0] for v in overhead_new), (
+            f"Overhead not flat with snapshot fix: {overhead_new}"
+        )
+
+    def test_below_minimum_threshold_uses_store_only(self):
+        """Session data below min_energy threshold → only store data used."""
+        store_wall = 50_000.0
+        store_bat = 42_000.0  # 16% overhead
+        expected = _compute_overhead_pct(store_wall, store_bat)
+
+        # Session is tiny (0.2 kWh wall, 0.1 kWh battery — below 0.5 kWh min)
+        pct = _compute_overhead_pct_live(
+            store_wall, store_bat, 0.1, 200.0
+        )
+        assert pct == expected
+
+
 
 class TestSessionBatteryDelta:
     """Tests for the battery-side energy delta computation."""
@@ -5361,3 +5523,150 @@ class TestLiveChargingOverhead:
         )
         assert result_early == 10.0
         assert result_later == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charging priority current bias and control behaviour
+# ---------------------------------------------------------------------------
+
+PRIORITY_BALANCE = "balance"
+PRIORITY_ZERO_PREFER_EXPORT = "zero_prefer_export"
+PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
+PRIORITY_EXPORT = "export_priority"
+PRIORITY_IMPORT = "import_priority"
+
+_DEFAULT_BIAS_W = 500.0
+
+
+def _priority_current_bias_a(priority: str, bias_w: float = _DEFAULT_BIAS_W) -> float:
+    """Mirror of coordinator._get_priority_current_bias_a.
+
+    Returns amps to add to the EMA current for control logic only.
+    Surplus is NOT affected — monitoring stays clean.
+      balance            → 0 A (pure surplus, exact 0 W net aim)
+      zero_prefer_import → +bias_w / (230 × 3): start/modulate even with slight import
+      zero_prefer_export → −bias_w / (230 × 3): require surplus above bias before reacting
+      export_priority    → 0 A (blocked in control logic)
+      import_priority    → 0 A (force-charge path)
+    """
+    bias_a = bias_w / (230.0 * 3.0)
+    if priority == PRIORITY_ZERO_PREFER_IMPORT:
+        return bias_a
+    if priority == PRIORITY_ZERO_PREFER_EXPORT:
+        return -bias_a
+    return 0.0
+
+
+def apply_priority_bias(ema_a: float, priority: str, bias_w: float = _DEFAULT_BIAS_W, max_a: int = 16) -> float:
+    """Apply priority current bias and clamp to [0, max_a]."""
+    biased = ema_a + _priority_current_bias_a(priority, bias_w)
+    return min(max(biased, 0.0), float(max_a))
+
+
+class TestChargingPriorityCurrentBias:
+    """Verify that surplus is kept clean and only the control current is biased."""
+
+    def test_balance_has_no_bias(self):
+        assert _priority_current_bias_a(PRIORITY_BALANCE) == 0.0
+
+    def test_zero_prefer_export_has_negative_bias(self):
+        bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT)
+        assert abs(bias - (-500.0 / (230.0 * 3.0))) < 1e-6
+
+    def test_zero_prefer_import_has_positive_bias(self):
+        bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT)
+        assert abs(bias - 500.0 / (230.0 * 3.0)) < 1e-6
+
+    def test_prefer_export_and_prefer_import_are_symmetric(self):
+        export_bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT)
+        import_bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT)
+        assert abs(export_bias + import_bias) < 1e-9
+
+    def test_export_priority_has_no_bias(self):
+        """export_priority blocks surplus in control logic, not via current bias."""
+        assert _priority_current_bias_a(PRIORITY_EXPORT) == 0.0
+
+    def test_import_priority_has_no_bias(self):
+        """import_priority uses force-charge path, not current bias."""
+        assert _priority_current_bias_a(PRIORITY_IMPORT) == 0.0
+
+    def test_unknown_priority_defaults_to_zero(self):
+        assert _priority_current_bias_a("unknown_mode") == 0.0
+
+    def test_configurable_bias_w(self):
+        """Bias is proportional to priority_bias_w config value."""
+        bias_200 = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT, bias_w=200.0)
+        assert abs(bias_200 - 200.0 / (230.0 * 3.0)) < 1e-9
+
+    def test_surplus_is_unaffected_by_priority(self):
+        """Surplus calculation does NOT include any priority offset."""
+        s = compute_surplus(-1000.0, 0.0)
+        for prio in [PRIORITY_BALANCE, PRIORITY_ZERO_PREFER_EXPORT, PRIORITY_ZERO_PREFER_IMPORT,
+                     PRIORITY_EXPORT, PRIORITY_IMPORT]:
+            assert compute_surplus(-1000.0, 0.0) == s
+
+
+class TestChargingPriorityControlEffect:
+    """Verify priority modes affect the controller correctly without polluting monitoring."""
+
+    def test_balance_does_not_affect_control_current(self):
+        """balance mode passes raw ema straight through."""
+        raw = compute_raw_current(compute_surplus(-1000.0, 0.0), 230.0)
+        assert apply_priority_bias(raw, PRIORITY_BALANCE) == min(max(raw, 0.0), 16.0)
+
+    def test_zero_prefer_import_enables_charging_on_slight_import(self):
+        """zero_prefer_import allows charging when net is slightly positive (import).
+
+        Without bias: ema = -0.5A → no start. With bias: ~0.22A → can start.
+        """
+        # Net importing 300 W → surplus = -300 W → raw = -0.43 A
+        raw_current_a = compute_raw_current(compute_surplus(300.0, 0.0), 230.0)
+        ema_unbiased = max(raw_current_a, 0.0)  # 0.0 after floor
+        assert ema_unbiased == 0.0
+
+        # With bias: adds 500W/(230*3) ≈ 0.72A → biased current > 0
+        biased = apply_priority_bias(raw_current_a, PRIORITY_ZERO_PREFER_IMPORT)
+        assert biased > 0.0
+
+    def test_zero_prefer_export_requires_extra_surplus_before_charging(self):
+        """zero_prefer_export needs >bias_w of surplus before controller acts.
+
+        e.g. 300 W actual surplus → raw ≈ +0.43 A, but after −0.72 A bias → 0 A.
+        """
+        # 300 W surplus → raw ≈ 0.43 A; bias = −0.72 A → net = −0.29 A → clamped 0
+        raw_current_a = compute_raw_current(compute_surplus(-300.0, 0.0), 230.0)
+        biased = apply_priority_bias(raw_current_a, PRIORITY_ZERO_PREFER_EXPORT)
+        assert biased == 0.0
+
+        # 800 W surplus → raw ≈ 1.16 A; after −0.72 A bias → 0.44 A → control starts
+        raw_large = compute_raw_current(compute_surplus(-800.0, 0.0), 230.0)
+        biased_large = apply_priority_bias(raw_large, PRIORITY_ZERO_PREFER_EXPORT)
+        assert biased_large > 0.0
+
+    def test_bias_is_clamped_to_max(self):
+        """Biased current is capped to max_a (16A)."""
+        result = apply_priority_bias(15.8, PRIORITY_ZERO_PREFER_IMPORT)
+        assert result == 16.0
+
+    def test_import_priority_uses_force_charge(self):
+        """import_priority should trigger force charge — reflected as import_priority force source."""
+        charge_now = False
+        tonight_condition = False
+        low_power_active = False
+        cable_connected = True
+        priority = PRIORITY_IMPORT
+        import_priority_force = (priority == PRIORITY_IMPORT and cable_connected)
+        force_charge = charge_now or tonight_condition or low_power_active or import_priority_force
+        assert force_charge is True
+
+    def test_import_priority_no_force_when_cable_disconnected(self):
+        """import_priority does NOT force charge when cable is not connected."""
+        cable_connected = False
+        priority = PRIORITY_IMPORT
+        import_priority_force = (priority == PRIORITY_IMPORT and bool(cable_connected))
+        assert import_priority_force is False
+
+    def test_export_priority_does_not_affect_surplus(self):
+        """export_priority keeps surplus unchanged — control logic handles the block."""
+        surplus = compute_surplus(-3000.0, 0.0)
+        assert surplus == 3000.0

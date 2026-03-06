@@ -28,6 +28,7 @@ from .const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGING_PRIORITY,
     CONF_EV_BATTERY_ENERGY_SENSOR,
     CONF_EV_ENERGY_ADDED_SENSOR,
     CONF_CHARGE_LIMIT_NUMBER,
@@ -132,6 +133,13 @@ from .const import (
     MODE_NET_ONLY,
     MODE_STOPPED,
     MODE_SURPLUS,
+    CONF_PRIORITY_BIAS_W,
+    DEFAULT_PRIORITY_BIAS_W,
+    PRIORITY_BALANCE,
+    PRIORITY_EXPORT,
+    PRIORITY_IMPORT,
+    PRIORITY_ZERO_PREFER_EXPORT,
+    PRIORITY_ZERO_PREFER_IMPORT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -247,6 +255,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._hysteresis_up: float = float(options.get(CONF_HYSTERESIS_UP, DEFAULT_HYSTERESIS_UP))
         self._hysteresis_down: float = float(options.get(CONF_HYSTERESIS_DOWN, DEFAULT_HYSTERESIS_DOWN))
         self._settling_duration_s: float = float(options.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S))
+        self._priority_bias_w: float = float(options.get(CONF_PRIORITY_BIAS_W, DEFAULT_PRIORITY_BIAS_W))
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -280,6 +289,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # Master controller switch — default OFF for safe first install
         self._controller_enabled: bool = False
+
+        # Charging priority mode — controls current bias and import guard behaviour
+        self._charging_priority: str = PRIORITY_BALANCE
 
         # Control state
         self._charging_on: bool = False
@@ -363,6 +375,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- EV battery-side energy tracking ---
         # Snapshot of EV battery energy remaining at session start (kWh).
         self._session_start_battery_kwh: float | None = None
+        # Last battery sensor value seen — used to detect when it changes so we
+        # can snapshot the wall energy at that exact moment (see below).
+        self._prev_battery_energy_kwh: float | None = None
+        # Wall energy (session Wh) captured the last time the battery sensor
+        # reported a new value.  _compute_overhead_pct uses this snapshot rather
+        # than the live _energy_session_wh to avoid a sawtooth:
+        #   • Wall energy accumulates every 10 s (HA integration tick)
+        #   • Battery sensor polls the car API every ~3 min
+        # Without the snapshot, overhead creeps up ~0.1 pp/10 s between battery
+        # updates then snaps down 2–3 pp when the battery finally reports a new
+        # reading — a perfectly regular sawtooth visible in the HA history graph.
+        # Using the wall value at the moment the battery changed gives a matched
+        # pair, so the displayed overhead is stable between car API polls.
+        self._session_battery_wall_snapshot_wh: float = 0.0
         # Rolling overhead tracking (wall energy vs battery-received).
         self._overhead_total_wall_wh: float = 0.0
         self._overhead_total_battery_wh: float = 0.0
@@ -543,6 +569,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         import_guard_triggered = self._check_import_guard(
             sensor_data["computed_net_w"], mono_now
         )
+        # When explicitly targeting import (PRIORITY_IMPORT), the user accepts
+        # grid draw — disable import guard so it does not reduce current.
+        if self._charging_priority == PRIORITY_IMPORT:
+            import_guard_triggered = False
 
         # --- Phase 7b: Energy accumulation ---
         self._accumulate_energy(sensor_data, mono_now)
@@ -552,10 +582,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
+            # Apply priority current bias for zero_prefer_import mode.
+            # The bias is added ONLY to the current used by the control logic —
+            # surplus_w and the displayed ema_current_a are NOT affected, so
+            # the real power scenario remains visible in monitoring.
+            control_ema = analysis["ema_current_a"]
+            bias_a = self._get_priority_current_bias_a()
+            if bias_a != 0.0:
+                capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
+                control_ema = min(max(control_ema + bias_a, 0.0), capped_limit)
             await self._run_control_logic(
                 force_charge=force_data["force_charge"],
                 raw_floored=analysis["raw_floored"],
-                ema_current=analysis["ema_current_a"],
+                ema_current=control_ema,
                 mono_now=mono_now,
                 import_safety=import_guard_triggered,
                 coherence=analysis["coherence"],
@@ -656,6 +695,29 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # Phase 2: Alignment, EMA, confidence
     # ------------------------------------------------------------------
+
+    def _get_priority_current_bias_a(self) -> float:
+        """Return current bias (A) to add to EMA current for control logic only.
+
+        Applied AFTER the surplus/EMA calculation so surplus_w and the displayed
+        ema_current_a remain clean for monitoring purposes.
+
+          balance             → 0 A (default — aim for exactly 0 W net, pure surplus)
+          zero_prefer_import  → +bias A: controller starts/modulates even when the
+                                actual surplus is slightly below zero, targeting
+                                ~priority_bias_w of deliberate grid import.
+          zero_prefer_export  → −bias A: controller requires an actual surplus above
+                                the bias before starting/modulating, targeting
+                                ~priority_bias_w of grid export above the start point.
+          export_priority     → 0 A (surplus charging blocked in control logic)
+          import_priority     → 0 A (handled via force charge path, not bias)
+        """
+        bias_a = self._priority_bias_w / (230.0 * 3.0)
+        if self._charging_priority == PRIORITY_ZERO_PREFER_IMPORT:
+            return bias_a
+        if self._charging_priority == PRIORITY_ZERO_PREFER_EXPORT:
+            return -bias_a
+        return 0.0
 
     def _analyze_measurements(
         self, sensor_data: dict[str, Any], mono_now: float
@@ -949,11 +1011,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         low_power_active = True
 
         force_charge = self._charge_now or tonight_condition or low_power_active
+        # import_priority acts like a permanent charge_now — force charge whenever
+        # the cable is connected (regardless of solar, range, or tonight schedule).
+        import_priority_force = (
+            self._charging_priority == PRIORITY_IMPORT
+            and bool(cable_connected)
+        )
+        force_charge = force_charge or import_priority_force
         if force_charge:
             if self._charge_now:
                 self._force_source = "charge_now_switch"
             elif tonight_condition:
                 self._force_source = "charge_tonight"
+            elif import_priority_force:
+                self._force_source = "import_priority"
             else:
                 self._force_source = "low_power"
 
@@ -1031,6 +1102,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._session_start_soc = _get_float_state(self.hass, self._battery_sensor)
         # Snapshot EV battery energy remaining for battery-side delta tracking.
         self._session_start_battery_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        # Reset battery-snapshot tracking so _compute_overhead_pct starts fresh.
+        self._prev_battery_energy_kwh = self._session_start_battery_kwh
+        self._session_battery_wall_snapshot_wh = 0.0
 
     def _compute_session_battery_delta(self) -> float | None:
         """Return the battery-side energy delta for the current session (kWh).
@@ -1042,6 +1116,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         integration restarted while the cable was already connected, or the
         sensor was temporarily unavailable at actual plug-in time) the first
         valid sensor reading becomes the new baseline and 0.0 is returned.
+
+        Side-effect: whenever the sensor reports a new value, the current
+        session wall energy (_energy_session_wh) is captured in
+        _session_battery_wall_snapshot_wh.  _compute_overhead_pct uses this
+        snapshot instead of the live wall total to prevent a sawtooth pattern
+        (see _session_battery_wall_snapshot_wh docstring in __init__).
         """
         current = _get_float_state(self.hass, self._ev_battery_energy_sensor)
         if current is None:
@@ -1051,7 +1131,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # produce the real delta.
         if self._session_start_battery_kwh is None:
             self._session_start_battery_kwh = current
+            self._prev_battery_energy_kwh = current
+            self._session_battery_wall_snapshot_wh = self._energy_session_wh
             return 0.0
+        # Capture a matched wall-energy snapshot whenever the battery sensor
+        # reports a new reading.  This ensures _compute_overhead_pct always
+        # uses a (battery, wall) pair measured at the same instant rather than
+        # a stale battery value paired with an ever-growing wall accumulator.
+        if current != self._prev_battery_energy_kwh:
+            self._prev_battery_energy_kwh = current
+            self._session_battery_wall_snapshot_wh = self._energy_session_wh
         delta = current - self._session_start_battery_kwh
         return round(max(delta, 0.0), 2)
 
@@ -1067,6 +1156,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         session end.  The current session is excluded once the cable
         disconnects (``_cable_prev`` becomes False) to prevent double-counting
         when the same session data is later committed to the store.
+
+        The live blend uses _session_battery_wall_snapshot_wh (the wall energy
+        captured at the last battery sensor change) rather than the live
+        _energy_session_wh accumulator.  This prevents a ~2 pp sawtooth that
+        would otherwise appear every time the car API delivers a new battery
+        reading: between API polls (typically ~3 min) the wall total grows
+        every 10 s while the battery value is frozen, driving the ratio higher
+        until the next battery update snaps it back down.  By using the wall
+        snapshot taken at the same instant as the battery reading, both sides
+        of the ratio advance together and the displayed value stays stable.
+
         Returns None when insufficient data.
         """
         wall = self._store.get("overhead_wall_wh")
@@ -1077,7 +1177,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # by _detect_cable_plugin (Phase 6) before _build_data_dict calls this.
         if self._cable_prev:
             session_battery_delta = self._compute_session_battery_delta()
-            session_wall_wh = self._energy_session_wh
+            # Use the wall snapshot from the last battery sensor change rather
+            # than the live accumulator (see docstring above).
+            session_wall_wh = self._session_battery_wall_snapshot_wh
             if (
                 session_battery_delta is not None
                 and session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
@@ -1332,6 +1434,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
             "session_battery_delta_kwh": self._compute_session_battery_delta(),
             "charging_overhead_pct": self._compute_overhead_pct(),
+            # --- Charging priority ---
+            "charging_priority": self._charging_priority,
         }
 
     # ------------------------------------------------------------------
@@ -1448,6 +1552,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 return
 
         if force_charge:
+            return
+
+        # Export priority: block all surplus charging so all solar is exported.
+        # Force charge (charge_now / charge_tonight) overrides this — handled above.
+        if self._charging_priority == PRIORITY_EXPORT:
+            if self._charging_on and self._current_mode == MODE_SURPLUS:
+                if self._pending_task is None or self._pending_task.done():
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(self._stop_delay, self._action_stop_surplus),
+                        eager_start=False,
+                    )
             return
 
         # --- Import safety: escalation ladder ---
@@ -2016,6 +2131,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""
         self._max_current_limit = value
+
+    def set_charging_priority(self, value: str) -> None:
+        """Set the charging priority mode."""
+        self._charging_priority = value
+
+    @property
+    def charging_priority(self) -> str:
+        """Return the current charging priority mode."""
+        return self._charging_priority
 
     def restore_energy_state(
         self, total_wh: float, solar_wh: float, import_wh: float
