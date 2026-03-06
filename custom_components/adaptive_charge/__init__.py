@@ -188,6 +188,8 @@ async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -
     """Create HA utility meter helpers based on config settings."""
     options = {**entry.data, **entry.options}
     if not options.get(CONF_ENABLE_UTILITY_METERS, False):
+        # Utility meters disabled — remove any that were previously created
+        await _async_remove_utility_meters(hass, entry)
         return
 
     source_entity_id = _get_energy_charged_entity_id(hass, entry)
@@ -242,11 +244,12 @@ async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -
             continue
 
         try:
+            meter_name = f"{entry.title} {name_suffix}"
             result = await hass.config_entries.flow.async_init(
                 _UTILITY_METER_DOMAIN,
                 context={"source": "user"},
                 data={
-                    "name": name_suffix,
+                    "name": meter_name,
                     "source": source_entity_id,
                     "cycle": cycle,
                     "offset": 0,
@@ -279,6 +282,18 @@ async def _async_remove_utility_meters(hass: HomeAssistant, entry: ConfigEntry) 
     domain_data = hass.data.get(DOMAIN, {})
     um_key = f"{entry.entry_id}_utility_meters"
     um_entry_ids: list[str] = domain_data.pop(um_key, [])
+
+    # Also discover utility meters by source entity so removal works even
+    # after an HA restart (tracked IDs are lost from memory on restart).
+    source_entity_id = _get_energy_charged_entity_id(hass, entry)
+    if source_entity_id:
+        for existing_entry in hass.config_entries.async_entries(_UTILITY_METER_DOMAIN):
+            ex_cfg = {**existing_entry.data, **existing_entry.options}
+            if (
+                ex_cfg.get("source") == source_entity_id
+                and existing_entry.entry_id not in um_entry_ids
+            ):
+                um_entry_ids.append(existing_entry.entry_id)
 
     for um_entry_id in um_entry_ids:
         um_entry = hass.config_entries.async_get_entry(um_entry_id)
