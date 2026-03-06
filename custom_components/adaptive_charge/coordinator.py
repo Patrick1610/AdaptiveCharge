@@ -28,6 +28,8 @@ from .const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_EV_BATTERY_ENERGY_SENSOR,
+    CONF_EV_ENERGY_ADDED_SENSOR,
     CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_LIMIT_SENSOR,
     CONF_DEFAULT_CHARGE_LIMIT,
@@ -202,6 +204,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._cable_sensor: str | None = options.get(CONF_CABLE_SENSOR)
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
+        self._ev_battery_energy_sensor: str | None = options.get(CONF_EV_BATTERY_ENERGY_SENSOR)
+        self._ev_energy_added_sensor: str | None = options.get(CONF_EV_ENERGY_ADDED_SENSOR)
         self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
         self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
         self._default_charge_limit: int = int(options.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT))
@@ -356,6 +360,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._solar_production_wh: float = 0.0
         self._last_energy_mono: float | None = None
 
+        # --- EV battery-side energy tracking ---
+        # Snapshot of EV battery energy remaining at session start (kWh).
+        self._session_start_battery_kwh: float | None = None
+        # Rolling overhead tracking (wall energy vs battery-received).
+        self._overhead_total_wall_wh: float = 0.0
+        self._overhead_total_battery_wh: float = 0.0
+
         # --- Battery capacity auto-detection ---
         # SoC recorded when cable is plugged in, used to compute session estimate.
         self._session_start_soc: float | None = None
@@ -397,6 +408,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         stored_estimate = self._store.get("battery_capacity_estimate_kwh")
         if stored_estimate > 0:
             self._estimated_battery_capacity_kwh = stored_estimate
+        # Restore overhead totals from the store
+        self._overhead_total_wall_wh = self._store.get("overhead_wall_wh")
+        self._overhead_total_battery_wh = self._store.get("overhead_battery_wh")
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -580,6 +594,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         current_range = _get_float_state(self.hass, self._current_range_sensor)
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
+        ev_battery_energy_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        ev_energy_added_kwh = _get_float_state(self.hass, self._ev_energy_added_sensor)
 
         # Sum all remaining-forecast sensor values (kWh remaining today)
         forecast_kwh: float | None = None
@@ -620,6 +636,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "battery_pct": battery_pct,
             "charge_limit_pct": charge_limit_pct,
             "forecast_kwh": forecast_kwh,
+            "ev_battery_energy_kwh": ev_battery_energy_kwh,
+            "ev_energy_added_kwh": ev_energy_added_kwh,
         }
 
     # ------------------------------------------------------------------
@@ -998,6 +1016,36 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_import_wh = 0.0
         # Snapshot the current SoC as the session baseline for capacity estimation.
         self._session_start_soc = _get_float_state(self.hass, self._battery_sensor)
+        # Snapshot EV battery energy remaining for battery-side delta tracking.
+        self._session_start_battery_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+
+    def _compute_session_battery_delta(self) -> float | None:
+        """Return the battery-side energy delta for the current session (kWh).
+
+        Uses the EV battery energy remaining sensor: end − start snapshot.
+        Returns None if the sensor is not configured or snapshots are unavailable.
+        """
+        if self._session_start_battery_kwh is None:
+            return None
+        current = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        if current is None:
+            return None
+        delta = current - self._session_start_battery_kwh
+        return round(max(delta, 0.0), 2)
+
+    def _compute_overhead_pct(self) -> float | None:
+        """Return the rolling charging overhead percentage.
+
+        overhead% = (1 − battery_received / wall_energy) × 100
+
+        Uses lifetime totals from the persistent store so the metric is
+        stable across sessions.  Returns None when insufficient data.
+        """
+        wall = self._store.get("overhead_wall_wh")
+        battery = self._store.get("overhead_battery_wh")
+        if wall > 0 and battery > 0:
+            return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+        return None
 
     # ------------------------------------------------------------------
     # Phase 6: Cable plug-in detection
@@ -1236,6 +1284,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "solar_to_ev_ratio": (
                 round(solar_to_ev_ratio, 4) if solar_to_ev_ratio is not None else None
             ),
+            # --- EV battery-side metrics ---
+            "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
+            "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
+            "session_battery_delta_kwh": self._compute_session_battery_delta(),
+            "charging_overhead_pct": self._compute_overhead_pct(),
         }
 
     # ------------------------------------------------------------------
@@ -1687,13 +1740,25 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def _update_capacity_estimate(self) -> None:
         """Estimate battery capacity from the just-completed charging session.
 
-        The estimate is derived from wall-measured energy (EV power sensor), so
-        it already includes AC→battery charging losses. This means the resulting
-        ``energy_needed`` calculation in the low-power check is automatically
+        When the EV battery energy sensor is configured, the estimate uses
+        direct battery-side kWh delta — this is more accurate than the
+        SoC%-based method because:
+          • SoC is rounded to whole-percent or 0.5% steps → noisy
+          • Battery energy remaining has 0.01 kWh resolution
+
+        As a side-effect, when both wall energy and battery-side delta are
+        available, the **charging overhead** (AC→DC losses) is computed and
+        accumulated for the rolling overhead percentage.
+
+        Fallback: if the battery energy sensor is unavailable, the legacy
+        SoC-based method is used (wall energy / SoC delta × 100).
+
+        The wall-energy-based estimate already includes AC→battery charging
+        losses, so ``energy_needed`` in the low-power check is automatically
         pre-overhead — no separate efficiency factor is required.
 
-        Only updates when the SoC increased by at least 5 % and at least 0.5 kWh
-        was added in the session, to avoid noise from rounding or tiny top-ups.
+        Only updates when at least 0.5 kWh was added in the session and either
+        the SoC increased by ≥5% or the battery-side kWh delta is ≥0.5 kWh.
         """
         if self._session_start_soc is None:
             return
@@ -1701,11 +1766,41 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if end_soc is None:
             return
         soc_delta = end_soc - self._session_start_soc
-        energy_kwh = self._energy_session_wh / 1000.0
-        if soc_delta < self._CAPACITY_MIN_SOC_DELTA or energy_kwh < self._CAPACITY_MIN_ENERGY_KWH:
+        wall_energy_kwh = self._energy_session_wh / 1000.0
+
+        # --- Battery-side delta (preferred when available) ---
+        battery_delta_kwh: float | None = None
+        if self._session_start_battery_kwh is not None:
+            end_battery = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+            if end_battery is not None:
+                delta = end_battery - self._session_start_battery_kwh
+                if delta >= self._CAPACITY_MIN_ENERGY_KWH:
+                    battery_delta_kwh = delta
+
+        # --- Overhead computation ---
+        if battery_delta_kwh is not None and wall_energy_kwh >= self._CAPACITY_MIN_ENERGY_KWH:
+            self._overhead_total_wall_wh += wall_energy_kwh * 1000.0
+            self._overhead_total_battery_wh += battery_delta_kwh * 1000.0
+            self._store.add_overhead(wall_energy_kwh * 1000.0, battery_delta_kwh * 1000.0)
+            if wall_energy_kwh > 0:
+                session_overhead_pct = max(0.0, (1.0 - battery_delta_kwh / wall_energy_kwh)) * 100.0
+                _LOGGER.info(
+                    "AdaptiveCharge: session charging overhead %.1f%% "
+                    "(wall=%.2f kWh, battery=%.2f kWh)",
+                    session_overhead_pct, wall_energy_kwh, battery_delta_kwh,
+                )
+
+        # --- Capacity estimation ---
+        # Prefer battery-side estimate when we have both kWh delta and SoC delta.
+        if battery_delta_kwh is not None and soc_delta >= self._CAPACITY_MIN_SOC_DELTA:
+            # Battery-side: direct kWh ÷ SoC% = true usable capacity
+            raw_estimate = (battery_delta_kwh * 100.0) / soc_delta
+        elif soc_delta >= self._CAPACITY_MIN_SOC_DELTA and wall_energy_kwh >= self._CAPACITY_MIN_ENERGY_KWH:
+            # Fallback: wall energy ÷ SoC% (includes losses)
+            raw_estimate = (wall_energy_kwh * 100.0) / soc_delta
+        else:
             return
 
-        raw_estimate = (energy_kwh * 100.0) / soc_delta
         raw_estimate = max(self._CAPACITY_MIN_KWH, min(self._CAPACITY_MAX_KWH, raw_estimate))
 
         if self._estimated_battery_capacity_kwh > 0:
@@ -1717,12 +1812,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._estimated_battery_capacity_kwh = raw_estimate
 
         self._store.set_battery_capacity_estimate(self._estimated_battery_capacity_kwh)
+        source = "battery_sensor" if battery_delta_kwh is not None else "wall"
         _LOGGER.info(
             "AdaptiveCharge: battery capacity estimate updated to %.1f kWh "
-            "(soc_delta=%.1f%%, energy=%.2f kWh, raw=%.1f kWh)",
+            "(source=%s, soc_delta=%.1f%%, energy=%.2f kWh, raw=%.1f kWh)",
             self._estimated_battery_capacity_kwh,
+            source,
             soc_delta,
-            energy_kwh,
+            battery_delta_kwh if battery_delta_kwh is not None else wall_energy_kwh,
             raw_estimate,
         )
 
