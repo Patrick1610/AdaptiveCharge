@@ -5124,3 +5124,228 @@ class TestStorageOverhead:
         # Mirrors storage.add_overhead: if wall_wh <= 0, return
         wall_wh = -100.0
         assert wall_wh <= 0  # would be rejected by store
+
+
+# ---------------------------------------------------------------------------
+# Tests: Energy counters restored from store before first tick
+# ---------------------------------------------------------------------------
+
+def _simulate_first_refresh_energy_restore(
+    store_energy_total_wh: float,
+    store_energy_solar_wh: float,
+    store_energy_import_wh: float,
+    store_solar_production_wh: float,
+) -> dict:
+    """Mirror of the energy restore logic added to async_config_entry_first_refresh.
+
+    Returns the in-memory counters as they would be set just before the first
+    _async_tick call.
+    """
+    energy_total_wh = 0.0
+    energy_solar_wh = 0.0
+    energy_import_wh = 0.0
+    solar_production_wh = 0.0
+
+    stored_energy_total = store_energy_total_wh
+    if stored_energy_total > 0:
+        energy_total_wh = stored_energy_total
+        energy_solar_wh = store_energy_solar_wh
+        energy_import_wh = store_energy_import_wh
+
+    solar_production_wh = store_solar_production_wh
+
+    return {
+        "energy_total_wh": energy_total_wh,
+        "energy_solar_wh": energy_solar_wh,
+        "energy_import_wh": energy_import_wh,
+        "solar_production_wh": solar_production_wh,
+    }
+
+
+class TestEnergyRestoredFromStoreBeforeFirstTick:
+    """Energy counters must be restored from the persistent store before the
+    first coordinator tick so that TOTAL_INCREASING sensors never briefly
+    report 0, which would cause utility meters to count the recovery as new
+    energy."""
+
+    def test_positive_total_restores_all_counters(self):
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=5000.0,
+            store_energy_solar_wh=3000.0,
+            store_energy_import_wh=2000.0,
+            store_solar_production_wh=12000.0,
+        )
+        assert result["energy_total_wh"] == 5000.0
+        assert result["energy_solar_wh"] == 3000.0
+        assert result["energy_import_wh"] == 2000.0
+        assert result["solar_production_wh"] == 12000.0
+
+    def test_zero_total_leaves_counters_at_zero(self):
+        """If the store has never recorded any energy, counters stay at 0."""
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=0.0,
+            store_energy_solar_wh=0.0,
+            store_energy_import_wh=0.0,
+            store_solar_production_wh=0.0,
+        )
+        assert result["energy_total_wh"] == 0.0
+        assert result["energy_solar_wh"] == 0.0
+        assert result["energy_import_wh"] == 0.0
+
+    def test_solar_production_restored_regardless_of_energy_total(self):
+        """Solar production total is restored even when energy_total_wh is 0."""
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=0.0,
+            store_energy_solar_wh=0.0,
+            store_energy_import_wh=0.0,
+            store_solar_production_wh=8000.0,
+        )
+        assert result["solar_production_wh"] == 8000.0
+
+    def test_no_drop_to_zero_on_reload(self):
+        """Simulates reload: coordinator must start with the stored value,
+        not 0. Sensors should never see a 0-value before restore completes."""
+        # Before fix: first tick had energy_total_wh=0.0 (brief zero window)
+        # After fix: first tick has energy_total_wh=500.0 (restored from store)
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=500.0,
+            store_energy_solar_wh=300.0,
+            store_energy_import_wh=200.0,
+            store_solar_production_wh=1500.0,
+        )
+        assert result["energy_total_wh"] == 500.0, (
+            "Energy sensor must not briefly report 0 on reload"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Live charging overhead (current session blended in)
+# ---------------------------------------------------------------------------
+
+def _compute_live_overhead_pct(
+    store_wall_wh: float,
+    store_battery_wh: float,
+    cable_connected: bool,
+    session_wall_wh: float,
+    session_battery_delta_kwh: float | None,
+    capacity_min_energy_kwh: float = 0.5,
+) -> float | None:
+    """Mirror of the updated _compute_overhead_pct logic.
+
+    Blends in current-session data when the cable is connected and enough
+    energy has been charged, preventing double-counting after disconnect.
+    """
+    wall = store_wall_wh
+    battery = store_battery_wh
+
+    if cable_connected:
+        if (
+            session_battery_delta_kwh is not None
+            and session_wall_wh / 1000.0 >= capacity_min_energy_kwh
+            and session_battery_delta_kwh >= capacity_min_energy_kwh
+        ):
+            wall += session_wall_wh
+            battery += session_battery_delta_kwh * 1000.0
+
+    if wall > 0 and battery > 0:
+        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+    return None
+
+
+class TestLiveChargingOverhead:
+    """ChargingOverheadSensor should update live during a session by blending
+    current session data into the lifetime store totals."""
+
+    def test_no_data_returns_none(self):
+        result = _compute_live_overhead_pct(0, 0, False, 0, None)
+        assert result is None
+
+    def test_lifetime_only_when_cable_disconnected(self):
+        """After session end, only lifetime store data is used (no double-count)."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=False,
+            session_wall_wh=2000.0,
+            session_battery_delta_kwh=1.8,
+        )
+        # lifetime: (1 - 9000/10000) * 100 = 10.0%
+        assert result == 10.0
+
+    def test_live_blend_when_cable_connected_and_enough_energy(self):
+        """During charging with sufficient data, current session is included."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=2000.0,         # 2 kWh from wall this session
+            session_battery_delta_kwh=1.8,  # 1.8 kWh into battery
+        )
+        # blended: wall=12000, battery=10800 → (1 - 10800/12000) * 100 = 10.0%
+        assert result == 10.0
+
+    def test_no_blend_when_session_wall_below_threshold(self):
+        """Session with <0.5 kWh wall falls back to lifetime overhead."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=100.0,          # < 0.5 kWh → below threshold
+            session_battery_delta_kwh=0.09,
+        )
+        assert result == 10.0  # lifetime only
+
+    def test_no_blend_when_battery_delta_below_threshold(self):
+        """Battery delta below 0.5 kWh falls back to lifetime overhead."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=1000.0,
+            session_battery_delta_kwh=0.3,  # < 0.5 kWh → below threshold
+        )
+        assert result == 10.0  # lifetime only
+
+    def test_no_blend_when_battery_delta_is_none(self):
+        """No battery sensor → falls back to lifetime overhead."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=2000.0,
+            session_battery_delta_kwh=None,
+        )
+        assert result == 10.0
+
+    def test_first_session_live_overhead_no_history(self):
+        """First-ever session: shows live overhead from current session only
+        (no lifetime store data available yet)."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            cable_connected=True,
+            session_wall_wh=5000.0,         # 5 kWh wall
+            session_battery_delta_kwh=4.5,  # 4.5 kWh battery → 10% overhead
+        )
+        assert result == 10.0
+
+    def test_live_overhead_reflects_session_progress(self):
+        """As charging progresses, overhead estimate updates each tick."""
+        # Early in session: 1 kWh wall, 0.9 kWh battery → 10%
+        result_early = _compute_live_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            cable_connected=True,
+            session_wall_wh=1000.0,
+            session_battery_delta_kwh=0.9,
+        )
+        # Later: 5 kWh wall, 4.5 kWh battery → still 10%
+        result_later = _compute_live_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            cable_connected=True,
+            session_wall_wh=5000.0,
+            session_battery_delta_kwh=4.5,
+        )
+        assert result_early == 10.0
+        assert result_later == 10.0

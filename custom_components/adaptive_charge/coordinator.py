@@ -411,6 +411,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Restore overhead totals from the store
         self._overhead_total_wall_wh = self._store.get("overhead_wall_wh")
         self._overhead_total_battery_wh = self._store.get("overhead_battery_wh")
+        # Restore energy counters from the store so that sensors report their
+        # correct value in the very first tick rather than briefly showing 0.
+        # Without this, TOTAL_INCREASING sensors (e.g. Energy Charged) would
+        # momentarily drop to 0 on reload, causing HA utility meters to
+        # incorrectly count the recovery as new energy.
+        stored_energy_total = self._store.get("energy_total_wh")
+        if stored_energy_total > 0:
+            self._energy_total_wh = stored_energy_total
+            self._energy_solar_wh = self._store.get("energy_solar_wh")
+            self._energy_import_wh = self._store.get("energy_import_wh")
+        # Restore solar production total so the solar_production_kwh attribute
+        # is also correct from the first tick (used by SolarToEvRatioSensor).
+        self._solar_production_wh = self._store.get("solar_production_total_wh")
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -1038,11 +1051,32 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         overhead% = (1 − battery_received / wall_energy) × 100
 
-        Uses lifetime totals from the persistent store so the metric is
-        stable across sessions.  Returns None when insufficient data.
+        Uses lifetime totals from the persistent store.  When the cable is
+        currently connected and at least CAPACITY_MIN_ENERGY_KWH has been
+        charged in the current session, the in-progress session data is blended
+        in so the metric updates live during charging rather than only at
+        session end.  The current session is excluded once the cable
+        disconnects (``_cable_prev`` becomes False) to prevent double-counting
+        when the same session data is later committed to the store.
+        Returns None when insufficient data.
         """
         wall = self._store.get("overhead_wall_wh")
         battery = self._store.get("overhead_battery_wh")
+
+        # Live blend: add current session's partial data while charging.
+        # _cable_prev holds the most recently observed cable state — updated
+        # by _detect_cable_plugin (Phase 6) before _build_data_dict calls this.
+        if self._cable_prev:
+            session_battery_delta = self._compute_session_battery_delta()
+            session_wall_wh = self._energy_session_wh
+            if (
+                session_battery_delta is not None
+                and session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
+                and session_battery_delta >= self._CAPACITY_MIN_ENERGY_KWH
+            ):
+                wall += session_wall_wh
+                battery += session_battery_delta * 1000.0
+
         if wall > 0 and battery > 0:
             return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
         return None

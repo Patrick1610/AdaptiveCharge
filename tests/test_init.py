@@ -325,3 +325,122 @@ class TestUtilityMeterSourceDiscovery:
         assert found == ["um1"]
         found_old = _discover_utility_meters_by_source(entries, "sensor.old")
         assert found_old == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: Expert mode entity enabling
+# ---------------------------------------------------------------------------
+
+def _maybe_enable_expert_entities_mirror(
+    expert_mode: bool,
+    registry: dict,
+    entry_id: str,
+    suffixes: list[str],
+) -> dict:
+    """Mirror of _maybe_enable_expert_entities.
+
+    ``registry`` maps unique_id → disabled_by (None = enabled,
+    "integration" = disabled by integration, "user" = disabled by user).
+    Returns the updated registry dict.
+    """
+    INTEGRATION = "integration"
+
+    if not expert_mode:
+        return registry
+
+    result = dict(registry)
+    for suffix in suffixes:
+        unique_id = f"{entry_id}{suffix}"
+        if unique_id in result and result[unique_id] == INTEGRATION:
+            result[unique_id] = None  # enable
+    return result
+
+
+_EXPERT_SUFFIXES = ["_alignment_diagnostics", "_input_skew_seconds"]
+
+
+class TestExpertModeEntityEnabling:
+    """Expert mode must automatically enable normally-disabled entities.
+    Turning expert mode off must NOT re-disable anything."""
+
+    def test_expert_on_enables_integration_disabled_entities(self):
+        """When expert mode is on, entities disabled by the integration become enabled."""
+        registry = {
+            "entry1_alignment_diagnostics": "integration",
+            "entry1_input_skew_seconds": "integration",
+        }
+        result = _maybe_enable_expert_entities_mirror(
+            expert_mode=True, registry=registry, entry_id="entry1",
+            suffixes=_EXPERT_SUFFIXES,
+        )
+        assert result["entry1_alignment_diagnostics"] is None
+        assert result["entry1_input_skew_seconds"] is None
+
+    def test_expert_off_is_noop(self):
+        """When expert mode is off, nothing is changed."""
+        registry = {
+            "entry1_alignment_diagnostics": "integration",
+            "entry1_input_skew_seconds": "integration",
+        }
+        result = _maybe_enable_expert_entities_mirror(
+            expert_mode=False, registry=registry, entry_id="entry1",
+            suffixes=_EXPERT_SUFFIXES,
+        )
+        assert result["entry1_alignment_diagnostics"] == "integration"
+        assert result["entry1_input_skew_seconds"] == "integration"
+
+    def test_user_disabled_entities_are_not_touched(self):
+        """Entities disabled by the user are respected even in expert mode."""
+        registry = {
+            "entry1_alignment_diagnostics": "user",
+            "entry1_input_skew_seconds": "integration",
+        }
+        result = _maybe_enable_expert_entities_mirror(
+            expert_mode=True, registry=registry, entry_id="entry1",
+            suffixes=_EXPERT_SUFFIXES,
+        )
+        # User-disabled must not be changed
+        assert result["entry1_alignment_diagnostics"] == "user"
+        # Integration-disabled must be enabled
+        assert result["entry1_input_skew_seconds"] is None
+
+    def test_already_enabled_entities_are_not_changed(self):
+        """Entities already enabled (e.g., user enabled previously) stay enabled."""
+        registry = {
+            "entry1_alignment_diagnostics": None,
+            "entry1_input_skew_seconds": None,
+        }
+        result = _maybe_enable_expert_entities_mirror(
+            expert_mode=True, registry=registry, entry_id="entry1",
+            suffixes=_EXPERT_SUFFIXES,
+        )
+        assert result["entry1_alignment_diagnostics"] is None
+        assert result["entry1_input_skew_seconds"] is None
+
+    def test_turning_expert_off_does_not_disable_previously_enabled(self):
+        """When expert mode is turned off, entities stay enabled (no auto-disable)."""
+        # Simulate: expert was ON, entities are now enabled
+        registry = {
+            "entry1_alignment_diagnostics": None,
+            "entry1_input_skew_seconds": None,
+        }
+        # Now expert mode is turned OFF → reload → no entities should be disabled
+        result = _maybe_enable_expert_entities_mirror(
+            expert_mode=False, registry=registry, entry_id="entry1",
+            suffixes=_EXPERT_SUFFIXES,
+        )
+        assert result["entry1_alignment_diagnostics"] is None
+        assert result["entry1_input_skew_seconds"] is None
+
+    def test_different_entry_ids_do_not_interfere(self):
+        """Multiple config entries have independent expert-entity state."""
+        registry = {
+            "entryA_alignment_diagnostics": "integration",
+            "entryB_alignment_diagnostics": "integration",
+        }
+        result = _maybe_enable_expert_entities_mirror(
+            expert_mode=True, registry=registry, entry_id="entryA",
+            suffixes=["_alignment_diagnostics"],
+        )
+        assert result["entryA_alignment_diagnostics"] is None
+        assert result["entryB_alignment_diagnostics"] == "integration"

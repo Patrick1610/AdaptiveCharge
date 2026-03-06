@@ -13,6 +13,7 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_ENABLE_UTILITY_METERS,
+    CONF_EXPERT_MODE,
     CONF_UTILITY_DAILY,
     CONF_UTILITY_MONTHLY,
     CONF_UTILITY_YEARLY,
@@ -54,9 +55,41 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> AdaptiveChargeCo
     return None
 
 
+# Sensor unique-ID suffixes for entities that are normally disabled by default
+# but should be automatically enabled when expert mode is active.
+_EXPERT_SENSOR_SUFFIXES = [
+    "_alignment_diagnostics",
+    "_input_skew_seconds",
+]
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload entry when options are updated."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _maybe_enable_expert_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Enable diagnostic entities that are disabled by default when expert mode is on.
+
+    Called after platform setup so that all entities are already registered.
+    Only entities disabled by the integration itself (not by the user) are
+    considered, so manual user preferences are always respected.
+    When expert mode is OFF this function is a no-op — entities that were
+    previously enabled are intentionally left as-is.
+    """
+    options = {**entry.data, **entry.options}
+    if not options.get(CONF_EXPERT_MODE):
+        return
+    registry = er.async_get(hass)
+    for suffix in _EXPERT_SENSOR_SUFFIXES:
+        unique_id = f"{entry.entry_id}{suffix}"
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        if not entity_id:
+            continue
+        entity_entry = registry.async_get(entity_id)
+        if entity_entry and entity_entry.disabled_by == er.RegistryEntryDisabler.INTEGRATION:
+            registry.async_update_entity(entity_id, disabled_by=None)
+            _LOGGER.debug("Expert mode: enabled entity %s", entity_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -103,6 +136,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # If expert mode is on, ensure normally-disabled diagnostic entities are
+    # enabled in the registry so they become active without a second reload.
+    _maybe_enable_expert_entities(hass, entry)
 
     # Reload integration when options change (so updated entity selections take effect)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))

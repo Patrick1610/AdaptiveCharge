@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_EV_BATTERY_ENERGY_SENSOR, DOMAIN
+from .const import CONF_EV_BATTERY_ENERGY_SENSOR, CONF_EXPERT_MODE, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info, get_version
 
@@ -128,12 +128,17 @@ class AlignmentDiagnosticSensor(_BaseAdaptiveChargeSensor):
     """Diagnostic sensor exposing alignment engine state."""
 
     _attr_name = "Alignment Diagnostics"
-    _attr_entity_registry_enabled_default = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_alignment_diagnostics"
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enabled by default only when expert mode is active."""
+        options = {**self._entry.data, **self._entry.options}
+        return bool(options.get(CONF_EXPERT_MODE, False))
 
     @property
     def native_value(self) -> str | None:
@@ -237,12 +242,17 @@ class InputSkewSensor(_BaseAdaptiveChargeSensor):
     _attr_name = "Input Skew"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "s"
-    _attr_entity_registry_enabled_default = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_input_skew_seconds"
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enabled by default only when expert mode is active."""
+        options = {**self._entry.data, **self._entry.options}
+        return bool(options.get(CONF_EXPERT_MODE, False))
 
     @property
     def native_value(self) -> float | None:
@@ -461,7 +471,7 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 # Solar-to-EV ratio sensor
 # ---------------------------------------------------------------------------
 
-class SolarToEvRatioSensor(_BaseAdaptiveChargeSensor):
+class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
     """Lifetime ratio of solar energy that reached the EV vs total solar produced.
 
     Computed as: energy_solar_wh / solar_production_total_wh (capped at 1.0).
@@ -476,12 +486,28 @@ class SolarToEvRatioSensor(_BaseAdaptiveChargeSensor):
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_solar_to_ev_ratio"
+        self._last_known_ratio: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known ratio on HA restart/reload."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                self._last_known_ratio = float(state.state)
+            except (ValueError, TypeError):
+                pass
 
     @property
     def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("solar_to_ev_ratio")
+        if self.coordinator.data is not None:
+            ratio = self.coordinator.data.get("solar_to_ev_ratio")
+            if ratio is not None:
+                self._last_known_ratio = ratio
+                return ratio
+        # Return last known value during coordinator startup/reload so the
+        # sensor never briefly shows unavailable (which could distort statistics).
+        return self._last_known_ratio
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
