@@ -564,10 +564,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
+            # Apply priority current bias for zero_prefer_import mode.
+            # The bias is added ONLY to the current used by the control logic —
+            # surplus_w and the displayed ema_current_a are NOT affected, so
+            # the real power scenario remains visible in monitoring.
+            control_ema = analysis["ema_current_a"]
+            bias_a = self._get_priority_current_bias_a()
+            if bias_a != 0.0:
+                capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
+                control_ema = min(max(control_ema + bias_a, 0.0), capped_limit)
             await self._run_control_logic(
                 force_charge=force_data["force_charge"],
                 raw_floored=analysis["raw_floored"],
-                ema_current=analysis["ema_current_a"],
+                ema_current=control_ema,
                 mono_now=mono_now,
                 import_safety=import_guard_triggered,
                 coherence=analysis["coherence"],
@@ -669,22 +678,24 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # Phase 2: Alignment, EMA, confidence
     # ------------------------------------------------------------------
 
-    def _get_priority_surplus_offset_w(self) -> float:
-        """Return surplus power offset (W) for the current charging priority mode.
+    def _get_priority_current_bias_a(self) -> float:
+        """Return current bias (A) to add to EMA current for control logic only.
 
-        The offset is added to the surplus calculation to bias the controller:
-          export_priority      → large negative offset: surplus always ≈ 0 → no charging
-          import_priority      → large positive offset: surplus always at max → max charging
-          zero_prefer_import   → small positive offset: target ~500 W of grid import
-          zero_prefer_export   → zero offset (current default, aim for 0 W net)
+        Applied AFTER the surplus/EMA calculation so surplus_w and the displayed
+        ema_current_a remain clean for monitoring purposes.
+
+          zero_prefer_import  → +0.72 A (≈ 500 W at 230 V 3-phase): allows the
+                                controller to start charging and to modulate upward
+                                even when the actual surplus is slightly below zero,
+                                targeting ~500 W of deliberate grid import.
+          zero_prefer_export  → 0 A (default, no bias — aim for 0 W net)
+          export_priority     → 0 A (surplus charging blocked in control logic)
+          import_priority     → 0 A (handled via force charge path, not bias)
         """
-        if self._charging_priority == PRIORITY_EXPORT:
-            return -1_000_000.0
-        if self._charging_priority == PRIORITY_IMPORT:
-            return 1_000_000.0
         if self._charging_priority == PRIORITY_ZERO_PREFER_IMPORT:
-            return 500.0
-        return 0.0  # PRIORITY_ZERO_PREFER_EXPORT — default, no offset
+            # Target ~500 W of deliberate grid import: 500 W / (230 V × 3 phases) ≈ 0.72 A
+            return 500.0 / (230.0 * 3.0)
+        return 0.0
 
     def _analyze_measurements(
         self, sensor_data: dict[str, Any], mono_now: float
@@ -710,7 +721,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._prev_ev_w = ev_w
         self._prev_net_w = computed_net_w
 
-        surplus_w = (0.0 - computed_net_w) + ev_w + self._get_priority_surplus_offset_w()
+        surplus_w = (0.0 - computed_net_w) + ev_w
         raw_current_a = (surplus_w / (voltage * 3.0)) if voltage > 0 else 0.0
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
 
@@ -978,11 +989,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         low_power_active = True
 
         force_charge = self._charge_now or tonight_condition or low_power_active
+        # import_priority acts like a permanent charge_now — force charge whenever
+        # the cable is connected (regardless of solar, range, or tonight schedule).
+        import_priority_force = (
+            self._charging_priority == PRIORITY_IMPORT
+            and bool(cable_connected)
+        )
+        force_charge = force_charge or import_priority_force
         if force_charge:
             if self._charge_now:
                 self._force_source = "charge_now_switch"
             elif tonight_condition:
                 self._force_source = "charge_tonight"
+            elif import_priority_force:
+                self._force_source = "import_priority"
             else:
                 self._force_source = "low_power"
 
@@ -1479,6 +1499,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 return
 
         if force_charge:
+            return
+
+        # Export priority: block all surplus charging so all solar is exported.
+        # Force charge (charge_now / charge_tonight) overrides this — handled above.
+        if self._charging_priority == PRIORITY_EXPORT:
+            if self._charging_on and self._current_mode == MODE_SURPLUS:
+                if self._pending_task is None or self._pending_task.done():
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(self._stop_delay, self._action_stop_surplus),
+                        eager_start=False,
+                    )
             return
 
         # --- Import safety: escalation ladder ---
