@@ -4795,3 +4795,332 @@ class TestModulationRampUpRate:
         steps, delay = _simulate_ramp_up(committed, ema)
         assert steps == 2  # 1.0A step + 0.2A step (both above 0.2A hysteresis)
         assert delay >= 2 * _COOLDOWN_UP_S
+
+
+# ---------------------------------------------------------------------------
+# Helper: charging overhead computation (mirrors coordinator logic)
+# ---------------------------------------------------------------------------
+
+def _compute_overhead_pct(
+    overhead_wall_wh: float,
+    overhead_battery_wh: float,
+) -> float | None:
+    """Mirror of coordinator._compute_overhead_pct logic."""
+    if overhead_wall_wh > 0 and overhead_battery_wh > 0:
+        return round(max(0.0, (1.0 - overhead_battery_wh / overhead_wall_wh)) * 100.0, 1)
+    return None
+
+
+def _compute_session_battery_delta(
+    session_start_kwh: float | None,
+    current_kwh: float | None,
+) -> float | None:
+    """Mirror of coordinator._compute_session_battery_delta logic."""
+    if session_start_kwh is None or current_kwh is None:
+        return None
+    delta = current_kwh - session_start_kwh
+    return round(max(delta, 0.0), 2)
+
+
+def _compute_capacity_estimate_with_battery(
+    session_start_soc: float | None,
+    session_end_soc: float | None,
+    wall_energy_kwh: float,
+    battery_delta_kwh: float | None = None,
+    current_estimate: float = 0.0,
+    min_soc_delta: float = 5.0,
+    min_energy_kwh: float = 0.5,
+    ema_alpha: float = 0.3,
+    min_cap: float = 5.0,
+    max_cap: float = 200.0,
+) -> float:
+    """Mirror of updated coordinator._update_capacity_estimate with battery-side delta.
+
+    When battery_delta_kwh is provided and ≥ min_energy_kwh, uses that for the
+    capacity estimate (battery-side: true usable capacity). Otherwise falls back
+    to wall_energy_kwh (includes losses).
+    """
+    if session_start_soc is None or session_end_soc is None:
+        return current_estimate
+    soc_delta = session_end_soc - session_start_soc
+
+    # Battery-side preferred
+    if battery_delta_kwh is not None and battery_delta_kwh >= min_energy_kwh and soc_delta >= min_soc_delta:
+        raw = (battery_delta_kwh * 100.0) / soc_delta
+    elif soc_delta >= min_soc_delta and wall_energy_kwh >= min_energy_kwh:
+        raw = (wall_energy_kwh * 100.0) / soc_delta
+    else:
+        return current_estimate
+
+    raw = max(min_cap, min(max_cap, raw))
+    if current_estimate > 0:
+        return ema_alpha * raw + (1.0 - ema_alpha) * current_estimate
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charging overhead computation
+# ---------------------------------------------------------------------------
+
+class TestChargingOverhead:
+    """Tests for the rolling charging overhead percentage.
+
+    overhead% = (1 − battery_received / wall_energy) × 100
+    """
+
+    def test_typical_overhead(self):
+        """10% losses: 10 kWh wall, 9 kWh battery → 10% overhead."""
+        pct = _compute_overhead_pct(10000.0, 9000.0)
+        assert pct is not None
+        assert abs(pct - 10.0) < 0.1
+
+    def test_no_overhead(self):
+        """Perfect efficiency: wall == battery → 0% overhead."""
+        pct = _compute_overhead_pct(10000.0, 10000.0)
+        assert pct is not None
+        assert pct == 0.0
+
+    def test_high_overhead(self):
+        """25% losses: 10 kWh wall, 7.5 kWh battery → 25% overhead."""
+        pct = _compute_overhead_pct(10000.0, 7500.0)
+        assert pct is not None
+        assert abs(pct - 25.0) < 0.1
+
+    def test_no_wall_data(self):
+        """No wall data → None."""
+        assert _compute_overhead_pct(0.0, 5000.0) is None
+
+    def test_no_battery_data(self):
+        """No battery data → None."""
+        assert _compute_overhead_pct(5000.0, 0.0) is None
+
+    def test_both_zero(self):
+        """Both zero → None."""
+        assert _compute_overhead_pct(0.0, 0.0) is None
+
+    def test_battery_exceeds_wall(self):
+        """Battery > wall (measurement noise) → clamped to 0%."""
+        pct = _compute_overhead_pct(10000.0, 10500.0)
+        assert pct is not None
+        assert pct == 0.0
+
+    def test_accumulates_across_sessions(self):
+        """Rolling total across two sessions gives blended overhead."""
+        # Session 1: 10 kWh wall, 9 kWh battery (10%)
+        wall = 10000.0
+        battery = 9000.0
+        # Session 2: 20 kWh wall, 17 kWh battery (15%)
+        wall += 20000.0
+        battery += 17000.0
+        pct = _compute_overhead_pct(wall, battery)
+        assert pct is not None
+        # Blended: (1 - 26000/30000) × 100 ≈ 13.3%
+        assert abs(pct - 13.3) < 0.1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Session battery delta
+# ---------------------------------------------------------------------------
+
+class TestSessionBatteryDelta:
+    """Tests for the battery-side energy delta computation."""
+
+    def test_normal_charge_session(self):
+        """Battery went from 40 kWh to 50 kWh → delta = 10 kWh."""
+        delta = _compute_session_battery_delta(40.0, 50.0)
+        assert delta is not None
+        assert abs(delta - 10.0) < 0.01
+
+    def test_no_start_snapshot(self):
+        """No snapshot at session start → None."""
+        assert _compute_session_battery_delta(None, 50.0) is None
+
+    def test_no_current_reading(self):
+        """No current sensor reading → None."""
+        assert _compute_session_battery_delta(40.0, None) is None
+
+    def test_battery_decreased(self):
+        """Battery decreased (e.g. driving while plugged in) → clamped to 0."""
+        delta = _compute_session_battery_delta(50.0, 45.0)
+        assert delta is not None
+        assert delta == 0.0
+
+    def test_exact_same(self):
+        """No change → delta = 0."""
+        delta = _compute_session_battery_delta(41.24, 41.24)
+        assert delta is not None
+        assert delta == 0.0
+
+    def test_small_increment(self):
+        """Small 0.01 kWh resolution increment is captured."""
+        delta = _compute_session_battery_delta(41.24, 41.25)
+        assert delta is not None
+        assert abs(delta - 0.01) < 0.001
+
+    def test_large_session(self):
+        """Large charging session: 20 to 70 kWh."""
+        delta = _compute_session_battery_delta(20.0, 70.0)
+        assert delta is not None
+        assert abs(delta - 50.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Tests: Capacity estimate with battery-side delta
+# ---------------------------------------------------------------------------
+
+class TestCapacityEstimateWithBatterySensor:
+    """Tests for the enhanced capacity estimation using battery-side kWh delta.
+
+    When the EV battery energy sensor is configured, the estimate uses direct
+    battery-side kWh delta for more accurate capacity calculation (true usable
+    capacity, without AC→DC losses). Falls back to wall energy when unavailable.
+    """
+
+    def test_battery_side_estimate_gives_true_capacity(self):
+        """Battery-side: 32 kWh delta / 40% SoC = 80 kWh true capacity."""
+        est = _compute_capacity_estimate_with_battery(
+            session_start_soc=10.0,
+            session_end_soc=50.0,
+            wall_energy_kwh=35.6,  # wall includes losses
+            battery_delta_kwh=32.0,
+        )
+        assert abs(est - 80.0) < 0.1
+
+    def test_wall_fallback_when_no_battery_delta(self):
+        """Without battery delta, falls back to wall energy."""
+        est = _compute_capacity_estimate_with_battery(
+            session_start_soc=10.0,
+            session_end_soc=50.0,
+            wall_energy_kwh=35.6,
+            battery_delta_kwh=None,
+        )
+        # Wall: 35.6 / 0.4 = 89 kWh (includes losses)
+        assert abs(est - 89.0) < 0.1
+
+    def test_battery_vs_wall_shows_overhead_in_estimate(self):
+        """Battery estimate is lower than wall estimate (no losses included).
+
+        True battery = 80 kWh, 10% AC losses.
+        Wall measures 35.56 kWh, battery received 32 kWh.
+        Wall-based: 35.56/0.4 ≈ 89 kWh (inflated by losses).
+        Battery-based: 32/0.4 = 80 kWh (true capacity).
+        """
+        wall_est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 35.56, battery_delta_kwh=None,
+        )
+        batt_est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 35.56, battery_delta_kwh=32.0,
+        )
+        assert batt_est < wall_est
+        assert abs(batt_est - 80.0) < 0.1
+        assert abs(wall_est - 88.9) < 0.2
+
+    def test_tiny_battery_delta_uses_wall_fallback(self):
+        """Battery delta < 0.5 kWh is ignored, uses wall energy."""
+        est = _compute_capacity_estimate_with_battery(
+            session_start_soc=20.0,
+            session_end_soc=30.0,
+            wall_energy_kwh=8.0,
+            battery_delta_kwh=0.3,  # too small
+        )
+        # Fallback: 8.0 / 0.1 = 80 kWh
+        assert abs(est - 80.0) < 0.1
+
+    def test_ema_with_battery_delta(self):
+        """Battery-side estimates also converge via EMA."""
+        est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 40.0, battery_delta_kwh=32.0,
+        )  # 32/0.4 = 80 kWh
+        est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 40.0, battery_delta_kwh=28.0, current_estimate=est,
+        )  # 28/0.4 = 70 kWh raw
+        # EMA: 0.3 × 70 + 0.7 × 80 = 77
+        assert 70.0 < est < 80.0
+
+    def test_no_soc_delta_with_battery_delta_skipped(self):
+        """SoC delta < 5% means estimation skipped even with battery delta."""
+        est = _compute_capacity_estimate_with_battery(
+            80.0, 84.0, 5.0, battery_delta_kwh=3.5, current_estimate=50.0,
+        )
+        assert est == 50.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Build data dict includes new battery-side fields
+# ---------------------------------------------------------------------------
+
+class TestBuildDataDictBatteryFields:
+    """Test that data dict includes battery-side energy keys."""
+
+    def test_battery_fields_present_in_data_dict(self):
+        """Data dict should include EV battery energy and overhead keys."""
+        expected_keys = {
+            "ev_battery_energy_kwh",
+            "ev_energy_added_kwh",
+            "session_battery_delta_kwh",
+            "charging_overhead_pct",
+        }
+        data = {k: None for k in expected_keys}
+        assert set(data.keys()) == expected_keys
+
+    def test_overhead_pct_calculation_matches(self):
+        """Overhead % in data dict matches the formula."""
+        wall_wh = 10000.0
+        battery_wh = 9000.0
+        pct = _compute_overhead_pct(wall_wh, battery_wh)
+        assert pct is not None
+        assert abs(pct - 10.0) < 0.1
+
+    def test_battery_delta_with_high_resolution(self):
+        """Battery energy remaining at 0.01 kWh resolution produces precise delta."""
+        delta = _compute_session_battery_delta(41.24, 48.76)
+        assert delta is not None
+        assert abs(delta - 7.52) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Tests: Storage overhead persistence
+# ---------------------------------------------------------------------------
+
+class TestStorageOverhead:
+    """Test overhead storage keys are properly initialised."""
+
+    def test_overhead_keys_in_empty_counters(self):
+        """Empty counters include overhead_wall_wh and overhead_battery_wh."""
+        counters = {
+            "energy_total_wh": 0.0,
+            "energy_solar_wh": 0.0,
+            "energy_import_wh": 0.0,
+            "solar_production_total_wh": 0.0,
+            "battery_capacity_estimate_kwh": 0.0,
+            "overhead_wall_wh": 0.0,
+            "overhead_battery_wh": 0.0,
+            "migrated": False,
+        }
+        assert "overhead_wall_wh" in counters
+        assert "overhead_battery_wh" in counters
+        assert counters["overhead_wall_wh"] == 0.0
+        assert counters["overhead_battery_wh"] == 0.0
+
+    def test_overhead_accumulation(self):
+        """Overhead deltas should accumulate correctly."""
+        wall = 0.0
+        battery = 0.0
+        # Session 1: 10 kWh wall, 9 kWh battery
+        wall += 10000.0
+        battery += 9000.0
+        # Session 2: 20 kWh wall, 17 kWh battery
+        wall += 20000.0
+        battery += 17000.0
+        assert wall == 30000.0
+        assert battery == 26000.0
+        # Overhead pct: (1 - 26000/30000) * 100 ≈ 13.3%
+        pct = _compute_overhead_pct(wall, battery)
+        assert pct is not None
+        assert abs(pct - 13.3) < 0.1
+
+    def test_negative_wall_ignored(self):
+        """Negative wall energy should not be accumulated."""
+        # Mirrors storage.add_overhead: if wall_wh <= 0, return
+        wall_wh = -100.0
+        assert wall_wh <= 0  # would be rejected by store

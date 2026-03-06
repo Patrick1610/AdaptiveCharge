@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_EV_BATTERY_ENERGY_SENSOR, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info, get_version
 
@@ -55,6 +55,13 @@ async def async_setup_entry(
         RangeUpperLimitSensor(coordinator, entry),
         RangeLowerLimitSensor(coordinator, entry),
     ]
+
+    # EV battery-side sensors (only when the battery energy sensor is configured)
+    if options.get(CONF_EV_BATTERY_ENERGY_SENSOR):
+        entities.extend([
+            ChargingOverheadSensor(coordinator, entry),
+            BatteryEnergyDeltaSensor(coordinator, entry),
+        ])
 
     async_add_entities(entities)
 
@@ -444,6 +451,8 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             "session_energy_kwh": data.get("energy_session_kwh", 0.0),
             "session_solar_kwh": data.get("energy_session_solar_kwh", 0.0),
             "session_import_kwh": data.get("energy_session_import_kwh", 0.0),
+            "session_battery_delta_kwh": data.get("session_battery_delta_kwh"),
+            "charging_overhead_pct": data.get("charging_overhead_pct"),
             "battery_pct": data.get("battery_pct"),
         }
 
@@ -560,3 +569,82 @@ class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return _range_threshold_attributes(self.coordinator.data or {})
+
+
+# ---------------------------------------------------------------------------
+# Charging overhead sensor (requires EV battery energy sensor)
+# ---------------------------------------------------------------------------
+
+class ChargingOverheadSensor(_BaseAdaptiveChargeSensor):
+    """Rolling charging overhead percentage: (1 − battery_received / wall_energy) × 100.
+
+    Measures the AC→DC conversion losses between the wall (EV power sensor)
+    and the actual energy stored in the battery (EV battery energy delta).
+    Only available when the EV battery energy sensor is configured.
+    """
+
+    _attr_name = "Charging Overhead"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_icon = "mdi:transmission-tower-import"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_charging_overhead_pct"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("charging_overhead_pct")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "energy_session_kwh": data.get("energy_session_kwh", 0.0),
+            "session_battery_delta_kwh": data.get("session_battery_delta_kwh"),
+            "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Battery energy delta sensor (requires EV battery energy sensor)
+# ---------------------------------------------------------------------------
+
+class BatteryEnergyDeltaSensor(_BaseAdaptiveChargeSensor):
+    """Actual energy received by the battery in the current charging session.
+
+    Computed from the EV battery energy remaining sensor: current − session_start.
+    More accurate than wall-measured energy because it excludes AC→DC losses.
+    """
+
+    _attr_name = "Battery Energy Delta"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:battery-plus-variant"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_battery_energy_delta_kwh"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("session_battery_delta_kwh")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "energy_session_kwh": data.get("energy_session_kwh", 0.0),
+            "charging_overhead_pct": data.get("charging_overhead_pct"),
+            "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
+            "ev_energy_added_kwh": data.get("ev_energy_added_kwh"),
+        }
