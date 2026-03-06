@@ -4815,9 +4815,17 @@ def _compute_session_battery_delta(
     session_start_kwh: float | None,
     current_kwh: float | None,
 ) -> float | None:
-    """Mirror of coordinator._compute_session_battery_delta logic."""
-    if session_start_kwh is None or current_kwh is None:
+    """Mirror of coordinator._compute_session_battery_delta logic.
+
+    Reflects the lazy-init behaviour: if session_start_kwh is None but
+    current_kwh is available the coordinator captures current_kwh as the new
+    baseline and returns 0.0 (delta measured from this point forward).
+    """
+    if current_kwh is None:
         return None
+    if session_start_kwh is None:
+        # Lazy snapshot: treat current as the new baseline → delta = 0.
+        return 0.0
     delta = current_kwh - session_start_kwh
     return round(max(delta, 0.0), 2)
 
@@ -4931,9 +4939,13 @@ class TestSessionBatteryDelta:
         assert delta is not None
         assert abs(delta - 10.0) < 0.01
 
-    def test_no_start_snapshot(self):
-        """No snapshot at session start → None."""
-        assert _compute_session_battery_delta(None, 50.0) is None
+    def test_no_start_snapshot_lazy_init(self):
+        """No snapshot at session start with a valid current reading → 0.0 (lazy init)."""
+        assert _compute_session_battery_delta(None, 50.0) == 0.0
+
+    def test_no_start_snapshot_no_sensor(self):
+        """No snapshot and no current reading → None."""
+        assert _compute_session_battery_delta(None, None) is None
 
     def test_no_current_reading(self):
         """No current sensor reading → None."""

@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
+from homeassistant.const import EntityCategory, PERCENTAGE, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -472,29 +472,30 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 # ---------------------------------------------------------------------------
 
 class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
-    """Lifetime ratio of solar energy that reached the EV vs total solar produced.
+    """Lifetime percentage of solar energy that reached the EV vs total solar produced.
 
-    Computed as: energy_solar_wh / solar_production_total_wh (capped at 1.0).
+    Computed as: (energy_solar_wh / solar_production_total_wh) × 100, capped at 100 %.
     Used internally by low-power protection to estimate how much of the remaining
     solar forecast will actually reach the car.
     """
 
     _attr_name = "Solar to EV Ratio"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:solar-power-variant"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_solar_to_ev_ratio"
-        self._last_known_ratio: float | None = None
+        self._last_known_pct: float | None = None
 
     async def async_added_to_hass(self) -> None:
-        """Restore last known ratio on HA restart/reload."""
+        """Restore last known value on HA restart/reload."""
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if state is not None and state.state not in ("unknown", "unavailable", ""):
             try:
-                self._last_known_ratio = float(state.state)
+                self._last_known_pct = float(state.state)
             except (ValueError, TypeError):
                 pass
 
@@ -503,11 +504,12 @@ class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
         if self.coordinator.data is not None:
             ratio = self.coordinator.data.get("solar_to_ev_ratio")
             if ratio is not None:
-                self._last_known_ratio = ratio
-                return ratio
+                pct = round(ratio * 100, 2)
+                self._last_known_pct = pct
+                return pct
         # Return last known value during coordinator startup/reload so the
         # sensor never briefly shows unavailable (which could distort statistics).
-        return self._last_known_ratio
+        return self._last_known_pct
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

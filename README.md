@@ -25,7 +25,7 @@ A Home Assistant custom integration that intelligently controls EV charging base
 - **Persistent storage**: energy counters survive restarts, reloads, and reboots without ever briefly dropping to zero
 - **Utility meters**: optional daily/monthly/yearly energy tracking sensors (standard HA helper, opt-in)
 - **Mode tracking**: reason, source, timestamps, and transition history on every mode change
-- **Solar-to-EV ratio**: lifetime ratio of solar energy that reached the EV vs. total produced
+- **Solar-to-EV ratio**: lifetime percentage of solar energy that reached the EV vs. total produced (displayed as `%` with 2 decimal places)
 - **Battery energy tracking**: live battery-side energy delta and AC→DC charging overhead per session (requires EV battery energy sensor)
 - **Expert mode**: unlocks advanced controller-tuning sensors and parameters
 - **Full debug attributes**: every sensor exposes source values, mode and last action
@@ -498,6 +498,9 @@ Every sensor exposes the following extra attributes:
 
 **Utility meters jumped after an integration reload**
 - This was a bug fixed in v4.1.5. The `Energy Charged` sensor now restores its value from the persistent store before the very first coordinator tick, so it never briefly shows 0 on reload.
+
+**Charging Overhead or Battery Energy Delta showing Unknown after integration reload**
+- Fixed in v4.1.6. The Battery Energy Delta sensor now lazily captures a new start snapshot the moment its source sensor becomes available — even if the integration was reloaded or restarted while the cable was already connected.
 
 **Charging Overhead or Battery Energy Delta not updating during a session**
 - The Battery Energy Delta is already updated live each coordinator tick.
