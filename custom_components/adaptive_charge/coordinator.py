@@ -375,6 +375,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- EV battery-side energy tracking ---
         # Snapshot of EV battery energy remaining at session start (kWh).
         self._session_start_battery_kwh: float | None = None
+        # Last battery sensor value seen — used to detect when it changes so we
+        # can snapshot the wall energy at that exact moment (see below).
+        self._prev_battery_energy_kwh: float | None = None
+        # Wall energy (session Wh) captured the last time the battery sensor
+        # reported a new value.  _compute_overhead_pct uses this snapshot rather
+        # than the live _energy_session_wh to avoid a sawtooth:
+        #   • Wall energy accumulates every 10 s (HA integration tick)
+        #   • Battery sensor polls the car API every ~3 min
+        # Without the snapshot, overhead creeps up ~0.1 pp/10 s between battery
+        # updates then snaps down 2–3 pp when the battery finally reports a new
+        # reading — a perfectly regular sawtooth visible in the HA history graph.
+        # Using the wall value at the moment the battery changed gives a matched
+        # pair, so the displayed overhead is stable between car API polls.
+        self._session_battery_wall_snapshot_wh: float = 0.0
         # Rolling overhead tracking (wall energy vs battery-received).
         self._overhead_total_wall_wh: float = 0.0
         self._overhead_total_battery_wh: float = 0.0
@@ -1088,6 +1102,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._session_start_soc = _get_float_state(self.hass, self._battery_sensor)
         # Snapshot EV battery energy remaining for battery-side delta tracking.
         self._session_start_battery_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        # Reset battery-snapshot tracking so _compute_overhead_pct starts fresh.
+        self._prev_battery_energy_kwh = self._session_start_battery_kwh
+        self._session_battery_wall_snapshot_wh = 0.0
 
     def _compute_session_battery_delta(self) -> float | None:
         """Return the battery-side energy delta for the current session (kWh).
@@ -1099,6 +1116,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         integration restarted while the cable was already connected, or the
         sensor was temporarily unavailable at actual plug-in time) the first
         valid sensor reading becomes the new baseline and 0.0 is returned.
+
+        Side-effect: whenever the sensor reports a new value, the current
+        session wall energy (_energy_session_wh) is captured in
+        _session_battery_wall_snapshot_wh.  _compute_overhead_pct uses this
+        snapshot instead of the live wall total to prevent a sawtooth pattern
+        (see _session_battery_wall_snapshot_wh docstring in __init__).
         """
         current = _get_float_state(self.hass, self._ev_battery_energy_sensor)
         if current is None:
@@ -1108,7 +1131,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # produce the real delta.
         if self._session_start_battery_kwh is None:
             self._session_start_battery_kwh = current
+            self._prev_battery_energy_kwh = current
+            self._session_battery_wall_snapshot_wh = self._energy_session_wh
             return 0.0
+        # Capture a matched wall-energy snapshot whenever the battery sensor
+        # reports a new reading.  This ensures _compute_overhead_pct always
+        # uses a (battery, wall) pair measured at the same instant rather than
+        # a stale battery value paired with an ever-growing wall accumulator.
+        if current != self._prev_battery_energy_kwh:
+            self._prev_battery_energy_kwh = current
+            self._session_battery_wall_snapshot_wh = self._energy_session_wh
         delta = current - self._session_start_battery_kwh
         return round(max(delta, 0.0), 2)
 
@@ -1124,6 +1156,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         session end.  The current session is excluded once the cable
         disconnects (``_cable_prev`` becomes False) to prevent double-counting
         when the same session data is later committed to the store.
+
+        The live blend uses _session_battery_wall_snapshot_wh (the wall energy
+        captured at the last battery sensor change) rather than the live
+        _energy_session_wh accumulator.  This prevents a ~2 pp sawtooth that
+        would otherwise appear every time the car API delivers a new battery
+        reading: between API polls (typically ~3 min) the wall total grows
+        every 10 s while the battery value is frozen, driving the ratio higher
+        until the next battery update snaps it back down.  By using the wall
+        snapshot taken at the same instant as the battery reading, both sides
+        of the ratio advance together and the displayed value stays stable.
+
         Returns None when insufficient data.
         """
         wall = self._store.get("overhead_wall_wh")
@@ -1134,7 +1177,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # by _detect_cable_plugin (Phase 6) before _build_data_dict calls this.
         if self._cable_prev:
             session_battery_delta = self._compute_session_battery_delta()
-            session_wall_wh = self._energy_session_wh
+            # Use the wall snapshot from the last battery sensor change rather
+            # than the live accumulator (see docstring above).
+            session_wall_wh = self._session_battery_wall_snapshot_wh
             if (
                 session_battery_delta is not None
                 and session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH

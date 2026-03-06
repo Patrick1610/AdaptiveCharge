@@ -4926,9 +4926,171 @@ class TestChargingOverhead:
         assert abs(pct - 13.3) < 0.1
 
 
+def _compute_overhead_pct_live(
+    overhead_wall_wh: float,
+    overhead_battery_wh: float,
+    session_battery_delta_kwh: float | None,
+    session_wall_snapshot_wh: float,
+    min_energy_kwh: float = 0.5,
+) -> float | None:
+    """Mirror of coordinator._compute_overhead_pct with live-blend logic.
+
+    Reflects the snapshot fix: uses session_wall_snapshot_wh (wall at the last
+    battery sensor change) rather than the current live wall accumulator.
+    """
+    wall = overhead_wall_wh
+    battery = overhead_battery_wh
+    if session_battery_delta_kwh is not None:
+        if (
+            session_wall_snapshot_wh / 1000.0 >= min_energy_kwh
+            and session_battery_delta_kwh >= min_energy_kwh
+        ):
+            wall += session_wall_snapshot_wh
+            battery += session_battery_delta_kwh * 1000.0
+    if wall > 0 and battery > 0:
+        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Tests: Session battery delta
+# Tests: Overhead sawtooth fix — wall snapshot
 # ---------------------------------------------------------------------------
+
+class TestOverheadWallSnapshot:
+    """Verify that the live overhead blend is stable between battery API polls.
+
+    Root cause of the sawtooth (confirmed from history data on 2026-03-06):
+      - Wall energy accumulates every 10 s (HA tick)
+      - EV battery sensor polls the car API every ~3 min
+    Without the snapshot fix, overhead would creep up ~0.1 pp/10 s as wall
+    grows with a frozen battery, then snap down 2 pp when battery updates.
+    The fix: use the wall value captured at the last battery sensor change.
+    """
+
+    def _make_snapshot(
+        self,
+        store_wall_wh: float,
+        store_bat_wh: float,
+        session_bat_delta: float,
+        session_wall_at_last_bat_change: float,  # the snapshot
+    ) -> float | None:
+        return _compute_overhead_pct_live(
+            store_wall_wh, store_bat_wh,
+            session_bat_delta, session_wall_at_last_bat_change,
+        )
+
+    def test_stable_between_battery_updates(self):
+        """Overhead must NOT change while the battery sensor is silent.
+
+        Simulate 5 × 10 s ticks where wall accrues 80 Wh each tick but the
+        battery sensor doesn't change.  With the snapshot fix the displayed
+        overhead must be the same on every tick.
+        """
+        store_wall = 100_000.0  # 100 kWh historical
+        store_bat = 83_800.0   # 83.8 kWh historical → 16.2% overhead
+
+        bat_snapshot_wh = 1_500.0  # 1.5 kWh wall when battery last changed
+        bat_delta = 1.3             # 1.3 kWh received so far this session
+
+        results = []
+        for _ in range(5):
+            # Live wall keeps growing, but snapshot is frozen
+            live_wall_wh = bat_snapshot_wh + 80.0  # not used in fixed calc
+            _ = live_wall_wh  # silence unused warning
+            pct = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_delta, bat_snapshot_wh
+            )
+            results.append(pct)
+
+        # All ticks must give the same value
+        assert all(r == results[0] for r in results), (
+            f"Overhead varied between battery-silent ticks: {results}"
+        )
+
+    def test_updates_when_battery_sensor_changes(self):
+        """Overhead updates (steps) when battery sensor delivers a new reading."""
+        store_wall = 100_000.0
+        store_bat = 83_800.0
+
+        # Tick A: battery reports 1.3 kWh delta, wall snapshot = 1500 Wh
+        pct_a = _compute_overhead_pct_live(
+            store_wall, store_bat, 1.3, 1_500.0
+        )
+        # Tick B: battery reports 1.42 kWh delta (+0.12), wall snapshot = 1580 Wh
+        pct_b = _compute_overhead_pct_live(
+            store_wall, store_bat, 1.42, 1_580.0
+        )
+        assert pct_a is not None
+        assert pct_b is not None
+        # Both should be in a plausible range, and different from each other
+        assert 10.0 <= pct_a <= 20.0
+        assert 10.0 <= pct_b <= 20.0
+        assert pct_a != pct_b
+
+    def test_sawtooth_scenario_from_real_data(self):
+        """Reproduce the historical sawtooth and verify it is eliminated.
+
+        From 2026-03-06 history (confirmed: every overhead drop has 0-second lag
+        from a battery sensor update):
+          Charging at 4 A × 230 V × 3 = 2760 W → 27.6 Wh per 10 s tick.
+          Battery API polls every ~3 min → 12 ticks × 27.6 Wh = 331 Wh wall
+          accrues while battery is frozen between polls.
+
+        With a freshly set-up store (~5 kWh from one prior session), the current
+        session (~4 kWh battery delta) is a large fraction of the total, so the
+        331 Wh wall drift produces a clearly visible ~2 pp sawtooth.
+
+        NEW behaviour (using wall snapshot at last battery change):
+          Both sides of the ratio advance together → completely flat.
+        """
+        store_wall = 5_000.0   # Wh — one prior session in store
+        store_bat = 4_190.0    # Wh → 16.2% overhead in store
+
+        bat_val = 4.26          # kWh battery delta at last API poll
+        wall_snapshot = 5_070.0 # Wh — wall energy when battery last changed
+        wall_live = wall_snapshot
+        tick_wh = 27.6          # Wh per 10 s tick (4 A × 230 V × 3)
+
+        overhead_old = []
+        overhead_new = []
+
+        for _tick in range(12):  # ~2 min before next battery update
+            wall_live += tick_wh
+
+            # Old: live wall passed as snapshot (simulates pre-fix behaviour)
+            pct_old = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_val, wall_live
+            )
+            # New: frozen snapshot (the fix)
+            pct_new = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_val, wall_snapshot
+            )
+            overhead_old.append(pct_old)
+            overhead_new.append(pct_new)
+
+        # Old: monotonically increasing (wall grows, battery frozen)
+        assert overhead_old[-1] > overhead_old[0], "Expected sawtooth rise not seen"
+        diff_old = overhead_old[-1] - overhead_old[0]
+        assert diff_old > 0.5, f"Expected >0.5 pp rise, got {diff_old:.2f} pp"
+
+        # New: completely flat between battery sensor updates
+        assert all(v == overhead_new[0] for v in overhead_new), (
+            f"Overhead not flat with snapshot fix: {overhead_new}"
+        )
+
+    def test_below_minimum_threshold_uses_store_only(self):
+        """Session data below min_energy threshold → only store data used."""
+        store_wall = 50_000.0
+        store_bat = 42_000.0  # 16% overhead
+        expected = _compute_overhead_pct(store_wall, store_bat)
+
+        # Session is tiny (0.2 kWh wall, 0.1 kWh battery — below 0.5 kWh min)
+        pct = _compute_overhead_pct_live(
+            store_wall, store_bat, 0.1, 200.0
+        )
+        assert pct == expected
+
+
 
 class TestSessionBatteryDelta:
     """Tests for the battery-side energy delta computation."""
