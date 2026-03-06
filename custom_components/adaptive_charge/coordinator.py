@@ -1782,13 +1782,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._overhead_total_wall_wh += wall_energy_kwh * 1000.0
             self._overhead_total_battery_wh += battery_delta_kwh * 1000.0
             self._store.add_overhead(wall_energy_kwh * 1000.0, battery_delta_kwh * 1000.0)
-            if wall_energy_kwh > 0:
-                session_overhead_pct = max(0.0, (1.0 - battery_delta_kwh / wall_energy_kwh)) * 100.0
-                _LOGGER.info(
-                    "AdaptiveCharge: session charging overhead %.1f%% "
-                    "(wall=%.2f kWh, battery=%.2f kWh)",
-                    session_overhead_pct, wall_energy_kwh, battery_delta_kwh,
-                )
+            session_overhead_pct = max(0.0, (1.0 - battery_delta_kwh / wall_energy_kwh)) * 100.0
+            _LOGGER.info(
+                "AdaptiveCharge: session charging overhead %.1f%% "
+                "(wall=%.2f kWh, battery=%.2f kWh)",
+                session_overhead_pct, wall_energy_kwh, battery_delta_kwh,
+            )
 
         # --- Capacity estimation ---
         # Prefer battery-side estimate when we have both kWh delta and SoC delta.

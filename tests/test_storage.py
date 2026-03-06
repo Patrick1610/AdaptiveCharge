@@ -211,6 +211,7 @@ class TestOverheadStorage:
         data = _empty_counters()
         _add_overhead(data, -100.0, 5000.0)
         assert data["overhead_wall_wh"] == 0.0
+        assert data["overhead_battery_wh"] == 0.0
 
     def test_add_overhead_rejects_zero_battery(self):
         """Zero battery energy is rejected."""
