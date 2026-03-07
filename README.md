@@ -235,15 +235,43 @@ Energy counters are persisted to `.storage/adaptive_charge.counters.<entry_id>` 
 - `Solar to EV Ratio` caches its last known value and restores it immediately on reload, preventing a brief unavailable/zero window.
 - Throttled writes (max once per 30s) avoid disk I/O spam.
 
-### 12. Solar-to-EV Ratio
+### 12. Solar-to-EV Ratio & Solar Capture Factor
 
-The **Solar to EV Ratio** sensor tracks what fraction of all solar energy produced has actually reached the EV battery. It is computed as:
+**Solar to EV Ratio** (sensor) is a **lifetime KPI** — it tracks what fraction of _all_ solar energy produced has actually reached the EV battery, across every charging session:
 
 ```
 ratio = min(energy_solar_wh / solar_production_total_wh, 1.0)
 ```
 
-This is used internally by low-power protection to estimate how much of the remaining solar forecast will benefit the EV.
+This is displayed as a percentage (0–100 %) and serves as a **dashboard metric** for long-term self-consumption tracking.
+
+**Solar Capture Factor** (attribute on the ratio sensor) is a **rolling operational metric** — it is an EMA of the per-session solar capture efficiency, updated at the end of each charging session. Low-power forecast logic uses this factor (not the lifetime KPI) to estimate how much of the remaining solar forecast will benefit the EV:
+
+```
+control_factor = solar_capture_factor if available, else lifetime ratio (fallback)
+expected_ev_kwh = forecast_kwh × control_factor
+```
+
+This separation ensures that short-term conditions (clouds, shading changes) are reflected faster in charging decisions, while the lifetime KPI remains stable for historical analysis.
+
+### 12a. Fail-Safe Behaviour (v4.3.0)
+
+**Net power sensor invalid/unavailable**: when the net power sensor returns `unknown`, `unavailable`, or no value:
+- The surplus calculation falls back to 0 W (safe default)
+- Surplus **start** and **modulate-up** are **blocked** — the integration will not begin or increase charging based on an unreliable reading
+- Safety actions (**stop**, **modulate-down**, **import guard**) continue to work normally
+- A `net_power_valid` flag is exposed in the data dict and logged for diagnostics
+
+**Cable sensor unknown**: surplus charging only starts when `cable_connected` is explicitly `True`. Unknown (`None`) or disconnected (`False`) both block surplus start. Force charge still works when triggered by `Charge Now`, `Charge Tonight`, or `import_priority`.
+
+### 12b. Session Finalizer (v4.3.0)
+
+Battery capacity estimation, overhead calculation, and solar capture factor are now finalized via a **central session finalizer** triggered by:
+1. Cable disconnection
+2. Stale charge detection (car stopped independently for >60 s)
+3. HA shutdown/unload (best-effort)
+
+This ensures session data is persisted even when the cable remains connected (e.g. car reaches its own charge limit).
 
 ### 13. Battery Energy Tracking _(optional)_
 
@@ -544,3 +572,36 @@ Every sensor exposes the following extra attributes:
 
 **Alignment Diagnostics / Input Skew sensor not visible**
 - These sensors are hidden by default. Enable **Expert Mode** in the integration options to make them appear automatically. Alternatively, enable them manually via **Settings → Devices & Services → AdaptiveCharge → Entities**.
+
+---
+
+## Changelog
+
+### v4.3.0
+
+**Critical fixes:**
+- **Net sensor fail-safe**: invalid/unavailable net power sensor no longer treated as 0 W for control decisions. Surplus start and upward modulation are blocked; safety/downward actions remain active.
+- **Cable guard strictened**: surplus start now requires `cable_connected = True`. Unknown (`None`) cable status blocks charging start (previously allowed as permissive fallback).
+- **Solar ratio semantics split**: the lifetime Solar-to-EV Ratio remains a dashboard KPI. A new rolling Solar Capture Factor (EMA per session) is used for low-power forecast decisions, reflecting short-term conditions faster.
+- **Session finalizer**: central `_finalize_session_if_needed()` ensures capacity estimates, overhead, and capture factor are persisted on cable disconnect, stale charge reset, _and_ HA shutdown — not only on cable-disconnect events.
+- **Battery delta deduplication**: `_compute_session_battery_delta()` is called once per tick; the result is reused for both the data dict and overhead calculation, eliminating double sensor reads with side-effects.
+
+**Improvements:**
+- **Storage flush deduplication**: in-flight async flush task guard prevents parallel save scheduling.
+- **Sensor clarity**: SolarToEvRatioSensor docstring and attributes updated; `solar_capture_factor` exposed as attribute.
+- **38 new edge-case tests** covering net/cable unknown/unavailable, capture factor logic, session finalizer, and storage.
+
+**Backward compatibility:**
+- All existing entity IDs remain unchanged.
+- `solar_capture_factor` is added as a new storage key (defaults to 0.0, merged on load from older stores).
+- `net_power_valid` is a new key in the data dict (informational only — no entity change).
+- Low-power forecast logic now prefers `solar_capture_factor`; it falls back to the lifetime ratio when the factor has not yet been populated (first session after upgrade).
+
+**Migration notes:**
+- No manual migration required. Upgrade and restart.
+- The `solar_capture_factor` will be populated after the first completed charging session.
+- Cable sensor: if you previously relied on surplus starting with an unknown cable state, this is now blocked. Ensure your cable sensor is configured and reporting correctly.
+
+**Known limitations / follow-ups:**
+- `solar_capture_factor` uses a session-level EMA — it does not weight by season or time-of-day. Future versions may add a sliding-window approach.
+- The session finalizer is best-effort on shutdown; if HA crashes without a graceful shutdown, the most recent session data may be lost (same as before, but now also includes capture factor updates).

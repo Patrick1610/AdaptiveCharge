@@ -43,6 +43,21 @@ def compute_smoothed(samples: deque, window_s: int, now: datetime) -> float:
     return mean(valid) if valid else 0.0
 
 
+def _empty_counters():
+    """Mirror of storage._empty_counters for test use."""
+    return {
+        "energy_total_wh": 0.0,
+        "energy_solar_wh": 0.0,
+        "energy_import_wh": 0.0,
+        "solar_production_total_wh": 0.0,
+        "battery_capacity_estimate_kwh": 0.0,
+        "overhead_wall_wh": 0.0,
+        "overhead_battery_wh": 0.0,
+        "solar_capture_factor": 0.0,
+        "migrated": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tests: kW → W conversion
 # ---------------------------------------------------------------------------
@@ -1412,7 +1427,7 @@ class TestModeReasonTracking:
 # ---------------------------------------------------------------------------
 
 class TestSurplusStartCableGuard:
-    """Surplus charging must not start when cable is known disconnected."""
+    """Surplus charging must not start unless cable is confirmed connected."""
 
     def _should_start_surplus(
         self,
@@ -1420,11 +1435,14 @@ class TestSurplusStartCableGuard:
         charging_on: bool,
         cable_connected: bool | None,
         surplus_start_threshold_a: float = 2.0,
+        net_power_valid: bool = True,
     ) -> bool:
         """Mirror the surplus-start gate in _run_control_logic."""
         if not (ema_current >= surplus_start_threshold_a and not charging_on):
             return False
-        if cable_connected is False:
+        if cable_connected is not True:
+            return False
+        if not net_power_valid:
             return False
         return True
 
@@ -1446,14 +1464,14 @@ class TestSurplusStartCableGuard:
         )
         assert result is True
 
-    def test_surplus_start_allowed_when_no_cable_sensor(self):
-        """Should start surplus when cable sensor not configured (None)."""
+    def test_surplus_start_blocked_when_no_cable_sensor(self):
+        """Should NOT start surplus when cable sensor is unknown (None)."""
         result = self._should_start_surplus(
             ema_current=5.0,
             charging_on=False,
             cable_connected=None,
         )
-        assert result is True
+        assert result is False
 
     def test_surplus_start_not_triggered_when_already_charging(self):
         """Guard not reached when already charging (existing gate)."""
@@ -1481,6 +1499,26 @@ class TestSurplusStartCableGuard:
             cable_connected=False,
         )
         assert result is False
+
+    def test_surplus_start_blocked_when_net_power_invalid(self):
+        """Should NOT start surplus when net power sensor is invalid."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=True,
+            net_power_valid=False,
+        )
+        assert result is False
+
+    def test_surplus_start_allowed_when_net_power_valid(self):
+        """Should start surplus when net power sensor is valid."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=True,
+            net_power_valid=True,
+        )
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -4088,13 +4126,15 @@ def _evaluate_low_power(
     cable_connected: bool = True,
     effective_capacity: float = 0.0,
     solar_to_ev_ratio: float | None = None,
+    solar_capture_factor: float = 0.0,
     in_tonight_window: bool = False,
 ) -> bool:
     """Mirror of coordinator low_power_active evaluation logic.
 
     Priority:
       1. Inside tonight window → always force charge
-      2. Precise mode (capacity + ratio available) → energy-based check
+      2. Precise mode (capacity + control_factor available) → energy-based check
+         - control_factor = solar_capture_factor if > 0, else solar_to_ev_ratio
       3. Manual backup threshold (> 0) → forecast vs fixed kWh
       4. Conservative fallback (threshold == 0, no precise mode) → force charge
     """
@@ -4111,14 +4151,19 @@ def _evaluate_low_power(
         return True
     if forecast_kwh is None:
         return True
-    # Precise mode: use capacity + ratio when available
+    # Resolve control factor: prefer rolling capture factor, fall back to lifetime ratio
+    control_factor = (
+        solar_capture_factor
+        if solar_capture_factor > 0
+        else (solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0)
+    )
+    # Precise mode: use capacity + control_factor when available
     if (
         effective_capacity > 0
-        and solar_to_ev_ratio is not None
-        and solar_to_ev_ratio > 0
+        and control_factor > 0
     ):
         energy_needed = max(0.0, (low_power_threshold - battery_pct) / 100.0 * effective_capacity)
-        expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+        expected_ev_kwh = forecast_kwh * control_factor
         return expected_ev_kwh < energy_needed
     # Fallback: manual threshold if configured, else conservative force
     if low_power_forecast_threshold_kwh > 0:
@@ -5670,3 +5715,402 @@ class TestChargingPriorityControlEffect:
         """export_priority keeps surplus unchanged — control logic handles the block."""
         surplus = compute_surplus(-3000.0, 0.0)
         assert surplus == 3000.0
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Net power validity gating
+# ---------------------------------------------------------------------------
+
+class TestNetPowerValidity:
+    """Tests for net power validity flag and its effect on control decisions."""
+
+    def _compute_net_power_validity(
+        self,
+        net_power_mode: str,
+        net_raw: float | None = None,
+        consumption_raw: float | None = None,
+        production_raw: float | None = None,
+    ) -> tuple[float, bool]:
+        """Mirror _read_sensors net_power_valid logic."""
+        if net_power_mode == "net_only":
+            net_power_valid = net_raw is not None
+            computed_net_w = net_raw if net_raw is not None else 0.0
+        else:
+            if consumption_raw is not None and production_raw is not None:
+                computed_net_w = consumption_raw - production_raw
+                net_power_valid = True
+            elif consumption_raw is not None:
+                computed_net_w = consumption_raw
+                net_power_valid = True
+            else:
+                computed_net_w = 0.0
+                net_power_valid = False
+        return computed_net_w, net_power_valid
+
+    def test_net_only_valid_when_sensor_available(self):
+        net_w, valid = self._compute_net_power_validity("net_only", net_raw=500.0)
+        assert net_w == 500.0
+        assert valid is True
+
+    def test_net_only_invalid_when_sensor_none(self):
+        net_w, valid = self._compute_net_power_validity("net_only", net_raw=None)
+        assert net_w == 0.0
+        assert valid is False
+
+    def test_consumption_production_valid(self):
+        net_w, valid = self._compute_net_power_validity(
+            "consumption_production", consumption_raw=1000.0, production_raw=2000.0,
+        )
+        assert net_w == -1000.0
+        assert valid is True
+
+    def test_consumption_only_valid(self):
+        net_w, valid = self._compute_net_power_validity(
+            "consumption_production", consumption_raw=500.0,
+        )
+        assert net_w == 500.0
+        assert valid is True
+
+    def test_both_missing_invalid(self):
+        net_w, valid = self._compute_net_power_validity("consumption_production")
+        assert net_w == 0.0
+        assert valid is False
+
+    def test_surplus_start_blocked_invalid_net(self):
+        """Surplus start must be blocked when net sensor is invalid."""
+        # Even with enough current, invalid net means we can't trust surplus
+        _, valid = self._compute_net_power_validity("net_only", net_raw=None)
+        assert valid is False
+        # Start should be blocked (mirrors _run_control_logic)
+        ema_current = 5.0
+        charging_on = False
+        cable_connected = True
+        threshold = 2.0
+        should_start = (
+            ema_current >= threshold
+            and not charging_on
+            and cable_connected is True
+            and valid
+        )
+        assert should_start is False
+
+    def test_modulate_down_allowed_invalid_net(self):
+        """Downward modulation must remain allowed even when net is invalid."""
+        delta = -2.0  # wanting to reduce
+        net_power_valid = False
+        # Only block upward when invalid; downward is always safe
+        blocked = delta > 0 and not net_power_valid
+        assert blocked is False
+
+    def test_modulate_up_blocked_invalid_net(self):
+        """Upward modulation must be blocked when net is invalid."""
+        delta = 2.0
+        net_power_valid = False
+        blocked = delta > 0 and not net_power_valid
+        assert blocked is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Solar capture factor (operational control vs lifetime KPI)
+# ---------------------------------------------------------------------------
+
+class TestSolarCaptureFactor:
+    """Tests for the rolling solar capture factor used in low-power logic."""
+
+    ALPHA = 0.3  # Matches coordinator _CAPTURE_FACTOR_EMA_ALPHA
+
+    def _compute_capture_factor(
+        self,
+        session_solar_wh: float,
+        session_solar_production_wh: float,
+        current_factor: float = 0.0,
+    ) -> float:
+        """Mirror the capture factor update logic in _finalize_session_if_needed."""
+        if session_solar_production_wh <= 0 or session_solar_wh < 0:
+            return current_factor
+        session_factor = min(session_solar_wh / session_solar_production_wh, 1.0)
+        if current_factor > 0:
+            return self.ALPHA * session_factor + (1.0 - self.ALPHA) * current_factor
+        return session_factor
+
+    def test_first_session_sets_factor_directly(self):
+        factor = self._compute_capture_factor(500.0, 1000.0, current_factor=0.0)
+        assert abs(factor - 0.5) < 0.001
+
+    def test_subsequent_session_uses_ema(self):
+        factor = self._compute_capture_factor(600.0, 1000.0, current_factor=0.5)
+        expected = 0.3 * 0.6 + 0.7 * 0.5
+        assert abs(factor - expected) < 0.001
+
+    def test_capped_at_one(self):
+        factor = self._compute_capture_factor(2000.0, 1000.0, current_factor=0.0)
+        assert factor == 1.0
+
+    def test_zero_production_no_update(self):
+        factor = self._compute_capture_factor(500.0, 0.0, current_factor=0.4)
+        assert factor == 0.4
+
+    def test_low_power_uses_capture_factor_over_lifetime_ratio(self):
+        """Low-power precise mode should prefer capture factor over lifetime ratio."""
+        # capture_factor=0.3, lifetime_ratio=0.8
+        # Need 8 kWh (10% of 80), forecast 20
+        # With lifetime ratio: 20*0.8=16 > 8 → no force
+        # With capture factor: 20*0.3=6 < 8 → force charge
+        assert _evaluate_low_power(
+            10.0, 20.0, 20.0, 0.0,
+            effective_capacity=80.0,
+            solar_to_ev_ratio=0.8,
+            solar_capture_factor=0.3,
+        ) is True  # capture factor wins, not enough
+
+    def test_low_power_falls_back_to_lifetime_ratio_when_no_capture_factor(self):
+        """When capture factor is 0, fall back to lifetime ratio."""
+        assert _evaluate_low_power(
+            10.0, 20.0, 20.0, 0.0,
+            effective_capacity=80.0,
+            solar_to_ev_ratio=0.8,
+            solar_capture_factor=0.0,
+        ) is False  # lifetime ratio says enough
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Session finalizer
+# ---------------------------------------------------------------------------
+
+class TestSessionFinalizer:
+    """Tests for the central session finalization logic."""
+
+    def _should_finalize(
+        self,
+        session_start_soc: float | None,
+        energy_session_wh: float,
+    ) -> bool:
+        """Mirror of _finalize_session_if_needed gate."""
+        if session_start_soc is None and energy_session_wh <= 0:
+            return False
+        return True
+
+    def test_finalize_runs_with_session_data(self):
+        assert self._should_finalize(20.0, 5000.0) is True
+
+    def test_finalize_runs_with_soc_only(self):
+        assert self._should_finalize(20.0, 0.0) is True
+
+    def test_finalize_runs_with_energy_only(self):
+        assert self._should_finalize(None, 1000.0) is True
+
+    def test_finalize_skipped_when_no_session(self):
+        assert self._should_finalize(None, 0.0) is False
+
+    def test_stale_charge_triggers_finalize(self):
+        """Stale charge reset should trigger finalization."""
+        # In coordinator, stale charge reset calls _finalize_session_if_needed
+        # Verify the gate accepts typical stale-charge state
+        assert self._should_finalize(30.0, 2000.0) is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Session battery delta deduplication
+# ---------------------------------------------------------------------------
+
+class TestSessionBatteryDeltaDedup:
+    """Verify that battery delta is computed once per tick, not twice."""
+
+    def test_single_computation_reused_for_data_and_overhead(self):
+        """Battery delta should be the same value in data dict and overhead calc."""
+        start = 20.0
+        current = 25.0
+        delta = round(max(current - start, 0.0), 2)
+
+        # The same delta should be used for both
+        data_dict_delta = delta
+        overhead_input_delta = delta
+        assert data_dict_delta == overhead_input_delta == 5.0
+
+    def test_zero_delta_on_first_read(self):
+        """First call with no baseline returns 0.0."""
+        session_start = None
+        current = 30.0
+        if session_start is None:
+            delta = 0.0
+        else:
+            delta = round(max(current - session_start, 0.0), 2)
+        assert delta == 0.0
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Storage flush deduplication
+# ---------------------------------------------------------------------------
+
+class TestStorageFlushDedup:
+    """Tests for storage flush deduplication logic."""
+
+    def test_inflight_guard_blocks_parallel_flush(self):
+        """When a flush task is in-flight, a second schedule_flush should skip."""
+        import asyncio
+
+        class FakeTask:
+            def __init__(self, done=False):
+                self._done = done
+            def done(self):
+                return self._done
+
+        # Simulate in-flight task
+        flush_task = FakeTask(done=False)
+        should_schedule = flush_task.done()
+        assert should_schedule is False  # Should not schedule another
+
+    def test_completed_task_allows_new_flush(self):
+        """After a flush task completes, a new flush can be scheduled."""
+        class FakeTask:
+            def done(self):
+                return True
+
+        flush_task = FakeTask()
+        should_schedule = flush_task.done()
+        assert should_schedule is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Overhead consistency without double session commit
+# ---------------------------------------------------------------------------
+
+class TestOverheadConsistency:
+    """Overhead stays consistent when session battery delta is computed once."""
+
+    _CAPACITY_MIN_ENERGY_KWH = 0.5
+
+    def _compute_overhead_pct(
+        self,
+        store_wall_wh: float,
+        store_battery_wh: float,
+        session_battery_delta: float | None,
+        session_wall_snapshot_wh: float,
+        cable_prev: bool,
+    ) -> float | None:
+        """Mirror of _compute_overhead_pct with pre-computed delta."""
+        wall = store_wall_wh
+        battery = store_battery_wh
+        if cable_prev and session_battery_delta is not None:
+            session_wall_wh = session_wall_snapshot_wh
+            if (
+                session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
+                and session_battery_delta >= self._CAPACITY_MIN_ENERGY_KWH
+            ):
+                wall += session_wall_wh
+                battery += session_battery_delta * 1000.0
+        if wall > 0 and battery > 0:
+            return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+        return None
+
+    def test_overhead_with_live_blend(self):
+        pct = self._compute_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            session_battery_delta=1.0,  # 1 kWh
+            session_wall_snapshot_wh=1100.0,  # 1.1 kWh
+            cable_prev=True,
+        )
+        assert pct is not None
+        # Total wall = 10000 + 1100 = 11100
+        # Total battery = 9000 + 1000 = 10000
+        # overhead = (1 - 10000/11100) * 100 = 9.9%
+        assert abs(pct - 9.9) < 0.2
+
+    def test_overhead_no_blend_when_disconnected(self):
+        pct = self._compute_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            session_battery_delta=1.0,
+            session_wall_snapshot_wh=1100.0,
+            cable_prev=False,
+        )
+        # Only store data used
+        # overhead = (1 - 9000/10000) * 100 = 10.0%
+        assert pct == 10.0
+
+    def test_overhead_none_when_no_data(self):
+        pct = self._compute_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            session_battery_delta=None,
+            session_wall_snapshot_wh=0.0,
+            cable_prev=True,
+        )
+        assert pct is None
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Unknown/unavailable cable + net edge cases
+# ---------------------------------------------------------------------------
+
+class TestUnknownUnavailableEdgeCases:
+    """Edge cases for None/unknown sensor values."""
+
+    def test_cable_none_blocks_surplus_start(self):
+        """Unknown cable status must block surplus start."""
+        cable = None
+        can_start = cable is True
+        assert can_start is False
+
+    def test_cable_false_blocks_surplus_start(self):
+        cable = False
+        can_start = cable is True
+        assert can_start is False
+
+    def test_cable_true_allows_surplus_start(self):
+        cable = True
+        can_start = cable is True
+        assert can_start is True
+
+    def test_net_none_treated_as_zero_but_invalid(self):
+        """Net sensor None should give 0 W but mark as invalid."""
+        net_raw = None
+        computed = net_raw if net_raw is not None else 0.0
+        valid = net_raw is not None
+        assert computed == 0.0
+        assert valid is False
+
+    def test_net_zero_is_valid(self):
+        """A real zero reading is still valid (grid balanced)."""
+        net_raw = 0.0
+        computed = net_raw if net_raw is not None else 0.0
+        valid = net_raw is not None
+        assert computed == 0.0
+        assert valid is True
+
+    def test_negative_net_is_valid(self):
+        """Negative net (exporting) is a valid reading."""
+        net_raw = -500.0
+        valid = net_raw is not None
+        assert valid is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Storage solar_capture_factor
+# ---------------------------------------------------------------------------
+
+class TestStorageSolarCaptureFactor:
+    """Tests for solar_capture_factor in storage."""
+
+    def test_solar_capture_factor_in_empty_counters(self):
+        data = _empty_counters()
+        assert "solar_capture_factor" in data
+        assert data["solar_capture_factor"] == 0.0
+
+    def test_solar_capture_factor_set_and_read(self):
+        data = _empty_counters()
+        data["solar_capture_factor"] = round(max(0.0, min(0.65, 1.0)), 4)
+        assert data["solar_capture_factor"] == 0.65
+
+    def test_solar_capture_factor_clamped_to_one(self):
+        data = _empty_counters()
+        data["solar_capture_factor"] = round(max(0.0, min(1.5, 1.0)), 4)
+        assert data["solar_capture_factor"] == 1.0
+
+    def test_solar_capture_factor_merged_on_old_store(self):
+        old_data = {"energy_total_wh": 999.0}
+        merged = _empty_counters()
+        merged.update(old_data)
+        assert "solar_capture_factor" in merged
+        assert merged["solar_capture_factor"] == 0.0

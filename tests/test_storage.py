@@ -17,6 +17,7 @@ def _empty_counters():
         "battery_capacity_estimate_kwh": 0.0,
         "overhead_wall_wh": 0.0,
         "overhead_battery_wh": 0.0,
+        "solar_capture_factor": 0.0,
         "migrated": False,
     }
 

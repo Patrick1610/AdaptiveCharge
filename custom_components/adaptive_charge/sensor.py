@@ -472,11 +472,17 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 # ---------------------------------------------------------------------------
 
 class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
-    """Lifetime percentage of solar energy that reached the EV vs total solar produced.
+    """Lifetime solar-to-EV ratio (dashboard KPI).
 
     Computed as: (energy_solar_wh / solar_production_total_wh) × 100, capped at 100 %.
-    Used internally by low-power protection to estimate how much of the remaining
-    solar forecast will actually reach the car.
+
+    This is a **lifetime** metric that shows the cumulative percentage of solar
+    production that was delivered to the EV across all sessions.  It is intended
+    as a dashboard KPI for long-term tracking.
+
+    **Not** used for operational control decisions — the rolling
+    ``solar_capture_factor`` (exposed as an attribute) is used by the low-power
+    forecast logic instead, so short-term efficiency changes are reflected faster.
     """
 
     _attr_name = "Solar to EV Ratio"
@@ -519,6 +525,7 @@ class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             **base,
             "energy_solar_kwh": data.get("energy_solar_kwh", 0.0),
             "solar_production_kwh": data.get("solar_production_kwh", 0.0),
+            "solar_capture_factor": data.get("solar_capture_factor"),
             "low_power_active": data.get("low_power_active"),
             "low_power_threshold_pct": data.get("low_power_threshold_pct"),
         }
