@@ -6204,3 +6204,30 @@ class TestModulationQuantization:
 
     def test_modulate_down_floors_conservatively(self):
         assert quantize_target_int(4.80, 5, 16, "modulate_down") == 4
+
+
+# ---------------------------------------------------------------------------
+# Tests: CurrentSettingSensor displays 0 A when no session is active
+# ---------------------------------------------------------------------------
+
+def current_setting_native_value(data: dict | None) -> int:
+    """Mirror of CurrentSettingSensor.native_value."""
+    if data is None:
+        return 0
+    return data.get("current_setting") or 0
+
+
+class TestCurrentSettingSensor:
+    """current_setting should be 0 A when no session is active, never unknown."""
+
+    def test_no_data_returns_zero(self):
+        assert current_setting_native_value(None) == 0
+
+    def test_none_value_returns_zero(self):
+        assert current_setting_native_value({"current_setting": None}) == 0
+
+    def test_active_session_returns_value(self):
+        assert current_setting_native_value({"current_setting": 8}) == 8
+
+    def test_zero_value_stays_zero(self):
+        assert current_setting_native_value({"current_setting": 0}) == 0
