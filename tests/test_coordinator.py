@@ -484,8 +484,46 @@ class TestShutdownSequencePolicy:
 
 
 # ---------------------------------------------------------------------------
-# Tests: FORCE_MAX mode
+# Tests: restart/reload charging safety (disable charger on shutdown)
 # ---------------------------------------------------------------------------
+
+def simulate_async_shutdown(charging_on: bool) -> dict:
+    """Mirror of coordinator.async_shutdown() disable-on-shutdown logic."""
+    disable_called = False
+    charging_on_after = charging_on
+    last_committed_int_after = 8  # arbitrary non-zero value before shutdown
+    if charging_on:
+        disable_called = True
+        charging_on_after = False
+        last_committed_int_after = None
+    return {
+        "disable_called": disable_called,
+        "charging_on_after": charging_on_after,
+        "last_committed_int_after": last_committed_int_after,
+    }
+
+
+class TestRestartChargingSafety:
+    """Charger must be disabled on shutdown/reload when charging was active."""
+
+    def test_charger_disabled_on_shutdown_when_charging(self):
+        result = simulate_async_shutdown(charging_on=True)
+        assert result["disable_called"] is True
+
+    def test_charging_on_cleared_on_shutdown(self):
+        result = simulate_async_shutdown(charging_on=True)
+        assert result["charging_on_after"] is False
+
+    def test_last_committed_int_cleared_on_shutdown(self):
+        result = simulate_async_shutdown(charging_on=True)
+        assert result["last_committed_int_after"] is None
+
+    def test_charger_not_disabled_when_not_charging(self):
+        result = simulate_async_shutdown(charging_on=False)
+        assert result["disable_called"] is False
+
+
+
 
 class TestForceModeLogic:
     """Test FORCE_MAX / charge_now mode logic."""

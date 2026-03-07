@@ -512,6 +512,18 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._pending_task.cancel()
         if self._pending_modulate_task and not self._pending_modulate_task.done():
             self._pending_modulate_task.cancel()
+        # If charging was active on reload/restart, disable the charger so it
+        # does not remain enabled after the integration restarts.  Without this
+        # the physical charger switch stays ON while _charging_on is reset to
+        # False, causing the first "not charging" status after restart to be
+        # silently ignored and leaving the EV in an unmanaged charging state.
+        if self._charging_on:
+            _LOGGER.info(
+                "AdaptiveCharge: shutdown — disabling charger (was charging_on=True)"
+            )
+            await self._disable_charging()
+            self._charging_on = False
+            self._last_committed_int = None
         # Best-effort session finalization on shutdown so capacity/overhead/
         # capture factor are persisted even if the cable is never unplugged.
         self._finalize_session_if_needed("shutdown")
