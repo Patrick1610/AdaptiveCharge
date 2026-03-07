@@ -1142,14 +1142,23 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if effective_capacity <= 0:
             return None
 
+        # Remaining capacity expressed using the same basis as effective_capacity.
         remaining_battery_kwh = max(0.0, (100.0 - battery_pct) / 100.0 * effective_capacity)
         if remaining_battery_kwh <= 0:
             return 0.0
 
-        efficiency = 1.0
-        if charging_overhead_pct is not None:
-            efficiency = max(0.05, 1.0 - (charging_overhead_pct / 100.0))
+        # If no overhead is provided, or we are using an estimated capacity that may already
+        # be wall-side (including charging losses), return the remaining energy as-is.
+        if charging_overhead_pct is None:
+            return round(remaining_battery_kwh, 2)
 
+        used_config_capacity = self._battery_capacity_kwh > 0
+        if not used_config_capacity:
+            # Effective capacity is estimated and may already include overhead; avoid
+            # double-counting by not applying the efficiency factor again.
+            return round(remaining_battery_kwh, 2)
+
+        efficiency = max(0.05, 1.0 - (charging_overhead_pct / 100.0))
         return round(remaining_battery_kwh / efficiency, 2)
 
     def reset_session_energy(self) -> None:
