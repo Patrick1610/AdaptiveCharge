@@ -6114,3 +6114,93 @@ class TestStorageSolarCaptureFactor:
         merged.update(old_data)
         assert "solar_capture_factor" in merged
         assert merged["solar_capture_factor"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: planning/overhead helper logic mirrors
+# ---------------------------------------------------------------------------
+
+def compute_energy_needed_full_kwh(
+    battery_pct: float | None,
+    effective_capacity_kwh: float,
+    charging_overhead_pct: float | None,
+) -> float | None:
+    """Mirror of coordinator._compute_energy_needed_full_kwh for pure tests."""
+    if battery_pct is None or effective_capacity_kwh <= 0:
+        return None
+    remaining_battery_kwh = max(0.0, (100.0 - battery_pct) / 100.0 * effective_capacity_kwh)
+    if remaining_battery_kwh <= 0:
+        return 0.0
+    efficiency = 1.0
+    if charging_overhead_pct is not None:
+        efficiency = max(0.05, 1.0 - (charging_overhead_pct / 100.0))
+    return round(remaining_battery_kwh / efficiency, 2)
+
+
+class TestEnergyNeededFull:
+    def test_none_soc_returns_none(self):
+        assert compute_energy_needed_full_kwh(None, 70.0, 20.0) is None
+
+    def test_no_capacity_returns_none(self):
+        assert compute_energy_needed_full_kwh(40.0, 0.0, 20.0) is None
+
+    def test_zero_needed_at_full_soc(self):
+        assert compute_energy_needed_full_kwh(100.0, 70.0, 20.0) == 0.0
+
+    def test_includes_overhead_when_available(self):
+        # Remaining battery energy: 50% of 80 kWh = 40 kWh. With 20% overhead,
+        # wall-side need = 40 / 0.8 = 50 kWh.
+        assert compute_energy_needed_full_kwh(50.0, 80.0, 20.0) == 50.0
+
+
+class TestSensorContinuityFallbacks:
+    """Mirror continuity policy for ratio/overhead sensors."""
+
+    @staticmethod
+    def continuity_value(live_value: float | None, last_known: float | None) -> float:
+        if live_value is not None:
+            return live_value
+        if last_known is not None:
+            return last_known
+        return 0.0
+
+    def test_returns_live_when_present(self):
+        assert self.continuity_value(21.6, 19.8) == 21.6
+
+    def test_returns_last_known_when_live_missing(self):
+        assert self.continuity_value(None, 19.8) == 19.8
+
+    def test_returns_zero_when_no_history(self):
+        assert self.continuity_value(None, None) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: integer current quantization policy (modulation)
+# ---------------------------------------------------------------------------
+
+def quantize_target_int(target: float, current_int: int, capped: int, reason: str) -> int:
+    """Mirror of coordinator._commit_current quantization."""
+    import math
+
+    target = min(max(target, 0.0), float(capped))
+    if reason == "modulate_up":
+        rounded = int(math.floor(target + 0.5))
+        out = max(current_int + 1, rounded)
+    elif reason == "modulate_down":
+        out = int(math.floor(target))
+    else:
+        out = int(target)
+    return min(max(out, 0), int(capped))
+
+
+class TestModulationQuantization:
+    def test_modulate_up_rounds_476_to_5a(self):
+        assert quantize_target_int(4.76, 4, 16, "modulate_up") == 5
+
+    def test_modulate_up_forces_at_least_plus_one(self):
+        # Even if rounded target is still current (e.g. 4.20 -> 4),
+        # approved upward modulation should execute one 1A step.
+        assert quantize_target_int(4.20, 4, 16, "modulate_up") == 5
+
+    def test_modulate_down_floors_conservatively(self):
+        assert quantize_target_int(4.80, 5, 16, "modulate_down") == 4
