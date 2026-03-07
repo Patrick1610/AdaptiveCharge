@@ -245,14 +245,13 @@ ratio = min(energy_solar_wh / solar_production_total_wh, 1.0)
 
 This is displayed as a percentage (0–100 %) and serves as a **dashboard metric** for long-term self-consumption tracking.
 
-**Solar Capture Factor** (attribute on the ratio sensor) is a **rolling operational metric** — it is an EMA of the per-session solar capture efficiency, updated at the end of each charging session. Low-power forecast logic uses this factor (not the lifetime KPI) to estimate how much of the remaining solar forecast will benefit the EV:
+**Solar Capture Factor** (attribute on the ratio sensor) is a **rolling operational metric** — it is an EMA of the per-session solar capture efficiency, updated at the end of each charging session. It is currently provided for diagnostics/trending and is **not** used in control decisions.
+
+Low-power forecast logic uses a deterministic lifetime-ratio check:
 
 ```
-control_factor = solar_capture_factor if available, else lifetime ratio (fallback)
-expected_ev_kwh = forecast_kwh × control_factor
+expected_ev_kwh = forecast_kwh × solar_to_ev_ratio
 ```
-
-This separation ensures that short-term conditions (clouds, shading changes) are reflected faster in charging decisions, while the lifetime KPI remains stable for historical analysis.
 
 ### 12a. Fail-Safe Behaviour (v4.3.0)
 
@@ -287,6 +286,14 @@ overhead% = (1 − battery_received_kwh / wall_energy_kwh) × 100
 Live blending only activates once at least 0.5 kWh has been charged in the current session to avoid noisy readings at session start.
 
 The live blend uses a **wall-energy snapshot** — the wall value captured at the exact moment the battery sensor last changed — rather than the continuously-growing live accumulator. This keeps the displayed overhead stable between car API polls (typically every ~3 minutes) and prevents a sawtooth pattern where the overhead would drift up between updates and snap back down on each new battery reading.
+
+
+
+**Integer setpoint quantization (important):**
+- EVSE current is integer amps. The controller computes a float target first and then quantizes.
+- For upward modulation the target is now rounded-to-nearest (half-up) and executes at least +1A when an up-step is approved.
+- For downward modulation the target is floored (conservative).
+- This prevents a stall where `available_current` can stay above `current_setting` (e.g. 4.7A vs 4A) without ever ramping up.
 
 ### 14. Charging Priority
 
@@ -448,6 +455,7 @@ When the cable sensor transitions off → on:
 | `sensor.adaptivecharge_input_skew` _(diagnostic, expert)_ | s | Timestamp skew between net and EV sensors; auto-enabled in Expert Mode |
 | `sensor.adaptivecharge_charging_overhead_pct` _(optional)_ | % | Rolling AC→DC conversion loss %; live during charging session |
 | `sensor.adaptivecharge_battery_energy_delta_kwh` _(optional)_ | kWh | Energy received by the battery this session (live, resets on cable plug-in) |
+| `sensor.adaptivecharge_energy_needed_full_kwh` _(optional)_ | kWh | Estimated wall energy still needed to reach 100% SoC (includes charging overhead) |
 
 _Optional sensors are only created when the EV Battery Energy Sensor is configured._
 
@@ -576,6 +584,41 @@ Every sensor exposes the following extra attributes:
 ---
 
 ## Changelog
+
+### v4.3.3
+
+**Surplus ramp-up fix (balanced mode):**
+- Fixed integer setpoint quantization so approved upward modulation no longer stalls below the next whole amp.
+- Example: previous behaviour could hold at 4A when decision hovered around 4.7–4.9A; now it ramps to 5A once up-modulation is allowed.
+- `committed_current` now always reflects the actual integer current sent to the charger.
+
+**Rate-limiter consistency:**
+- Upward cooldown now uses the configured `modulate_min_interval` instead of a hardcoded constant, so the setting in options directly controls ramp-up speed.
+
+
+### v4.3.2
+
+**Control behaviour correction:**
+- Removed the v4.3.1 upward EMA "snap". In balanced mode this could bias behaviour toward earlier import-like ramp-up. Balanced now again follows pure filtered surplus without extra upward bias.
+
+**Sensor reliability (no graph gaps):**
+- `Solar to EV Ratio` now always reports a continuous value: restored last known value on restart/reload, and `0.0` fallback when no history exists yet.
+- `Charging Overhead` now also restores/holds the last known value and uses a `0.0` fallback before first valid sample, preventing temporary `unknown` holes during startup or source outages.
+
+**Docs consistency:**
+- Clarified that `solar_capture_factor` is currently diagnostic only; low-power forecast control uses `solar_to_ev_ratio` directly.
+
+
+### v4.3.1
+
+**Control & logic improvements:**
+- **Faster up-modulation response**: EMA now applies an upward snap when raw surplus clearly exceeds filtered current, reducing delayed ramp-up during sudden export spikes.
+- **Simplified low-power forecast rule**: low-power protection now uses the lifetime `solar_to_ev_ratio` directly for expected EV energy (`forecast × ratio`) to keep behaviour transparent and predictable.
+- **Solar noise gate**: solar production accumulation now ignores very low readings (`<= 50 W`) to reduce ratio drift from standby/noise values.
+
+**New battery planning sensor:**
+- Added `Energy Needed Full` (kWh): estimated wall energy required to go from current SoC to 100%, including charging overhead when available.
+
 
 ### v4.3.0
 

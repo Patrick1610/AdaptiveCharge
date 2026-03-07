@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -84,8 +85,6 @@ from .const import (
     DEFAULT_ALIGNMENT_TIMEOUT_MIN,
     DEFAULT_CHARGE_BUFFER,
     DEFAULT_CHARGE_LIMIT,
-    DEFAULT_COOLDOWN_DOWN_S,
-    DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
     DEFAULT_EMA_SPAN_S,
     DEFAULT_EV_STEP_THRESHOLD_W,
@@ -151,6 +150,10 @@ _LAG_WARMUP_SAMPLES = 5
 
 # Maximum time delta (hours) for energy accumulation; skip if exceeded (missed ticks)
 _MAX_ENERGY_DT_HOURS = 0.1  # 6 minutes
+
+# Ignore tiny solar noise when computing solar-production-based ratios.
+_SOLAR_RATIO_MIN_POWER_W = 50.0
+
 
 
 def _get_float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
@@ -1015,14 +1018,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     if self._battery_capacity_kwh > 0
                     else self._estimated_battery_capacity_kwh
                 )
-                # Use the rolling solar capture factor for operational
-                # decisions.  Fall back to the lifetime ratio only when
-                # the capture factor has not been populated yet.
-                control_factor = (
-                    self._solar_capture_factor
-                    if self._solar_capture_factor > 0
-                    else (solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0)
-                )
+                # Keep forecast logic simple and explainable: use the
+                # lifetime solar-to-EV ratio directly.
+                control_factor = solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0
                 if (
                     effective_capacity > 0
                     and control_factor > 0
@@ -1096,7 +1094,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Solar production accumulation ---
         solar_w_val = sensor_data.get("solar_w")
-        if solar_w_val is not None and solar_w_val > 0:
+        if solar_w_val is not None and solar_w_val > _SOLAR_RATIO_MIN_POWER_W:
             solar_production_wh = solar_w_val * dt_h
             self._solar_production_wh += solar_production_wh
             self._session_solar_production_wh += solar_production_wh
@@ -1126,6 +1124,42 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._energy_session_import_wh += import_wh
             # Persist energy charged
             self._store.add_energy_charged(energy_wh, solar_wh, import_wh)
+
+    def _compute_energy_needed_full_kwh(
+        self,
+        battery_pct: float | None,
+        charging_overhead_pct: float | None,
+    ) -> float | None:
+        """Estimate wall energy still needed for 100% SoC (incl. overhead)."""
+        if battery_pct is None:
+            return None
+
+        effective_capacity = (
+            self._battery_capacity_kwh
+            if self._battery_capacity_kwh > 0
+            else self._estimated_battery_capacity_kwh
+        )
+        if effective_capacity <= 0:
+            return None
+
+        # Remaining capacity expressed using the same basis as effective_capacity.
+        remaining_battery_kwh = max(0.0, (100.0 - battery_pct) / 100.0 * effective_capacity)
+        if remaining_battery_kwh <= 0:
+            return 0.0
+
+        # If no overhead is provided, or we are using an estimated capacity that may already
+        # be wall-side (including charging losses), return the remaining energy as-is.
+        if charging_overhead_pct is None:
+            return round(remaining_battery_kwh, 2)
+
+        used_config_capacity = self._battery_capacity_kwh > 0
+        if not used_config_capacity:
+            # Effective capacity is estimated and may already include overhead; avoid
+            # double-counting by not applying the efficiency factor again.
+            return round(remaining_battery_kwh, 2)
+
+        efficiency = max(0.05, 1.0 - (charging_overhead_pct / 100.0))
+        return round(remaining_battery_kwh / efficiency, 2)
 
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
@@ -1378,6 +1412,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Compute session battery delta ONCE to avoid double sensor reads
         # with side-effects (snapshot capture).
         session_battery_delta = self._compute_session_battery_delta()
+        charging_overhead_pct = self._compute_overhead_pct(session_battery_delta)
+        energy_needed_full_kwh = self._compute_energy_needed_full_kwh(
+            sensor_data.get("battery_pct"),
+            charging_overhead_pct,
+        )
         return {
             "net_w": computed_net_w,
             "net_power_valid": sensor_data.get("net_power_valid", True),
@@ -1531,7 +1570,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
             "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
             "session_battery_delta_kwh": session_battery_delta,
-            "charging_overhead_pct": self._compute_overhead_pct(session_battery_delta),
+            "charging_overhead_pct": charging_overhead_pct,
+            "energy_needed_full_kwh": energy_needed_full_kwh,
             # --- Charging priority ---
             "charging_priority": self._charging_priority,
         }
@@ -1827,17 +1867,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         new_target = min(max(new_target, 0.0), capped)
 
-        # Cooldown
-        if delta > 0:
-            if self._last_up_time is not None:
-                up_elapsed = mono_now - self._last_up_time
-                if up_elapsed < DEFAULT_COOLDOWN_UP_S:
-                    _LOGGER.debug(
-                        "AdaptiveCharge: modulate up blocked by cooldown "
-                        "(%.0fs / %.0fs) target=%.1fA",
-                        up_elapsed, DEFAULT_COOLDOWN_UP_S, new_target,
-                    )
-                    return
+        # Cooldown / minimum modulation interval
+        if delta > 0 and self._last_up_time is not None:
+            up_elapsed = mono_now - self._last_up_time
+            up_cooldown = float(max(self._modulate_min_interval, 0))
+            if up_elapsed < up_cooldown:
+                _LOGGER.debug(
+                    "AdaptiveCharge: modulate up blocked by cooldown "
+                    "(%.0fs / %.0fs) target=%.1fA",
+                    up_elapsed, up_cooldown, new_target,
+                )
+                return
 
         reason = "modulate_up" if delta > 0 else "modulate_down"
         await self._commit_current(new_target, mono_now, reason=reason)
@@ -1848,7 +1888,22 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Commit a new current setpoint to the actuator."""
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
         target = min(max(target, 0.0), capped)
-        target_int = max(int(target), 0)
+
+        current_int = self._last_committed_int if self._last_committed_int is not None else 0
+        # Quantize float target to EVSE integer amps.
+        # - Upward modulation: nearest integer (half-up), and ensure +1A step
+        #   once modulation has been approved by hysteresis/gating.
+        # - Downward modulation: floor (conservative, avoids over-reducing).
+        # - Other paths (start/force/import-guard): direct integer truncation.
+        if reason == "modulate_up":
+            rounded = int(math.floor(target + 0.5))
+            target_int = max(current_int + 1, rounded)
+        elif reason == "modulate_down":
+            target_int = int(math.floor(target))
+        else:
+            target_int = int(target)
+
+        target_int = min(max(target_int, 0), int(capped))
 
         # Idempotent: skip if same integer value already sent
         if target_int == self._last_committed_int:
@@ -1860,7 +1915,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 target_int, target, reason, self._confidence,
             )
             await self._set_charge_current(target_int)
-            self._committed_current = target
+            # Keep committed_current aligned to what was actually sent (integer A).
+            self._committed_current = float(target_int)
             self._last_committed_int = target_int
             self._last_commit_reason = reason
 
