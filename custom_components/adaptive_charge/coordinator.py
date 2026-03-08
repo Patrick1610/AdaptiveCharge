@@ -1588,6 +1588,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         Uses debounce (require sustained import for N seconds) and hysteresis
         (require import < threshold - margin for M seconds before clearing).
         """
+        # During alignment or settling the EV power is in a transient state —
+        # the car may draw at startup-level current before applying the
+        # commanded limit.  Freeze (reset) the debounce timer so we do not
+        # react to these expected transients.
+        if self._alignment.active or self._alignment.settling:
+            self._import_exceed_since = None
+            return False
+
         threshold = self._import_guard_threshold
         duration = self._import_guard_duration
         clear_threshold = threshold - self._import_guard_hysteresis
@@ -2039,6 +2047,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_committed_int = current_a
         self._last_commit_reason = "start_surplus"
         self._import_guard_stop_time = None  # clear post-escalation cooldown on successful start
+        # Start a settling window to cover the EV startup transient.  Many EVs
+        # (including Tesla) draw at maximum current for several seconds after the
+        # charger is enabled before respecting the commanded current limit.
+        # Combined with the alignment-based debounce freeze in _check_import_guard
+        # this prevents the import guard from reacting to an expected power spike.
+        self._alignment.start_settling(
+            time.monotonic(),
+            max(self._settling_duration_s, self._import_guard_settle),
+        )
+        self._import_exceed_since = None  # fresh debounce for this session
 
     async def _action_stop_surplus(self) -> None:
         _LOGGER.info("AdaptiveCharge: stop_surplus")

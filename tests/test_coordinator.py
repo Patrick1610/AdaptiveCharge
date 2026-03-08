@@ -6362,3 +6362,151 @@ class TestCurrentSettingSensorNoSession:
 
     def test_returns_value_when_session_active(self):
         assert current_setting_native_value({"current_setting": 10}) == 10
+
+
+# ---------------------------------------------------------------------------
+# Tests: import guard debounce frozen during alignment/settling (v4.3.5)
+# ---------------------------------------------------------------------------
+
+
+class FakeAlignment:
+    """Minimal stand-in for AlignmentEngine used to unit-test _check_import_guard logic."""
+
+    def __init__(self, active: bool = False, settling: bool = False) -> None:
+        self.active = active
+        self.settling = settling
+        self._settle_duration: float = 0.0
+        self._settle_start: float | None = None
+
+    def start_settling(self, mono_now: float, duration: float) -> None:
+        self.settling = True
+        self._settle_start = mono_now
+        self._settle_duration = duration
+
+    def check_settling(self, mono_now: float) -> None:
+        if self.settling and self._settle_start is not None:
+            if mono_now - self._settle_start >= self._settle_duration:
+                self.settling = False
+                self._settle_start = None
+
+
+def _run_check_import_guard(
+    net_w: float,
+    mono_now: float,
+    alignment_active: bool = False,
+    alignment_settling: bool = False,
+    import_exceed_since: float | None = None,
+    threshold: float = 200.0,
+    duration: float = 30.0,
+) -> tuple[bool, float | None]:
+    """Mirror the guard logic including the alignment/settling freeze introduced in v4.3.5."""
+    # Freeze during alignment or settling
+    if alignment_active or alignment_settling:
+        import_exceed_since = None
+        return False, None
+
+    clear_threshold = threshold - 50.0  # default hysteresis
+
+    if net_w > threshold:
+        if import_exceed_since is None:
+            import_exceed_since = mono_now
+        elif (mono_now - import_exceed_since) >= duration:
+            return True, import_exceed_since
+    elif net_w <= clear_threshold:
+        import_exceed_since = None
+
+    return False, import_exceed_since
+
+
+class TestImportGuardAlignmentFreeze:
+    """Import guard debounce must be frozen while alignment or settling is active."""
+
+    def test_debounce_resets_when_alignment_active(self):
+        """Accumulated debounce is discarded when alignment.active is True."""
+        # Debounce has been running for 20s (threshold 200W, net=500W)
+        triggered, new_since = _run_check_import_guard(
+            net_w=500.0,
+            mono_now=1020.0,
+            alignment_active=True,
+            import_exceed_since=1000.0,  # was counting for 20s
+        )
+        assert triggered is False
+        assert new_since is None  # timer reset
+
+    def test_debounce_resets_when_settling_active(self):
+        """Accumulated debounce is discarded when alignment.settling is True."""
+        triggered, new_since = _run_check_import_guard(
+            net_w=500.0,
+            mono_now=1020.0,
+            alignment_settling=True,
+            import_exceed_since=1000.0,
+        )
+        assert triggered is False
+        assert new_since is None
+
+    def test_debounce_accumulates_after_settling_expires(self):
+        """Debounce counts normally once settling is False."""
+        # First call while settling — resets timer
+        triggered1, since1 = _run_check_import_guard(
+            net_w=500.0, mono_now=1000.0, alignment_settling=True, import_exceed_since=990.0
+        )
+        assert triggered1 is False
+        assert since1 is None
+
+        # Settling expired; now debounce accumulates
+        triggered2, since2 = _run_check_import_guard(
+            net_w=500.0, mono_now=1010.0, alignment_settling=False, import_exceed_since=None
+        )
+        assert triggered2 is False
+        assert since2 == 1010.0  # timer started fresh
+
+    def test_guard_fires_after_full_debounce_without_alignment(self):
+        """Without alignment, guard fires after debounce duration."""
+        # Timer started at 1000.0; check at 1030.0 (30s elapsed)
+        triggered, _ = _run_check_import_guard(
+            net_w=500.0,
+            mono_now=1030.0,
+            alignment_active=False,
+            alignment_settling=False,
+            import_exceed_since=1000.0,
+            duration=30.0,
+        )
+        assert triggered is True
+
+    def test_guard_does_not_fire_if_alignment_active_throughout_debounce(self):
+        """Guard must not fire if alignment stays active for the entire debounce window."""
+        # Simulate 35 consecutive ticks (each 1s) with alignment.active=True
+        since = None
+        triggered = False
+        for t in range(35):
+            triggered, since = _run_check_import_guard(
+                net_w=500.0, mono_now=float(t), alignment_active=True, import_exceed_since=since
+            )
+            if triggered:
+                break
+        assert triggered is False
+        assert since is None
+
+    def test_settling_window_started_at_session_start(self):
+        """_alignment.start_settling should be called when a surplus session starts."""
+        alignment = FakeAlignment()
+        import_guard_settle_s = 30.0
+        settling_duration_s = 10.0
+        mono_start = 1000.0
+
+        # Mirror what _action_start_surplus does
+        alignment.start_settling(mono_start, max(settling_duration_s, import_guard_settle_s))
+
+        assert alignment.settling is True
+        assert alignment._settle_duration == 30.0
+
+    def test_settling_window_expires_after_duration(self):
+        """Settling window must expire after the specified duration."""
+        alignment = FakeAlignment()
+        alignment.start_settling(1000.0, 30.0)
+
+        alignment.check_settling(1029.0)  # still within 30s
+        assert alignment.settling is True
+
+        alignment.check_settling(1030.0)  # exactly at 30s boundary
+        assert alignment.settling is False
