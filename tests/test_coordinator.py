@@ -6530,3 +6530,116 @@ class TestImportGuardAlignmentFreeze:
 
         alignment.check_settling(1030.0)  # exactly at 30s boundary
         assert alignment.settling is False
+
+
+# ---------------------------------------------------------------------------
+# v4.3.7 — Settling-window start-time fix + block-down-during-settling
+# ---------------------------------------------------------------------------
+
+
+def _is_modulate_blocked(
+    delta: float,
+    alignment_active: bool,
+    alignment_settling: bool,
+) -> bool:
+    """Mirror _try_modulate settling/alignment gating (v4.3.7).
+
+    - During settling: ALL modulation blocked (both up and down).
+    - During alignment only (no settling): only UPWARD blocked.
+    """
+    if alignment_settling:
+        return True
+    if alignment_active and delta > 0:
+        return True
+    return False
+
+
+class TestSettlingAndAlignmentGating:
+    """_try_modulate settling / alignment gate — v4.3.7 behaviour."""
+
+    def test_settling_blocks_downward(self):
+        """Downward modulation must be blocked during the settling window."""
+        assert _is_modulate_blocked(-2.0, alignment_active=False, alignment_settling=True) is True
+
+    def test_settling_blocks_upward(self):
+        """Upward modulation must also be blocked during the settling window."""
+        assert _is_modulate_blocked(2.0, alignment_active=False, alignment_settling=True) is True
+
+    def test_alignment_only_blocks_upward(self):
+        """During alignment without settling, upward is blocked but downward is allowed."""
+        assert _is_modulate_blocked(2.0, alignment_active=True, alignment_settling=False) is True
+        assert _is_modulate_blocked(-2.0, alignment_active=True, alignment_settling=False) is False
+
+    def test_no_settling_no_alignment_allows_all(self):
+        """Without settling or alignment, both directions are allowed."""
+        assert _is_modulate_blocked(2.0, alignment_active=False, alignment_settling=False) is False
+        assert _is_modulate_blocked(-2.0, alignment_active=False, alignment_settling=False) is False
+
+    def test_settling_supersedes_alignment_downward_blocking(self):
+        """When both settling and alignment are active, downward is still blocked (settling wins)."""
+        assert _is_modulate_blocked(-2.0, alignment_active=True, alignment_settling=True) is True
+
+
+class TestSettlingWindowStartTime:
+    """Settling window must be anchored to the actual commit time (after the
+    blocking API call), not to the stale tick-start mono_now.
+
+    Background: mono_now is captured at the start of _async_update_data_internal.
+    When _set_charge_current() makes a blocking cloud API call (e.g. Tessie),
+    several seconds elapse before control returns.  If start_settling() uses the
+    stale tick-start time, the settling window expires at
+    ``tick_start + settling_duration``, which coincides with the next periodic
+    tick (``tick_start + tick_interval``), giving zero protection.
+    """
+
+    def test_stale_start_time_causes_premature_expiry(self):
+        """Reproduce the pre-fix bug: stale mono_now expires exactly on the next tick."""
+        alignment = FakeAlignment()
+        tick_interval_s = 10.0
+        settling_duration_s = 10.0
+        api_latency_s = 6.0
+
+        tick_start = 1000.0
+        # BUG (old code): start settling with the stale tick-start timestamp
+        alignment.start_settling(tick_start, settling_duration_s)
+
+        # Next periodic tick fires exactly tick_interval_s after tick_start
+        next_tick = tick_start + tick_interval_s  # 1010.0
+        alignment.check_settling(next_tick)
+
+        # The window has expired (1010 - 1000 = 10 >= 10) — no protection
+        assert alignment.settling is False
+
+    def test_actual_commit_time_provides_full_window(self):
+        """Fix: settling started at actual commit time is still active on the next tick."""
+        alignment = FakeAlignment()
+        tick_interval_s = 10.0
+        settling_duration_s = 10.0
+        api_latency_s = 6.0
+
+        tick_start = 1000.0
+        # FIX (new code): start settling *after* the API call completes
+        actual_commit_time = tick_start + api_latency_s  # 1006.0
+        alignment.start_settling(actual_commit_time, settling_duration_s)
+
+        # Next periodic tick fires at tick_start + tick_interval = 1010.0
+        next_tick = tick_start + tick_interval_s
+        alignment.check_settling(next_tick)
+
+        # Window still active (1010 - 1006 = 4 < 10) — protects against cascade
+        assert alignment.settling is True
+
+    def test_actual_commit_time_expires_after_full_duration(self):
+        """Window started at commit time expires after the full settling duration."""
+        alignment = FakeAlignment()
+        api_latency_s = 6.0
+        settling_duration_s = 10.0
+        actual_commit_time = 1006.0
+
+        alignment.start_settling(actual_commit_time, settling_duration_s)
+
+        alignment.check_settling(1015.9)   # still within window
+        assert alignment.settling is True
+
+        alignment.check_settling(1016.0)   # exactly at boundary (1006 + 10)
+        assert alignment.settling is False
