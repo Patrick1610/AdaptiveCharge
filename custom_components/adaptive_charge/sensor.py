@@ -370,10 +370,10 @@ class CurrentSettingSensor(_BaseAdaptiveChargeSensor):
         self._attr_unique_id = f"{entry.entry_id}_current_setting"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> int:
         if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("current_setting")
+            return 0
+        return self.coordinator.data.get("current_setting") or 0
 
 
 class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):

@@ -147,7 +147,6 @@ Enable **Expert Mode** to access advanced controller-tuning parameters:
 | Hysteresis Up (A) | 0.2 A | Minimum EMA increase required before stepping up |
 | Hysteresis Down (A) | 1.0 A | Minimum EMA decrease required before stepping down |
 | Settling Duration (s) | 10 s | Post-commit window during which upward steps are suppressed |
-| Priority Bias | 500 W | Power offset for `zero_prefer_export` / `zero_prefer_import` modes (converted to A at runtime) |
 
 Expert mode also **automatically enables** two normally-hidden diagnostic sensors:
 - **Alignment Diagnostics** — full alignment engine state
@@ -297,17 +296,17 @@ The live blend uses a **wall-energy snapshot** — the wall value captured at th
 
 ### 14. Charging Priority
 
-The **Charging Priority** select entity (`select.adaptivecharge_charging_priority`) lets you shift the charging bias without affecting any monitoring sensor. `surplus_w`, `ema_current_a`, and all display values are always computed from real measurements; the priority only influences the internal control decision.
+The **Charging Priority** select entity (`select.adaptivecharge_charging_priority`) controls how the float EMA current is rounded to the integer amp value sent to the EVSE. All monitoring sensors (`surplus_w`, `ema_current_a`, etc.) are always computed from real measurements and are never affected by the priority setting.
 
-| Mode | Effect |
-|------|--------|
-| `balance` _(default)_ | Pure surplus — charges exactly when solar exceeds house load, targeting 0 W net. The original behaviour. |
-| `zero_prefer_export` | Requires real surplus > **Priority Bias** (default 500 W) before starting or modulating. Biases slightly toward grid export. |
-| `zero_prefer_import` | Starts and modulates even when importing up to **Priority Bias** (default 500 W). Biases slightly toward grid import. |
-| `export_priority` | Stops any active surplus session and prevents new ones. All solar is exported. **Overridden** by `Charge Now`, `Charge Tonight`, and low-power protection when the solar forecast is insufficient. |
-| `import_priority` | Permanent force-charge whenever the cable is connected — equivalent to leaving `Charge Now` on. Import guard is automatically bypassed. |
+| Mode | Quantization | Effect |
+|------|-------------|--------|
+| `balance` _(default)_ | **Round** (half-up) | Steps up when EMA is ≥ 0.5 A above current setpoint. Symmetric around 0 W net — pure surplus behaviour. |
+| `zero_prefer_export` | **Floor** | Steps up only when EMA is ≥ 1 A above current setpoint. Naturally biases toward exporting rather than consuming. |
+| `zero_prefer_import` | **Ceil** | Steps up as soon as EMA is any positive fraction above current setpoint. Biases toward charging while staying near zero net. |
+| `export_priority` | — | Stops any active surplus session and prevents new ones. All solar is exported. **Overridden** by `Charge Now`, `Charge Tonight`, and low-power protection. |
+| `import_priority` | — | Permanent force-charge whenever the cable is connected — equivalent to leaving `Charge Now` on. Import guard is automatically bypassed. |
 
-`zero_prefer_export` and `zero_prefer_import` are exact mirrors: same bias magnitude, opposite sign. The bias magnitude is set via **Priority Bias** in Expert Mode (0–2000 W, default 500 W).
+The three surplus modes are exact mirrors of each other around the half-integer point: `prefer_export` is the most conservative (floor), `balance` is neutral (round), and `prefer_import` is the most liberal (ceil). No additional configuration is needed.
 
 #### Override hierarchy for `export_priority`
 
@@ -584,6 +583,20 @@ Every sensor exposes the following extra attributes:
 ---
 
 ## Changelog
+
+### v4.3.6
+
+**Charging Priority redesign (simpler, no configuration needed):**
+- `zero_prefer_export` and `zero_prefer_import` now use **floor** and **ceil** quantization respectively, instead of a configurable W-bias offset. This makes the distinction intuitive:
+  - `balance` (default) — **round** (half-up): neutral, steps at ±0.5 A around the setpoint.
+  - `zero_prefer_export` — **floor**: requires a full integer amp of surplus above the current setpoint before stepping up; conservatively biases toward export.
+  - `zero_prefer_import` — **ceil**: any positive fraction above the setpoint triggers a step up; liberally biases toward charging.
+- Removed **Priority Bias** (W) setting from Expert Mode. The mode itself now fully encodes the intent, with no numeric parameter to tune.
+- `surplus_w` and `ema_current_a` remain unaffected — monitoring is always clean.
+
+**Import guard oscillation fix (EV startup transient):**
+- Import guard debounce is now frozen while `alignment.active` or `alignment.settling` is `True`. This prevents the guard from reacting to the expected power transient during EV charger startup (Tesla draws at max current for up to 80 s before applying the commanded limit).
+- Session start (`_action_start_surplus`) explicitly opens a 30 s settling window and resets the debounce, covering the full startup transient.
 
 ### v4.3.3
 
