@@ -1815,12 +1815,26 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         target = min(max(ema_current, 0.0), capped)
         delta = target - current_setpoint
 
-        # During alignment or settling, only allow decreases (safety), hold otherwise
-        if (self._alignment.active or self._alignment.settling) and delta > 0:
+        # During the settling window (the period right after a setpoint change)
+        # block ALL modulation in both directions.  The EV is still transitioning
+        # to the new current, so the EMA may transiently dip below the new
+        # setpoint and trigger a spurious cascade of further reductions.  Real
+        # import emergencies are handled by the import-guard path which runs
+        # before this function and returns early, so blocking here is safe.
+        if self._alignment.settling:
             _LOGGER.debug(
-                "AdaptiveCharge: modulate up blocked by alignment/settling "
-                "(alignment=%s settling=%s) delta=+%.2fA",
-                self._alignment.active, self._alignment.settling, delta,
+                "AdaptiveCharge: modulate blocked by settling (delta=%.2fA)",
+                delta,
+            )
+            return
+
+        # During alignment (EV power in transient but no fresh setpoint change)
+        # only block upward modulation; downward is still allowed for safety.
+        if self._alignment.active and delta > 0:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked by alignment "
+                "(delta=+%.2fA)",
+                delta,
             )
             return
 
@@ -1936,9 +1950,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._last_reason = reason
             self._last_action_ts = mono_now
 
-            # Start settling window to avoid self-induced dip flapping
+            # Start settling window to avoid self-induced dip flapping.
+            # IMPORTANT: capture a fresh timestamp *after* the blocking
+            # service-call so that cloud-API latency (e.g. Tessie) does not
+            # eat into the window.  Using the stale tick-start mono_now would
+            # cause the window to expire exactly when the next periodic tick
+            # fires, providing zero protection against rapid cascades.
             self._alignment.start_settling(
-                mono_now, self._settling_duration_s
+                time.monotonic(), self._settling_duration_s
             )
 
     def _set_mode(self, new_mode: str, reason: str, source: str) -> None:
