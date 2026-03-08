@@ -119,7 +119,8 @@ CONF_IMPORT_GUARD_SETTLE_S = "import_guard_settle_s"
 DEFAULT_IMPORT_GUARD_HYSTERESIS_W = 50.0
 DEFAULT_IMPORT_GUARD_CLEAR_DURATION_S = 20.0
 DEFAULT_IMPORT_GUARD_SETTLE_S = 30.0
-DEFAULT_IMPORT_GUARD_ZERO_HOLD_S = 300.0  # hold at 0A for 5 min before hard stop
+DEFAULT_IMPORT_GUARD_ZERO_HOLD_S = 120.0  # hold at 0A for 2 min before hard stop
+DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S = 600.0  # 10 min cooldown after escalate_stop before allowing restart
 
 # Import guard states
 IMPORT_GUARD_OK = "ok"

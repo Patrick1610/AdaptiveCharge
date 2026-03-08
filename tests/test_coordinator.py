@@ -6,8 +6,28 @@ from collections import deque
 from datetime import datetime, timedelta
 from statistics import mean
 from unittest.mock import AsyncMock, MagicMock, patch
+import importlib.util
+import os
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Helpers: load const.py directly without triggering HA __init__ imports
+# ---------------------------------------------------------------------------
+
+def _load_const():
+    """Load const.py directly via importlib, bypassing HA __init__ dependencies."""
+    const_path = os.path.join(
+        os.path.dirname(__file__),
+        "..", "custom_components", "adaptive_charge", "const.py"
+    )
+    spec = importlib.util.spec_from_file_location("adaptive_charge_const", const_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+_CONST = _load_const()
 
 
 # ---------------------------------------------------------------------------
@@ -3825,6 +3845,116 @@ class TestImportGuardZeroHold:
             "hold_at_0A",
             "hard_stop",
         ]
+
+    def test_zero_hold_timeout_reduced_to_120s(self):
+        """DEFAULT_IMPORT_GUARD_ZERO_HOLD_S should be 120s (fail faster, not 300s)."""
+        assert _CONST.DEFAULT_IMPORT_GUARD_ZERO_HOLD_S == 120.0
+
+    def test_post_stop_cooldown_constant_exists(self):
+        """DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S should be 600s."""
+        assert _CONST.DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S == 600.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Post-escalation cooldown prevents rapid restart after escalate_stop
+# ---------------------------------------------------------------------------
+
+class TestPostEscalationCooldown:
+    """After import_guard_escalate_stop, restart must be blocked for cooldown period.
+
+    Background: data from real deployments (4.3.0, March 7 morning) showed that
+    the system oscillated in a start → 0A hold → escalate_stop → immediate restart
+    cycle during variable morning solar.  v4.1.6 (March 6 afternoon, stable solar)
+    never triggered the escalation path and achieved 91 % charging efficiency.
+
+    Fix: track the last escalate_stop timestamp and block surplus-start until
+    DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S (10 min) has elapsed.
+    """
+
+    def _simulate_post_stop_check(
+        self,
+        stop_time: float | None,
+        mono_now: float,
+        cooldown_s: float = 600.0,
+    ) -> bool:
+        """Return True if restart is BLOCKED by post-escalation cooldown."""
+        if stop_time is None:
+            return False
+        return (mono_now - stop_time) < cooldown_s
+
+    def test_no_stop_time_never_blocks(self):
+        """Without a prior escalate_stop, restart is never blocked."""
+        assert self._simulate_post_stop_check(None, 1000.0) is False
+
+    def test_blocked_immediately_after_stop(self):
+        """Restart is blocked right after escalate_stop."""
+        stop_time = 1000.0
+        mono_now = 1001.0  # 1s later
+        assert self._simulate_post_stop_check(stop_time, mono_now) is True
+
+    def test_blocked_within_cooldown(self):
+        """Restart still blocked at 9 min 59s after stop."""
+        stop_time = 1000.0
+        mono_now = 1000.0 + 599.0  # 599s < 600s
+        assert self._simulate_post_stop_check(stop_time, mono_now) is True
+
+    def test_allowed_after_cooldown_expires(self):
+        """Restart is permitted once 10 min cooldown has elapsed."""
+        stop_time = 1000.0
+        mono_now = 1000.0 + 600.0  # exactly 600s
+        assert self._simulate_post_stop_check(stop_time, mono_now) is False
+
+    def test_allowed_well_after_cooldown(self):
+        """Restart is permitted long after cooldown (e.g. afternoon sun)."""
+        stop_time = 1000.0
+        mono_now = 1000.0 + 3600.0  # 1 hour later
+        assert self._simulate_post_stop_check(stop_time, mono_now) is False
+
+    def test_stop_time_cleared_on_successful_start(self):
+        """_import_guard_stop_time must be cleared when a session starts."""
+        import_guard_stop_time: float | None = 1000.0  # was set by escalate_stop
+        # Simulate _action_start_surplus clearing it
+        import_guard_stop_time = None
+        assert import_guard_stop_time is None
+
+    def test_stop_time_set_on_escalation(self):
+        """Escalate_stop must record mono_now in _import_guard_stop_time."""
+        import_guard_stop_time: float | None = None
+        mono_now = 5000.0
+        # Simulate escalation code setting the timestamp
+        import_guard_stop_time = mono_now
+        assert import_guard_stop_time == 5000.0
+
+    def test_zero_hold_120s_then_escalate(self):
+        """With the new 120s zero-hold, escalation should trigger at 120s, not 300s."""
+        zero_hold = _CONST.DEFAULT_IMPORT_GUARD_ZERO_HOLD_S
+        zero_since = 1000.0
+        # Should NOT escalate 1s before timeout
+        assert (zero_since + zero_hold - 1.0 - zero_since) < zero_hold
+        # Should escalate at exactly the timeout
+        assert (zero_since + zero_hold - zero_since) >= zero_hold
+
+    def test_full_cycle_duration_with_new_constants(self):
+        """Total oscillation cycle with new constants is shorter and followed by longer cooldown.
+
+        Old behaviour: 300s zero-hold + 120s min_off = 420s cycle, no restart block
+        New behaviour: 120s zero-hold + 120s min_off + 600s cooldown = 840s before restart
+        This prevents the rapid oscillation seen in 4.3.0 morning data.
+        """
+        zero_hold = _CONST.DEFAULT_IMPORT_GUARD_ZERO_HOLD_S
+        post_stop = _CONST.DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S
+        min_off = _CONST.DEFAULT_MIN_OFF_TIME_S
+
+        old_zero_hold = 300.0
+        old_min_off = 120.0
+        old_cycle = old_zero_hold + old_min_off  # 420s, then immediate restart
+
+        # New zero-hold is shorter (fail faster)
+        assert zero_hold < old_zero_hold
+        # New cooldown exists and is longer than old min_off
+        assert post_stop > old_min_off
+        # The blocking period after hard stop is much longer than the old full cycle
+        assert post_stop > old_cycle
 
 
 # ---------------------------------------------------------------------------

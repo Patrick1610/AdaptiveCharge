@@ -96,6 +96,7 @@ from .const import (
     DEFAULT_IMPORT_GUARD_SETTLE_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
     DEFAULT_IMPORT_GUARD_ZERO_HOLD_S,
+    DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S,
     DEFAULT_IMPORT_SAFETY_DURATION_S,
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
@@ -352,6 +353,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_below_since: float | None = None
         self._import_guard_last_reduce_time: float | None = None
         self._import_guard_zero_since: float | None = None  # when we first held at 0A
+        self._import_guard_stop_time: float | None = None  # when last escalate_stop triggered
         self._ev_zero_since: float | None = None  # when EV power first read 0 while _charging_on
 
         # Previous values for step detection
@@ -1653,6 +1655,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
         self._import_guard_zero_since = None
+        self._import_guard_stop_time = None  # clear post-escalation cooldown on controller disable
 
     # ------------------------------------------------------------------
     # Control logic
@@ -1747,6 +1750,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     self._last_commit_reason = "import_guard_escalate_stop"
                     self._last_reason = "import_guard_escalate_stop"
                     self._last_action_ts = time.monotonic()
+                    self._import_guard_stop_time = mono_now  # record for post-stop cooldown
                     self._import_guard_zero_since = None
                 # else: continue holding at 0A (session alive, no power)
             return
@@ -1777,6 +1781,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         "AdaptiveCharge: surplus start blocked by min-off-time "
                         "(%.0fs / %.0fs), ema=%.2fA threshold=%.1fA",
                         off_elapsed, DEFAULT_MIN_OFF_TIME_S,
+                        ema_current, self._surplus_start_threshold_a,
+                    )
+                    return
+            # Respect post-escalation cooldown: after an import_guard_escalate_stop,
+            # wait for solar to stabilise before allowing a new session.  This prevents
+            # the rapid restart-oscillation seen when morning solar is variable.
+            if self._import_guard_stop_time is not None:
+                stop_elapsed = mono_now - self._import_guard_stop_time
+                if stop_elapsed < DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S:
+                    _LOGGER.debug(
+                        "AdaptiveCharge: surplus start blocked by post-escalation cooldown "
+                        "(%.0fs / %.0fs), ema=%.2fA threshold=%.1fA",
+                        stop_elapsed, DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S,
                         ema_current, self._surplus_start_threshold_a,
                     )
                     return
@@ -2021,6 +2038,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current = float(current_a)
         self._last_committed_int = current_a
         self._last_commit_reason = "start_surplus"
+        self._import_guard_stop_time = None  # clear post-escalation cooldown on successful start
 
     async def _action_stop_surplus(self) -> None:
         _LOGGER.info("AdaptiveCharge: stop_surplus")
