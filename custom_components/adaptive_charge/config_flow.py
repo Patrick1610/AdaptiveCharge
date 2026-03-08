@@ -49,7 +49,6 @@ from .const import (
     CONF_RANGE_HYSTERESIS_PCT,
     CONF_SAMPLE_INTERVAL,
     CONF_SETTLING_DURATION_S,
-    CONF_PRIORITY_BIAS_W,
     CONF_SHOW_ADVANCED,
     CONF_SMOOTHING_WINDOW,
     CONF_SOLAR_DONE_DURATION,
@@ -85,7 +84,6 @@ from .const import (
     DEFAULT_RANGE_HYSTERESIS_PCT,
     DEFAULT_SAMPLE_INTERVAL,
     DEFAULT_SETTLING_DURATION_S,
-    DEFAULT_PRIORITY_BIAS_W,
     DEFAULT_SMOOTHING_WINDOW,
     DEFAULT_SOLAR_DONE_DURATION,
     DEFAULT_SOLAR_DONE_THRESHOLD,
@@ -587,11 +585,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SETTLING_DURATION_S, default=DEFAULT_SETTLING_DURATION_S
                 ): selector.selector(
                     {"number": {"min": 0, "max": 60, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
-                ),
-                vol.Required(
-                    CONF_PRIORITY_BIAS_W, default=DEFAULT_PRIORITY_BIAS_W
-                ): selector.selector(
-                    {"number": {"min": 0, "max": 2000, "step": 50, "unit_of_measurement": "W", "mode": "box"}}
                 ),
             }
         )
@@ -1121,12 +1114,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                     default=float(current.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S)),
                 ): selector.selector(
                     {"number": {"min": 0, "max": 60, "step": 5, "unit_of_measurement": "s", "mode": "box"}}
-                ),
-                vol.Required(
-                    CONF_PRIORITY_BIAS_W,
-                    default=float(current.get(CONF_PRIORITY_BIAS_W, DEFAULT_PRIORITY_BIAS_W)),
-                ): selector.selector(
-                    {"number": {"min": 0, "max": 2000, "step": 50, "unit_of_measurement": "W", "mode": "box"}}
                 ),
             }
         )

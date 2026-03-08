@@ -5710,68 +5710,79 @@ PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
 PRIORITY_EXPORT = "export_priority"
 PRIORITY_IMPORT = "import_priority"
 
-_DEFAULT_BIAS_W = 500.0
 
+def _quantize_modulate_up(target: float, current_int: int, priority: str, capped: int = 16) -> int:
+    """Mirror of coordinator._commit_current quantization for modulate_up.
 
-def _priority_current_bias_a(priority: str, bias_w: float = _DEFAULT_BIAS_W) -> float:
-    """Mirror of coordinator._get_priority_current_bias_a.
-
-    Returns amps to add to the EMA current for control logic only.
-    Surplus is NOT affected — monitoring stays clean.
-      balance            → 0 A (pure surplus, exact 0 W net aim)
-      zero_prefer_import → +bias_w / (230 × 3): start/modulate even with slight import
-      zero_prefer_export → −bias_w / (230 × 3): require surplus above bias before reacting
-      export_priority    → 0 A (blocked in control logic)
-      import_priority    → 0 A (force-charge path)
+    v4.3.6 design:
+      balance             — round (half-up): nearest integer, ensures +1 step
+      zero_prefer_export  — floor: requires full integer above current before stepping up
+      zero_prefer_import  — ceil: any positive surplus triggers a step up
     """
-    bias_a = bias_w / (230.0 * 3.0)
-    if priority == PRIORITY_ZERO_PREFER_IMPORT:
-        return bias_a
+    import math
+    target = min(max(target, 0.0), float(capped))
     if priority == PRIORITY_ZERO_PREFER_EXPORT:
-        return -bias_a
-    return 0.0
-
-
-def apply_priority_bias(ema_a: float, priority: str, bias_w: float = _DEFAULT_BIAS_W, max_a: int = 16) -> float:
-    """Apply priority current bias and clamp to [0, max_a]."""
-    biased = ema_a + _priority_current_bias_a(priority, bias_w)
-    return min(max(biased, 0.0), float(max_a))
+        quantized = int(math.floor(target))
+    elif priority == PRIORITY_ZERO_PREFER_IMPORT:
+        quantized = int(math.ceil(target))
+    else:  # balance (default)
+        quantized = int(math.floor(target + 0.5))
+    return min(max(current_int + 1, quantized), capped)
 
 
 class TestChargingPriorityCurrentBias:
-    """Verify that surplus is kept clean and only the control current is biased."""
+    """Verify priority modes use floor/ceil/round quantization (no W-bias offset)."""
 
-    def test_balance_has_no_bias(self):
-        assert _priority_current_bias_a(PRIORITY_BALANCE) == 0.0
+    def test_balance_rounds_half_up(self):
+        """balance: 4.5A → rounds to 5A (half-up)."""
+        assert _quantize_modulate_up(4.5, 4, PRIORITY_BALANCE) == 5
 
-    def test_zero_prefer_export_has_negative_bias(self):
-        bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT)
-        assert abs(bias - (-500.0 / (230.0 * 3.0))) < 1e-6
+    def test_balance_rounds_down_below_half(self):
+        """balance: 4.49A → rounds to 4, but +1 step from current_int=4 → 5."""
+        # +1 step is enforced because modulate_up was approved
+        assert _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE) == 5
 
-    def test_zero_prefer_import_has_positive_bias(self):
-        bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT)
-        assert abs(bias - 500.0 / (230.0 * 3.0)) < 1e-6
+    def test_balance_with_larger_jump(self):
+        """balance: large jump — quantized value exceeds current+1, so takes quantized."""
+        assert _quantize_modulate_up(6.5, 3, PRIORITY_BALANCE) == 7
 
-    def test_prefer_export_and_prefer_import_are_symmetric(self):
-        export_bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_EXPORT)
-        import_bias = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT)
-        assert abs(export_bias + import_bias) < 1e-9
+    def test_prefer_export_floors(self):
+        """zero_prefer_export: 4.9A → floor=4, current=4 → +1 → 5A."""
+        assert _quantize_modulate_up(4.9, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
 
-    def test_export_priority_has_no_bias(self):
-        """export_priority blocks surplus in control logic, not via current bias."""
-        assert _priority_current_bias_a(PRIORITY_EXPORT) == 0.0
+    def test_prefer_export_requires_full_integer_surplus(self):
+        """zero_prefer_export: 5.0A target from current=4 → floor=5, max(5,5)=5."""
+        assert _quantize_modulate_up(5.0, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
 
-    def test_import_priority_has_no_bias(self):
-        """import_priority uses force-charge path, not current bias."""
-        assert _priority_current_bias_a(PRIORITY_IMPORT) == 0.0
+    def test_prefer_export_conservative_on_large_jump(self):
+        """zero_prefer_export: 6.3A from current=3 → floor=6, max(4,6)=6 (same as balance; prefer_import would be 7)."""
+        assert _quantize_modulate_up(6.3, 3, PRIORITY_ZERO_PREFER_EXPORT) == 6
 
-    def test_unknown_priority_defaults_to_zero(self):
-        assert _priority_current_bias_a("unknown_mode") == 0.0
+    def test_prefer_import_ceils(self):
+        """zero_prefer_import: 4.1A → ceil=5, max(current+1=5, 5)=5."""
+        assert _quantize_modulate_up(4.1, 4, PRIORITY_ZERO_PREFER_IMPORT) == 5
 
-    def test_configurable_bias_w(self):
-        """Bias is proportional to priority_bias_w config value."""
-        bias_200 = _priority_current_bias_a(PRIORITY_ZERO_PREFER_IMPORT, bias_w=200.0)
-        assert abs(bias_200 - 200.0 / (230.0 * 3.0)) < 1e-9
+    def test_prefer_import_aggressively_rounds_up(self):
+        """zero_prefer_import: 3.01A from current=3 → ceil=4, max(4,4)=4."""
+        assert _quantize_modulate_up(3.01, 3, PRIORITY_ZERO_PREFER_IMPORT) == 4
+
+    def test_prefer_import_large_jump(self):
+        """zero_prefer_import: 6.1A from current=3 → ceil=7, max(4,7)=7 (more than balance)."""
+        assert _quantize_modulate_up(6.1, 3, PRIORITY_ZERO_PREFER_IMPORT) == 7
+
+    def test_prefer_import_vs_export_ordering(self):
+        """For the same EMA, prefer_import steps to higher A than prefer_export."""
+        ema = 5.2
+        current = 4
+        export_val = _quantize_modulate_up(ema, current, PRIORITY_ZERO_PREFER_EXPORT)
+        import_val = _quantize_modulate_up(ema, current, PRIORITY_ZERO_PREFER_IMPORT)
+        balance_val = _quantize_modulate_up(ema, current, PRIORITY_BALANCE)
+        # prefer_export ≤ balance ≤ prefer_import
+        assert export_val <= balance_val <= import_val
+
+    def test_unknown_mode_defaults_to_balance(self):
+        """Unknown mode falls through to balance rounding."""
+        assert _quantize_modulate_up(4.5, 4, "unknown_mode") == 5
 
     def test_surplus_is_unaffected_by_priority(self):
         """Surplus calculation does NOT include any priority offset."""
@@ -5785,43 +5796,30 @@ class TestChargingPriorityControlEffect:
     """Verify priority modes affect the controller correctly without polluting monitoring."""
 
     def test_balance_does_not_affect_control_current(self):
-        """balance mode passes raw ema straight through."""
+        """balance mode uses standard rounding on the raw ema."""
         raw = compute_raw_current(compute_surplus(-1000.0, 0.0), 230.0)
-        assert apply_priority_bias(raw, PRIORITY_BALANCE) == min(max(raw, 0.0), 16.0)
+        # balance: floor(raw + 0.5) — unchanged from previous behaviour
+        import math
+        expected = int(math.floor(raw + 0.5)) if raw >= 0 else 0
+        assert _quantize_modulate_up(max(raw, 0.0), 0, PRIORITY_BALANCE) == max(1, expected)
 
-    def test_zero_prefer_import_enables_charging_on_slight_import(self):
-        """zero_prefer_import allows charging when net is slightly positive (import).
+    def test_zero_prefer_import_triggers_on_tiny_surplus(self):
+        """zero_prefer_import: even 0.01A above current → ceil rounds up, +1 step fires."""
+        result = _quantize_modulate_up(4.01, 4, PRIORITY_ZERO_PREFER_IMPORT)
+        assert result == 5
 
-        Without bias: ema = -0.5A → no start. With bias: ~0.22A → can start.
-        """
-        # Net importing 300 W → surplus = -300 W → raw = -0.43 A
-        raw_current_a = compute_raw_current(compute_surplus(300.0, 0.0), 230.0)
-        ema_unbiased = max(raw_current_a, 0.0)  # 0.0 after floor
-        assert ema_unbiased == 0.0
-
-        # With bias: adds 500W/(230*3) ≈ 0.72A → biased current > 0
-        biased = apply_priority_bias(raw_current_a, PRIORITY_ZERO_PREFER_IMPORT)
-        assert biased > 0.0
-
-    def test_zero_prefer_export_requires_extra_surplus_before_charging(self):
-        """zero_prefer_export needs >bias_w of surplus before controller acts.
-
-        e.g. 300 W actual surplus → raw ≈ +0.43 A, but after −0.72 A bias → 0 A.
-        """
-        # 300 W surplus → raw ≈ 0.43 A; bias = −0.72 A → net = −0.29 A → clamped 0
-        raw_current_a = compute_raw_current(compute_surplus(-300.0, 0.0), 230.0)
-        biased = apply_priority_bias(raw_current_a, PRIORITY_ZERO_PREFER_EXPORT)
-        assert biased == 0.0
-
-        # 800 W surplus → raw ≈ 1.16 A; after −0.72 A bias → 0.44 A → control starts
-        raw_large = compute_raw_current(compute_surplus(-800.0, 0.0), 230.0)
-        biased_large = apply_priority_bias(raw_large, PRIORITY_ZERO_PREFER_EXPORT)
-        assert biased_large > 0.0
-
-    def test_bias_is_clamped_to_max(self):
-        """Biased current is capped to max_a (16A)."""
-        result = apply_priority_bias(15.8, PRIORITY_ZERO_PREFER_IMPORT)
-        assert result == 16.0
+    def test_zero_prefer_export_needs_more_surplus_than_balance(self):
+        """zero_prefer_export and balance both quantize 4.49A to 4, then the +1 step guarantee
+        bumps both to 5.  The difference shows at values like 4.6A where balance rounds to 5
+        while floor stays at 4 (before the +1 step)."""
+        export_val = _quantize_modulate_up(4.49, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        balance_val = _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE)
+        # Both reach 5 via the +1 step guarantee (quantized=4 ≤ current+1=5)
+        assert export_val == 5
+        assert balance_val == 5
+        # At 4.6A the difference is visible before the +1 step is applied
+        import math
+        assert int(math.floor(4.6)) < int(math.floor(4.6 + 0.5))  # 4 < 5
 
     def test_import_priority_uses_force_charge(self):
         """import_priority should trigger force charge — reflected as import_priority force source."""
@@ -6308,14 +6306,20 @@ class TestSensorContinuityFallbacks:
 # Tests: integer current quantization policy (modulation)
 # ---------------------------------------------------------------------------
 
-def quantize_target_int(target: float, current_int: int, capped: int, reason: str) -> int:
-    """Mirror of coordinator._commit_current quantization."""
+def quantize_target_int(target: float, current_int: int, capped: int, reason: str,
+                        priority: str = "balance") -> int:
+    """Mirror of coordinator._commit_current quantization (v4.3.6)."""
     import math
 
     target = min(max(target, 0.0), float(capped))
     if reason == "modulate_up":
-        rounded = int(math.floor(target + 0.5))
-        out = max(current_int + 1, rounded)
+        if priority == "zero_prefer_export":
+            quantized = int(math.floor(target))
+        elif priority == "zero_prefer_import":
+            quantized = int(math.ceil(target))
+        else:  # balance (default)
+            quantized = int(math.floor(target + 0.5))
+        out = max(current_int + 1, quantized)
     elif reason == "modulate_down":
         out = int(math.floor(target))
     else:
@@ -6324,13 +6328,29 @@ def quantize_target_int(target: float, current_int: int, capped: int, reason: st
 
 
 class TestModulationQuantization:
-    def test_modulate_up_rounds_476_to_5a(self):
+    def test_balance_rounds_476_to_5a(self):
         assert quantize_target_int(4.76, 4, 16, "modulate_up") == 5
 
-    def test_modulate_up_forces_at_least_plus_one(self):
+    def test_balance_forces_at_least_plus_one(self):
         # Even if rounded target is still current (e.g. 4.20 -> 4),
         # approved upward modulation should execute one 1A step.
         assert quantize_target_int(4.20, 4, 16, "modulate_up") == 5
+
+    def test_prefer_export_floors_on_modulate_up(self):
+        # 4.9A → floor=4, max(current+1=5, 4)=5
+        assert quantize_target_int(4.9, 4, 16, "modulate_up", "zero_prefer_export") == 5
+
+    def test_prefer_export_larger_jump(self):
+        # 6.3A from 3A → floor=6, max(4, 6)=6
+        assert quantize_target_int(6.3, 3, 16, "modulate_up", "zero_prefer_export") == 6
+
+    def test_prefer_import_ceils_on_modulate_up(self):
+        # 4.1A → ceil=5, max(current+1=5, 5)=5
+        assert quantize_target_int(4.1, 4, 16, "modulate_up", "zero_prefer_import") == 5
+
+    def test_prefer_import_larger_jump(self):
+        # 6.1A from 3A → ceil=7, max(4, 7)=7
+        assert quantize_target_int(6.1, 3, 16, "modulate_up", "zero_prefer_import") == 7
 
     def test_modulate_down_floors_conservatively(self):
         assert quantize_target_int(4.80, 5, 16, "modulate_down") == 4

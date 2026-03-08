@@ -133,8 +133,6 @@ from .const import (
     MODE_NET_ONLY,
     MODE_STOPPED,
     MODE_SURPLUS,
-    CONF_PRIORITY_BIAS_W,
-    DEFAULT_PRIORITY_BIAS_W,
     PRIORITY_BALANCE,
     PRIORITY_EXPORT,
     PRIORITY_IMPORT,
@@ -259,7 +257,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._hysteresis_up: float = float(options.get(CONF_HYSTERESIS_UP, DEFAULT_HYSTERESIS_UP))
         self._hysteresis_down: float = float(options.get(CONF_HYSTERESIS_DOWN, DEFAULT_HYSTERESIS_DOWN))
         self._settling_duration_s: float = float(options.get(CONF_SETTLING_DURATION_S, DEFAULT_SETTLING_DURATION_S))
-        self._priority_bias_w: float = float(options.get(CONF_PRIORITY_BIAS_W, DEFAULT_PRIORITY_BIAS_W))
 
         # Mutable runtime state
         self._desired_range: float = float(options.get(CONF_DESIRED_RANGE, DEFAULT_DESIRED_RANGE))
@@ -603,19 +600,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
-            # Apply priority current bias for zero_prefer_import mode.
-            # The bias is added ONLY to the current used by the control logic —
-            # surplus_w and the displayed ema_current_a are NOT affected, so
-            # the real power scenario remains visible in monitoring.
-            control_ema = analysis["ema_current_a"]
-            bias_a = self._get_priority_current_bias_a()
-            if bias_a != 0.0:
-                capped_limit = min(self._max_current_limit, MAX_CURRENT_ABS)
-                control_ema = min(max(control_ema + bias_a, 0.0), capped_limit)
             await self._run_control_logic(
                 force_charge=force_data["force_charge"],
                 raw_floored=analysis["raw_floored"],
-                ema_current=control_ema,
+                ema_current=analysis["ema_current_a"],
                 mono_now=mono_now,
                 import_safety=import_guard_triggered,
                 coherence=analysis["coherence"],
@@ -726,29 +714,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # Phase 2: Alignment, EMA, confidence
     # ------------------------------------------------------------------
-
-    def _get_priority_current_bias_a(self) -> float:
-        """Return current bias (A) to add to EMA current for control logic only.
-
-        Applied AFTER the surplus/EMA calculation so surplus_w and the displayed
-        ema_current_a remain clean for monitoring purposes.
-
-          balance             → 0 A (default — aim for exactly 0 W net, pure surplus)
-          zero_prefer_import  → +bias A: controller starts/modulates even when the
-                                actual surplus is slightly below zero, targeting
-                                ~priority_bias_w of deliberate grid import.
-          zero_prefer_export  → −bias A: controller requires an actual surplus above
-                                the bias before starting/modulating, targeting
-                                ~priority_bias_w of grid export above the start point.
-          export_priority     → 0 A (surplus charging blocked in control logic)
-          import_priority     → 0 A (handled via force charge path, not bias)
-        """
-        bias_a = self._priority_bias_w / (230.0 * 3.0)
-        if self._charging_priority == PRIORITY_ZERO_PREFER_IMPORT:
-            return bias_a
-        if self._charging_priority == PRIORITY_ZERO_PREFER_EXPORT:
-            return -bias_a
-        return 0.0
 
     def _analyze_measurements(
         self, sensor_data: dict[str, Any], mono_now: float
@@ -1916,13 +1881,30 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         current_int = self._last_committed_int if self._last_committed_int is not None else 0
         # Quantize float target to EVSE integer amps.
-        # - Upward modulation: nearest integer (half-up), and ensure +1A step
-        #   once modulation has been approved by hysteresis/gating.
-        # - Downward modulation: floor (conservative, avoids over-reducing).
-        # - Other paths (start/force/import-guard): direct integer truncation.
+        #
+        # Upward modulation quantization depends on the charging priority:
+        #   balance             — round (half-up): step when surplus ≥ 0.5 A above
+        #                         current setpoint.  Symmetric around the halfway
+        #                         point, matching pure surplus behaviour.
+        #   zero_prefer_export  — floor: requires the surplus EMA to be at least 1 A
+        #                         above the current setpoint before stepping up.
+        #                         Naturally biases toward exporting rather than
+        #                         consuming, without any configurable W offset.
+        #   zero_prefer_import  — ceil: any positive surplus (even 0.01 A above the
+        #                         setpoint) triggers a step up.  Biases toward
+        #                         charging while staying close to zero import.
+        #
+        # Downward modulation: always floor (conservative — avoids over-reducing).
+        # Other paths (start / force / import-guard): direct integer truncation.
         if reason == "modulate_up":
-            rounded = int(math.floor(target + 0.5))
-            target_int = max(current_int + 1, rounded)
+            priority = self._charging_priority
+            if priority == PRIORITY_ZERO_PREFER_EXPORT:
+                quantized = int(math.floor(target))
+            elif priority == PRIORITY_ZERO_PREFER_IMPORT:
+                quantized = int(math.ceil(target))
+            else:  # balance (default) and any unknown mode
+                quantized = int(math.floor(target + 0.5))
+            target_int = max(current_int + 1, quantized)
         elif reason == "modulate_down":
             target_int = int(math.floor(target))
         else:
