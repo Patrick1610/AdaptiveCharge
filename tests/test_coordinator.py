@@ -6597,7 +6597,6 @@ class TestSettlingWindowStartTime:
         alignment = FakeAlignment()
         tick_interval_s = 10.0
         settling_duration_s = 10.0
-        api_latency_s = 6.0
 
         tick_start = 1000.0
         # BUG (old code): start settling with the stale tick-start timestamp
@@ -6634,7 +6633,8 @@ class TestSettlingWindowStartTime:
         alignment = FakeAlignment()
         api_latency_s = 6.0
         settling_duration_s = 10.0
-        actual_commit_time = 1006.0
+        tick_start = 1000.0
+        actual_commit_time = tick_start + api_latency_s  # 1006.0
 
         alignment.start_settling(actual_commit_time, settling_duration_s)
 
