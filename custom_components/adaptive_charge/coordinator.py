@@ -901,10 +901,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
           force_charge    = expected_ev_kwh < energy_needed
 
         Capacity evaluation uses the best available source in priority order:
-          1. Manually configured ``_battery_capacity_kwh`` (config flow, > 0)
-          2. Auto-detected ``_estimated_battery_capacity_kwh`` (derived from
-             wall-measured energy ÷ SoC delta, so it already includes AC→battery
-             charging losses — no separate efficiency factor needed)
+          1. Manually configured ``_battery_capacity_kwh`` (config flow, > 0): always
+             battery-side, so the lifetime average overhead is applied to convert to
+             wall kWh for a fair comparison with the solar forecast.
+          2. Auto-detected ``_estimated_battery_capacity_kwh``: may be wall-side (SoC
+             method, already includes losses) or battery-side (battery delta method).
+             No overhead is applied to avoid double-counting when the estimate is
+             already wall-side.
 
         When no capacity or ratio is available, the optional
         ``_low_power_forecast_threshold_kwh`` serves as a **backup**: if > 0,
@@ -991,12 +994,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     effective_capacity > 0
                     and control_factor > 0
                 ):
-                    # Precise mode: wall-energy-based capacity already includes
-                    # charging losses, so energy_needed is pre-overhead.
                     energy_needed_kwh = max(
                         0.0,
                         (self._low_power_threshold - battery_pct) / 100.0 * effective_capacity,
                     )
+                    # When using manually configured (battery-side) capacity, inflate
+                    # to wall kWh so the comparison with expected_ev_kwh (solar wall
+                    # energy) is on equal terms.  Estimated capacity is skipped here
+                    # to avoid double-counting when it was derived from wall energy.
+                    if self._battery_capacity_kwh > 0:
+                        overhead_avg_pct = self._compute_overhead_avg_pct()
+                        if overhead_avg_pct is not None:
+                            efficiency = max(0.05, 1.0 - (overhead_avg_pct / 100.0))
+                            energy_needed_kwh = energy_needed_kwh / efficiency
                     expected_ev_kwh = forecast_kwh * control_factor
                     low_power_active = expected_ev_kwh < energy_needed_kwh
                 else:
@@ -1381,11 +1391,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         session_battery_delta = self._compute_session_battery_delta()
         charging_overhead_pct = self._compute_overhead_pct(session_battery_delta)
         charging_overhead_avg_pct = self._compute_overhead_avg_pct()
-        # For energy estimation: prefer live session overhead; fall back to
-        # the lifetime average when the session is too short to be reliable.
+        # Always use the lifetime average overhead for energy estimation: it is
+        # stable across sessions and available even before the current session
+        # has enough data for a reliable reading.
         energy_needed_full_kwh = self._compute_energy_needed_full_kwh(
             sensor_data.get("battery_pct"),
-            charging_overhead_pct if charging_overhead_pct is not None else charging_overhead_avg_pct,
+            charging_overhead_avg_pct,
         )
         return {
             "net_w": computed_net_w,
@@ -2128,11 +2139,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         accumulated for the rolling overhead percentage.
 
         Fallback: if the battery energy sensor is unavailable, the legacy
-        SoC-based method is used (wall energy / SoC delta × 100).
+        SoC-based method is used (wall energy / SoC delta × 100), which
+        yields a wall-side capacity estimate that already includes losses.
 
-        The wall-energy-based estimate already includes AC→battery charging
-        losses, so ``energy_needed`` in the low-power check is automatically
-        pre-overhead — no separate efficiency factor is required.
+        When using a manually configured battery capacity (battery-side), the
+        low-power check applies the lifetime average overhead to convert battery
+        kWh to wall kWh before comparing with the solar forecast.  The
+        auto-detected estimate may already be wall-side, so no factor is applied
+        there to avoid double-counting.
 
         Only updates when at least 0.5 kWh was added in the session and either
         the SoC increased by ≥5% or the battery-side kWh delta is ≥0.5 kWh.

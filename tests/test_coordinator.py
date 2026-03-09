@@ -4258,6 +4258,8 @@ def _evaluate_low_power(
     solar_to_ev_ratio: float | None = None,
     solar_capture_factor: float = 0.0,
     in_tonight_window: bool = False,
+    using_configured_capacity: bool = False,
+    overhead_avg_pct: float | None = None,
 ) -> bool:
     """Mirror of coordinator low_power_active evaluation logic.
 
@@ -4265,6 +4267,8 @@ def _evaluate_low_power(
       1. Inside tonight window → always force charge
       2. Precise mode (capacity + control_factor available) → energy-based check
          - control_factor = solar_capture_factor if > 0, else solar_to_ev_ratio
+         - When using_configured_capacity and overhead_avg_pct is available,
+           energy_needed is inflated from battery kWh to wall kWh.
       3. Manual backup threshold (> 0) → forecast vs fixed kWh
       4. Conservative fallback (threshold == 0, no precise mode) → force charge
     """
@@ -4293,6 +4297,11 @@ def _evaluate_low_power(
         and control_factor > 0
     ):
         energy_needed = max(0.0, (low_power_threshold - battery_pct) / 100.0 * effective_capacity)
+        # When using manually configured (battery-side) capacity, inflate to wall kWh.
+        # Estimated capacity may already be wall-side — skip to avoid double-counting.
+        if using_configured_capacity and overhead_avg_pct is not None:
+            efficiency = max(0.05, 1.0 - (overhead_avg_pct / 100.0))
+            energy_needed = energy_needed / efficiency
         expected_ev_kwh = forecast_kwh * control_factor
         return expected_ev_kwh < energy_needed
     # Fallback: manual threshold if configured, else conservative force
@@ -4518,6 +4527,82 @@ class TestLowPowerAutoDetectPrimary:
             10.0, 15.0, self.THRESHOLD, 10.0,
             effective_capacity=0.0,
         ) is False
+
+
+class TestLowPowerOverheadCorrection:
+    """Overhead correction in the low-power precise mode.
+
+    When using manually configured (battery-side) capacity, the overhead
+    average is applied to inflate energy_needed from battery kWh to wall kWh
+    before comparing with the solar forecast (which is also wall-side).
+    When using auto-estimated capacity the correction is skipped to avoid
+    double-counting in case the estimate was derived from wall energy.
+    """
+
+    THRESHOLD = 20.0
+
+    def test_configured_capacity_overhead_tips_balance(self):
+        """Overhead inflation can tip 'solar sufficient' → 'force charge'.
+
+        SoC deficit: 10%, configured capacity: 60 kWh
+        battery energy_needed = 10% × 60 = 6 kWh
+        forecast: 10 kWh × 0.65 ratio = 6.5 kWh expected
+
+        Without overhead: 6.5 > 6.0 → solar sufficient → no force.
+        With 10% overhead: energy_needed_wall = 6 / 0.9 = 6.67 kWh
+                           6.5 < 6.67 → force charge needed.
+        """
+        # Estimated (no overhead): sufficient solar → no force
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=60.0, solar_to_ev_ratio=0.65,
+            using_configured_capacity=False, overhead_avg_pct=10.0,
+        ) is False
+        # Configured (overhead applied): solar now insufficient → force
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=60.0, solar_to_ev_ratio=0.65,
+            using_configured_capacity=True, overhead_avg_pct=10.0,
+        ) is True
+
+    def test_configured_capacity_no_overhead_data_no_inflation(self):
+        """No lifetime overhead data → no inflation, raw battery kWh used."""
+        # energy_needed = 6 kWh, expected = 6.5 kWh → solar sufficient
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=60.0, solar_to_ev_ratio=0.65,
+            using_configured_capacity=True, overhead_avg_pct=None,
+        ) is False
+
+    def test_estimated_capacity_overhead_not_applied(self):
+        """Estimated capacity: overhead param is ignored even when provided."""
+        # Same as above but using_configured_capacity=False → no overhead applied
+        # → solar sufficient → no force
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=60.0, solar_to_ev_ratio=0.65,
+            using_configured_capacity=False, overhead_avg_pct=10.0,
+        ) is False
+
+    def test_zero_overhead_leaves_comparison_unchanged(self):
+        """0% overhead → efficiency = 1.0 → energy_needed unchanged."""
+        # energy_needed = 6 kWh, expected = 6.5 kWh → solar sufficient
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=60.0, solar_to_ev_ratio=0.65,
+            using_configured_capacity=True, overhead_avg_pct=0.0,
+        ) is False
+
+    def test_high_overhead_forces_charge(self):
+        """Very high overhead (25%) → much more wall energy needed."""
+        # energy_needed_battery = 6 kWh, efficiency = 0.75
+        # energy_needed_wall = 6 / 0.75 = 8 kWh
+        # expected = 10 × 0.65 = 6.5 kWh < 8 kWh → force charge
+        assert _evaluate_low_power(
+            10.0, 10.0, self.THRESHOLD, 0.0,
+            effective_capacity=60.0, solar_to_ev_ratio=0.65,
+            using_configured_capacity=True, overhead_avg_pct=25.0,
+        ) is True
 
 
 # ---------------------------------------------------------------------------
