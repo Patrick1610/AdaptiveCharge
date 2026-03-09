@@ -5061,7 +5061,7 @@ class TestModulationRampUpRate:
 # Helper: charging overhead computation (mirrors coordinator logic)
 # ---------------------------------------------------------------------------
 
-def _compute_overhead_pct(
+def _compute_overhead_avg_pct(
     overhead_wall_wh: float,
     overhead_battery_wh: float,
 ) -> float | None:
@@ -5135,44 +5135,44 @@ class TestChargingOverhead:
 
     overhead% = (1 − battery_received / wall_energy) × 100
 
-    The standalone _compute_overhead_pct helper mirrors coordinator._compute_overhead_avg_pct
+    The standalone _compute_overhead_avg_pct helper mirrors coordinator._compute_overhead_avg_pct
     (lifetime totals from the persistent store).  Session-only overhead is tested in
     TestLiveChargingOverhead and TestOverheadWallSnapshot.
     """
 
     def test_typical_overhead(self):
         """10% losses: 10 kWh wall, 9 kWh battery → 10% overhead."""
-        pct = _compute_overhead_pct(10000.0, 9000.0)
+        pct = _compute_overhead_avg_pct(10000.0, 9000.0)
         assert pct is not None
         assert abs(pct - 10.0) < 0.1
 
     def test_no_overhead(self):
         """Perfect efficiency: wall == battery → 0% overhead."""
-        pct = _compute_overhead_pct(10000.0, 10000.0)
+        pct = _compute_overhead_avg_pct(10000.0, 10000.0)
         assert pct is not None
         assert pct == 0.0
 
     def test_high_overhead(self):
         """25% losses: 10 kWh wall, 7.5 kWh battery → 25% overhead."""
-        pct = _compute_overhead_pct(10000.0, 7500.0)
+        pct = _compute_overhead_avg_pct(10000.0, 7500.0)
         assert pct is not None
         assert abs(pct - 25.0) < 0.1
 
     def test_no_wall_data(self):
         """No wall data → None."""
-        assert _compute_overhead_pct(0.0, 5000.0) is None
+        assert _compute_overhead_avg_pct(0.0, 5000.0) is None
 
     def test_no_battery_data(self):
         """No battery data → None."""
-        assert _compute_overhead_pct(5000.0, 0.0) is None
+        assert _compute_overhead_avg_pct(5000.0, 0.0) is None
 
     def test_both_zero(self):
         """Both zero → None."""
-        assert _compute_overhead_pct(0.0, 0.0) is None
+        assert _compute_overhead_avg_pct(0.0, 0.0) is None
 
     def test_battery_exceeds_wall(self):
         """Battery > wall (measurement noise) → clamped to 0%."""
-        pct = _compute_overhead_pct(10000.0, 10500.0)
+        pct = _compute_overhead_avg_pct(10000.0, 10500.0)
         assert pct is not None
         assert pct == 0.0
 
@@ -5184,7 +5184,7 @@ class TestChargingOverhead:
         # Session 2: 20 kWh wall, 17 kWh battery (15%)
         wall += 20000.0
         battery += 17000.0
-        pct = _compute_overhead_pct(wall, battery)
+        pct = _compute_overhead_avg_pct(wall, battery)
         assert pct is not None
         # Blended: (1 - 26000/30000) × 100 ≈ 13.3%
         assert abs(pct - 13.3) < 0.1
@@ -5213,16 +5213,6 @@ def _compute_overhead_pct_live(
         return None
     battery_wh = session_battery_delta_kwh * 1000.0
     return round(max(0.0, (1.0 - battery_wh / session_wall_snapshot_wh)) * 100.0, 1)
-
-
-def _compute_overhead_avg_pct(
-    overhead_wall_wh: float,
-    overhead_battery_wh: float,
-) -> float | None:
-    """Mirror of coordinator._compute_overhead_avg_pct logic."""
-    if overhead_wall_wh > 0 and overhead_battery_wh > 0:
-        return round(max(0.0, (1.0 - overhead_battery_wh / overhead_wall_wh)) * 100.0, 1)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -5488,7 +5478,7 @@ class TestBuildDataDictBatteryFields:
         """Overhead % in data dict matches the formula."""
         wall_wh = 10000.0
         battery_wh = 9000.0
-        pct = _compute_overhead_pct(wall_wh, battery_wh)
+        pct = _compute_overhead_avg_pct(wall_wh, battery_wh)
         assert pct is not None
         assert abs(pct - 10.0) < 0.1
 
@@ -5536,7 +5526,7 @@ class TestStorageOverhead:
         assert wall == 30000.0
         assert battery == 26000.0
         # Overhead pct: (1 - 26000/30000) * 100 ≈ 13.3%
-        pct = _compute_overhead_pct(wall, battery)
+        pct = _compute_overhead_avg_pct(wall, battery)
         assert pct is not None
         assert abs(pct - 13.3) < 0.1
 
@@ -6157,8 +6147,6 @@ class TestOverheadConsistency:
 
     def _compute_overhead_pct(
         self,
-        store_wall_wh: float,
-        store_battery_wh: float,
         session_battery_delta: float | None,
         session_wall_snapshot_wh: float,
         cable_prev: bool,
@@ -6178,8 +6166,6 @@ class TestOverheadConsistency:
 
     def test_overhead_session_only(self):
         pct = self._compute_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             session_battery_delta=1.0,  # 1 kWh
             session_wall_snapshot_wh=1100.0,  # 1.1 kWh
             cable_prev=True,
@@ -6190,8 +6176,6 @@ class TestOverheadConsistency:
 
     def test_overhead_none_when_disconnected(self):
         pct = self._compute_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             session_battery_delta=1.0,
             session_wall_snapshot_wh=1100.0,
             cable_prev=False,
@@ -6201,8 +6185,6 @@ class TestOverheadConsistency:
 
     def test_overhead_none_when_no_data(self):
         pct = self._compute_overhead_pct(
-            store_wall_wh=0.0,
-            store_battery_wh=0.0,
             session_battery_delta=None,
             session_wall_snapshot_wh=0.0,
             cable_prev=True,
