@@ -335,7 +335,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current: float | None = None
         self._last_committed_int: int | None = None
         self._last_up_time: float | None = None
-        self._last_down_time: float | None = None
         self._last_on_time: float | None = None
         self._last_off_time: float | None = None
         self._confidence: str = CONFIDENCE_LOW
@@ -1623,7 +1622,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._set_mode(MODE_STOPPED, "controller_disabled", "user_toggle")
         self._last_action = "controller_disabled_stop"
         self._last_action_ts = time.monotonic()
-        self._last_off_time = time.monotonic()
+        self._last_off_time = self._last_action_ts
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
@@ -1818,9 +1817,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # During the settling window (the period right after a setpoint change)
         # block ALL modulation in both directions.  The EV is still transitioning
         # to the new current, so the EMA may transiently dip below the new
-        # setpoint and trigger a spurious cascade of further reductions.  Real
-        # import emergencies are handled by the import-guard path which runs
-        # before this function and returns early, so blocking here is safe.
+        # setpoint and trigger a spurious cascade of further reductions.
+        #
+        # NOTE: import-guard is intentionally suppressed during settling, so it
+        # will not mitigate brief import excursions in this window. This is an
+        # accepted trade-off: short spikes are tolerated to avoid unstable,
+        # oscillatory current adjustments while the EV is converging.
         if self._alignment.settling:
             _LOGGER.debug(
                 "AdaptiveCharge: modulate blocked by settling (delta=%.2fA)",
@@ -1941,14 +1943,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._last_committed_int = target_int
             self._last_commit_reason = reason
 
+            # Capture one post-call timestamp so that all tracking fields and
+            # the settling window share a consistent anchor, avoiding clock
+            # skew between the stale tick-start mono_now and the fresh call.
+            post_call_mono = time.monotonic()
             if "up" in reason:
-                self._last_up_time = mono_now
-            elif "down" in reason:
-                self._last_down_time = mono_now
+                self._last_up_time = post_call_mono
 
             self._last_action = f"modulate_{target_int}A"
             self._last_reason = reason
-            self._last_action_ts = mono_now
+            self._last_action_ts = post_call_mono
 
             # Start settling window to avoid self-induced dip flapping.
             # IMPORTANT: capture a fresh timestamp *after* the blocking
@@ -1957,7 +1961,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             # cause the window to expire exactly when the next periodic tick
             # fires, providing zero protection against rapid cascades.
             self._alignment.start_settling(
-                time.monotonic(), self._settling_duration_s
+                post_call_mono, self._settling_duration_s
             )
 
     def _set_mode(self, new_mode: str, reason: str, source: str) -> None:
@@ -2010,7 +2014,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = "start_force"
         self._last_reason = "force_charge_active"
         self._last_action_ts = time.monotonic()
-        self._last_on_time = time.monotonic()
+        self._last_on_time = self._last_action_ts
         self._committed_current = float(start_a)
         self._last_committed_int = start_a
         self._last_commit_reason = "start_force"
@@ -2024,7 +2028,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = "stop_force"
         self._last_reason = "force_charge_stopped"
         self._last_action_ts = time.monotonic()
-        self._last_off_time = time.monotonic()
+        self._last_off_time = self._last_action_ts
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_force"
@@ -2043,7 +2047,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = f"start_surplus_{current_a}A"
         self._last_reason = "surplus_above_threshold"
         self._last_action_ts = time.monotonic()
-        self._last_on_time = time.monotonic()
+        self._last_on_time = self._last_action_ts
         self._committed_current = float(current_a)
         self._last_committed_int = current_a
         self._last_commit_reason = "start_surplus"
@@ -2054,7 +2058,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Combined with the alignment-based debounce freeze in _check_import_guard
         # this prevents the import guard from reacting to an expected power spike.
         self._alignment.start_settling(
-            time.monotonic(),
+            self._last_action_ts,
             max(self._settling_duration_s, self._import_guard_settle),
         )
         self._import_exceed_since = None  # fresh debounce for this session
@@ -2069,7 +2073,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = "stop_surplus"
         self._last_reason = reason
         self._last_action_ts = time.monotonic()
-        self._last_off_time = time.monotonic()
+        self._last_off_time = self._last_action_ts
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_surplus"
