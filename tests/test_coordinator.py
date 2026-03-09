@@ -4980,7 +4980,7 @@ def _compute_overhead_pct(
     overhead_wall_wh: float,
     overhead_battery_wh: float,
 ) -> float | None:
-    """Mirror of coordinator._compute_overhead_pct logic."""
+    """Mirror of coordinator._compute_overhead_avg_pct logic (lifetime store totals)."""
     if overhead_wall_wh > 0 and overhead_battery_wh > 0:
         return round(max(0.0, (1.0 - overhead_battery_wh / overhead_wall_wh)) * 100.0, 1)
     return None
@@ -5046,9 +5046,13 @@ def _compute_capacity_estimate_with_battery(
 # ---------------------------------------------------------------------------
 
 class TestChargingOverhead:
-    """Tests for the rolling charging overhead percentage.
+    """Tests for the charging overhead formula (used by both session and average sensors).
 
     overhead% = (1 − battery_received / wall_energy) × 100
+
+    The standalone _compute_overhead_pct helper mirrors coordinator._compute_overhead_avg_pct
+    (lifetime totals from the persistent store).  Session-only overhead is tested in
+    TestLiveChargingOverhead and TestOverheadWallSnapshot.
     """
 
     def test_typical_overhead(self):
@@ -5102,28 +5106,37 @@ class TestChargingOverhead:
 
 
 def _compute_overhead_pct_live(
-    overhead_wall_wh: float,
-    overhead_battery_wh: float,
     session_battery_delta_kwh: float | None,
     session_wall_snapshot_wh: float,
     min_energy_kwh: float = 0.5,
 ) -> float | None:
-    """Mirror of coordinator._compute_overhead_pct with live-blend logic.
+    """Mirror of simplified coordinator._compute_overhead_pct (session-only).
+
+    Uses only the current session data (session_wall_snapshot_wh and
+    session_battery_delta_kwh).
 
     Reflects the snapshot fix: uses session_wall_snapshot_wh (wall at the last
-    battery sensor change) rather than the current live wall accumulator.
+    battery sensor change) rather than the current live wall accumulator,
+    keeping both sides of the ratio in sync between car API polls.
     """
-    wall = overhead_wall_wh
-    battery = overhead_battery_wh
-    if session_battery_delta_kwh is not None:
-        if (
-            session_wall_snapshot_wh / 1000.0 >= min_energy_kwh
-            and session_battery_delta_kwh >= min_energy_kwh
-        ):
-            wall += session_wall_snapshot_wh
-            battery += session_battery_delta_kwh * 1000.0
-    if wall > 0 and battery > 0:
-        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+    if (
+        session_battery_delta_kwh is None
+        or session_wall_snapshot_wh <= 0
+        or session_wall_snapshot_wh / 1000.0 < min_energy_kwh
+        or session_battery_delta_kwh < min_energy_kwh
+    ):
+        return None
+    battery_wh = session_battery_delta_kwh * 1000.0
+    return round(max(0.0, (1.0 - battery_wh / session_wall_snapshot_wh)) * 100.0, 1)
+
+
+def _compute_overhead_avg_pct(
+    overhead_wall_wh: float,
+    overhead_battery_wh: float,
+) -> float | None:
+    """Mirror of coordinator._compute_overhead_avg_pct logic."""
+    if overhead_wall_wh > 0 and overhead_battery_wh > 0:
+        return round(max(0.0, (1.0 - overhead_battery_wh / overhead_wall_wh)) * 100.0, 1)
     return None
 
 
@@ -5144,13 +5157,10 @@ class TestOverheadWallSnapshot:
 
     def _make_snapshot(
         self,
-        store_wall_wh: float,
-        store_bat_wh: float,
         session_bat_delta: float,
         session_wall_at_last_bat_change: float,  # the snapshot
     ) -> float | None:
         return _compute_overhead_pct_live(
-            store_wall_wh, store_bat_wh,
             session_bat_delta, session_wall_at_last_bat_change,
         )
 
@@ -5161,9 +5171,6 @@ class TestOverheadWallSnapshot:
         battery sensor doesn't change.  With the snapshot fix the displayed
         overhead must be the same on every tick.
         """
-        store_wall = 100_000.0  # 100 kWh historical
-        store_bat = 83_800.0   # 83.8 kWh historical → 16.2% overhead
-
         bat_snapshot_wh = 1_500.0  # 1.5 kWh wall when battery last changed
         bat_delta = 1.3             # 1.3 kWh received so far this session
 
@@ -5173,7 +5180,7 @@ class TestOverheadWallSnapshot:
             live_wall_wh = bat_snapshot_wh + 80.0  # not used in fixed calc
             _ = live_wall_wh  # silence unused warning
             pct = _compute_overhead_pct_live(
-                store_wall, store_bat, bat_delta, bat_snapshot_wh
+                bat_delta, bat_snapshot_wh
             )
             results.append(pct)
 
@@ -5184,17 +5191,10 @@ class TestOverheadWallSnapshot:
 
     def test_updates_when_battery_sensor_changes(self):
         """Overhead updates (steps) when battery sensor delivers a new reading."""
-        store_wall = 100_000.0
-        store_bat = 83_800.0
-
         # Tick A: battery reports 1.3 kWh delta, wall snapshot = 1500 Wh
-        pct_a = _compute_overhead_pct_live(
-            store_wall, store_bat, 1.3, 1_500.0
-        )
+        pct_a = _compute_overhead_pct_live(1.3, 1_500.0)
         # Tick B: battery reports 1.42 kWh delta (+0.12), wall snapshot = 1580 Wh
-        pct_b = _compute_overhead_pct_live(
-            store_wall, store_bat, 1.42, 1_580.0
-        )
+        pct_b = _compute_overhead_pct_live(1.42, 1_580.0)
         assert pct_a is not None
         assert pct_b is not None
         # Both should be in a plausible range, and different from each other
@@ -5211,16 +5211,12 @@ class TestOverheadWallSnapshot:
           Battery API polls every ~3 min → 12 ticks × 27.6 Wh = 331 Wh wall
           accrues while battery is frozen between polls.
 
-        With a freshly set-up store (~5 kWh from one prior session), the current
-        session (~4 kWh battery delta) is a large fraction of the total, so the
-        331 Wh wall drift produces a clearly visible ~2 pp sawtooth.
+        Without the snapshot fix, the session overhead creeps up as wall grows
+        while battery is frozen, then snaps down when battery updates.
 
         NEW behaviour (using wall snapshot at last battery change):
           Both sides of the ratio advance together → completely flat.
         """
-        store_wall = 5_000.0   # Wh — one prior session in store
-        store_bat = 4_190.0    # Wh → 16.2% overhead in store
-
         bat_val = 4.26          # kWh battery delta at last API poll
         wall_snapshot = 5_070.0 # Wh — wall energy when battery last changed
         wall_live = wall_snapshot
@@ -5233,13 +5229,9 @@ class TestOverheadWallSnapshot:
             wall_live += tick_wh
 
             # Old: live wall passed as snapshot (simulates pre-fix behaviour)
-            pct_old = _compute_overhead_pct_live(
-                store_wall, store_bat, bat_val, wall_live
-            )
+            pct_old = _compute_overhead_pct_live(bat_val, wall_live)
             # New: frozen snapshot (the fix)
-            pct_new = _compute_overhead_pct_live(
-                store_wall, store_bat, bat_val, wall_snapshot
-            )
+            pct_new = _compute_overhead_pct_live(bat_val, wall_snapshot)
             overhead_old.append(pct_old)
             overhead_new.append(pct_new)
 
@@ -5253,17 +5245,11 @@ class TestOverheadWallSnapshot:
             f"Overhead not flat with snapshot fix: {overhead_new}"
         )
 
-    def test_below_minimum_threshold_uses_store_only(self):
-        """Session data below min_energy threshold → only store data used."""
-        store_wall = 50_000.0
-        store_bat = 42_000.0  # 16% overhead
-        expected = _compute_overhead_pct(store_wall, store_bat)
-
+    def test_below_minimum_threshold_returns_none(self):
+        """Session data below min_energy threshold → None (not enough session data yet)."""
         # Session is tiny (0.2 kWh wall, 0.1 kWh battery — below 0.5 kWh min)
-        pct = _compute_overhead_pct_live(
-            store_wall, store_bat, 0.1, 200.0
-        )
-        assert pct == expected
+        pct = _compute_overhead_pct_live(0.1, 200.0)
+        assert pct is None
 
 
 
@@ -5408,6 +5394,7 @@ class TestBuildDataDictBatteryFields:
             "ev_energy_added_kwh",
             "session_battery_delta_kwh",
             "charging_overhead_pct",
+            "charging_overhead_avg_pct",
         }
         data = {k: None for k in expected_keys}
         assert set(data.keys()) == expected_keys
@@ -5572,106 +5559,85 @@ class TestEnergyRestoredFromStoreBeforeFirstTick:
 # ---------------------------------------------------------------------------
 
 def _compute_live_overhead_pct(
-    store_wall_wh: float,
-    store_battery_wh: float,
     cable_connected: bool,
     session_wall_wh: float,
     session_battery_delta_kwh: float | None,
     capacity_min_energy_kwh: float = 0.5,
 ) -> float | None:
-    """Mirror of the updated _compute_overhead_pct logic.
+    """Mirror of the simplified _compute_overhead_pct logic (session-only).
 
-    Blends in current-session data when the cable is connected and enough
-    energy has been charged, preventing double-counting after disconnect.
+    Returns None when cable is disconnected or session data is insufficient.
     """
-    wall = store_wall_wh
-    battery = store_battery_wh
-
-    if cable_connected:
-        if (
-            session_battery_delta_kwh is not None
-            and session_wall_wh / 1000.0 >= capacity_min_energy_kwh
-            and session_battery_delta_kwh >= capacity_min_energy_kwh
-        ):
-            wall += session_wall_wh
-            battery += session_battery_delta_kwh * 1000.0
-
-    if wall > 0 and battery > 0:
-        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
-    return None
+    if not cable_connected:
+        return None
+    if (
+        session_battery_delta_kwh is None
+        or session_wall_wh <= 0
+        or session_wall_wh / 1000.0 < capacity_min_energy_kwh
+        or session_battery_delta_kwh < capacity_min_energy_kwh
+    ):
+        return None
+    battery_wh = session_battery_delta_kwh * 1000.0
+    return round(max(0.0, (1.0 - battery_wh / session_wall_wh)) * 100.0, 1)
 
 
 class TestLiveChargingOverhead:
-    """ChargingOverheadSensor should update live during a session by blending
-    current session data into the lifetime store totals."""
+    """ChargingOverheadSensor shows session-only overhead during active charging."""
 
     def test_no_data_returns_none(self):
-        result = _compute_live_overhead_pct(0, 0, False, 0, None)
+        result = _compute_live_overhead_pct(False, 0, None)
         assert result is None
 
-    def test_lifetime_only_when_cable_disconnected(self):
-        """After session end, only lifetime store data is used (no double-count)."""
+    def test_none_when_cable_disconnected(self):
+        """After session end cable is disconnected; sensor shows last known value."""
         result = _compute_live_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             cable_connected=False,
             session_wall_wh=2000.0,
             session_battery_delta_kwh=1.8,
         )
-        # lifetime: (1 - 9000/10000) * 100 = 10.0%
-        assert result == 10.0
+        # Session-only: returns None when cable disconnected (sensor uses last_known_pct)
+        assert result is None
 
-    def test_live_blend_when_cable_connected_and_enough_energy(self):
-        """During charging with sufficient data, current session is included."""
+    def test_session_overhead_when_cable_connected_and_enough_energy(self):
+        """During charging with sufficient data, current session overhead is returned."""
         result = _compute_live_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             cable_connected=True,
             session_wall_wh=2000.0,         # 2 kWh from wall this session
             session_battery_delta_kwh=1.8,  # 1.8 kWh into battery
         )
-        # blended: wall=12000, battery=10800 → (1 - 10800/12000) * 100 = 10.0%
+        # session-only: (1 - 1800/2000) * 100 = 10.0%
         assert result == 10.0
 
-    def test_no_blend_when_session_wall_below_threshold(self):
-        """Session with <0.5 kWh wall falls back to lifetime overhead."""
+    def test_none_when_session_wall_below_threshold(self):
+        """Session with <0.5 kWh wall returns None (not enough data yet)."""
         result = _compute_live_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             cable_connected=True,
             session_wall_wh=100.0,          # < 0.5 kWh → below threshold
             session_battery_delta_kwh=0.09,
         )
-        assert result == 10.0  # lifetime only
+        assert result is None
 
-    def test_no_blend_when_battery_delta_below_threshold(self):
-        """Battery delta below 0.5 kWh falls back to lifetime overhead."""
+    def test_none_when_battery_delta_below_threshold(self):
+        """Battery delta below 0.5 kWh returns None (not enough data yet)."""
         result = _compute_live_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             cable_connected=True,
             session_wall_wh=1000.0,
             session_battery_delta_kwh=0.3,  # < 0.5 kWh → below threshold
         )
-        assert result == 10.0  # lifetime only
+        assert result is None
 
-    def test_no_blend_when_battery_delta_is_none(self):
-        """No battery sensor → falls back to lifetime overhead."""
+    def test_none_when_battery_delta_is_none(self):
+        """No battery sensor → None (battery sensor unavailable)."""
         result = _compute_live_overhead_pct(
-            store_wall_wh=10000.0,
-            store_battery_wh=9000.0,
             cable_connected=True,
             session_wall_wh=2000.0,
             session_battery_delta_kwh=None,
         )
-        assert result == 10.0
+        assert result is None
 
     def test_first_session_live_overhead_no_history(self):
-        """First-ever session: shows live overhead from current session only
-        (no lifetime store data available yet)."""
+        """First-ever session: shows live overhead from current session only."""
         result = _compute_live_overhead_pct(
-            store_wall_wh=0.0,
-            store_battery_wh=0.0,
             cable_connected=True,
             session_wall_wh=5000.0,         # 5 kWh wall
             session_battery_delta_kwh=4.5,  # 4.5 kWh battery → 10% overhead
@@ -5682,16 +5648,12 @@ class TestLiveChargingOverhead:
         """As charging progresses, overhead estimate updates each tick."""
         # Early in session: 1 kWh wall, 0.9 kWh battery → 10%
         result_early = _compute_live_overhead_pct(
-            store_wall_wh=0.0,
-            store_battery_wh=0.0,
             cable_connected=True,
             session_wall_wh=1000.0,
             session_battery_delta_kwh=0.9,
         )
         # Later: 5 kWh wall, 4.5 kWh battery → still 10%
         result_later = _compute_live_overhead_pct(
-            store_wall_wh=0.0,
-            store_battery_wh=0.0,
             cable_connected=True,
             session_wall_wh=5000.0,
             session_battery_delta_kwh=4.5,
@@ -6116,22 +6078,20 @@ class TestOverheadConsistency:
         session_wall_snapshot_wh: float,
         cable_prev: bool,
     ) -> float | None:
-        """Mirror of _compute_overhead_pct with pre-computed delta."""
-        wall = store_wall_wh
-        battery = store_battery_wh
-        if cable_prev and session_battery_delta is not None:
-            session_wall_wh = session_wall_snapshot_wh
-            if (
-                session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
-                and session_battery_delta >= self._CAPACITY_MIN_ENERGY_KWH
-            ):
-                wall += session_wall_wh
-                battery += session_battery_delta * 1000.0
-        if wall > 0 and battery > 0:
-            return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
-        return None
+        """Mirror of simplified _compute_overhead_pct (session-only)."""
+        if not cable_prev:
+            return None
+        if (
+            session_battery_delta is None
+            or session_wall_snapshot_wh <= 0
+            or session_wall_snapshot_wh / 1000.0 < self._CAPACITY_MIN_ENERGY_KWH
+            or session_battery_delta < self._CAPACITY_MIN_ENERGY_KWH
+        ):
+            return None
+        battery_wh = session_battery_delta * 1000.0
+        return round(max(0.0, (1.0 - battery_wh / session_wall_snapshot_wh)) * 100.0, 1)
 
-    def test_overhead_with_live_blend(self):
+    def test_overhead_session_only(self):
         pct = self._compute_overhead_pct(
             store_wall_wh=10000.0,
             store_battery_wh=9000.0,
@@ -6140,12 +6100,10 @@ class TestOverheadConsistency:
             cable_prev=True,
         )
         assert pct is not None
-        # Total wall = 10000 + 1100 = 11100
-        # Total battery = 9000 + 1000 = 10000
-        # overhead = (1 - 10000/11100) * 100 = 9.9%
-        assert abs(pct - 9.9) < 0.2
+        # Session-only: (1 - 1000/1100) * 100 = 9.1%
+        assert abs(pct - 9.1) < 0.1
 
-    def test_overhead_no_blend_when_disconnected(self):
+    def test_overhead_none_when_disconnected(self):
         pct = self._compute_overhead_pct(
             store_wall_wh=10000.0,
             store_battery_wh=9000.0,
@@ -6153,9 +6111,8 @@ class TestOverheadConsistency:
             session_wall_snapshot_wh=1100.0,
             cable_prev=False,
         )
-        # Only store data used
-        # overhead = (1 - 9000/10000) * 100 = 10.0%
-        assert pct == 10.0
+        # Cable disconnected → None (sensor shows last_known_pct)
+        assert pct is None
 
     def test_overhead_none_when_no_data(self):
         pct = self._compute_overhead_pct(

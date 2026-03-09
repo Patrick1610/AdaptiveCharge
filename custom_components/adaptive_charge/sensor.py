@@ -60,6 +60,7 @@ async def async_setup_entry(
     if options.get(CONF_EV_BATTERY_ENERGY_SENSOR):
         entities.extend([
             ChargingOverheadSensor(coordinator, entry),
+            ChargingOverheadAvgSensor(coordinator, entry),
             BatteryEnergyDeltaSensor(coordinator, entry),
             EnergyNeededFullSensor(coordinator, entry),
         ])
@@ -611,10 +612,11 @@ class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
 # ---------------------------------------------------------------------------
 
 class ChargingOverheadSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
-    """Rolling charging overhead percentage: (1 − battery_received / wall_energy) × 100.
+    """Current-session charging overhead: (1 − battery_received / wall_energy) × 100.
 
-    Measures the AC→DC conversion losses between the wall (EV power sensor)
-    and the actual energy stored in the battery (EV battery energy delta).
+    Measures the AC→DC conversion losses for the ongoing or most recently
+    completed session.  Uses the wall energy snapshot (captured at the last
+    battery sensor reading) and the battery delta for this session only.
     Only available when the EV battery energy sensor is configured.
     """
 
@@ -645,8 +647,8 @@ class ChargingOverheadSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             if value is not None:
                 self._last_known_pct = value
                 return value
-        # Keep graph continuity: use restored value while live data is
-        # temporarily unavailable; fallback to 0.0 when no history exists yet.
+        # Keep graph continuity: show last session's overhead when cable is
+        # disconnected; fallback to 0.0 when no history exists yet.
         return self._last_known_pct if self._last_known_pct is not None else 0.0
 
     @property
@@ -658,6 +660,55 @@ class ChargingOverheadSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             "energy_session_kwh": data.get("energy_session_kwh", 0.0),
             "session_battery_delta_kwh": data.get("session_battery_delta_kwh"),
             "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
+        }
+
+
+class ChargingOverheadAvgSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
+    """Lifetime rolling average charging overhead: (1 − battery_received / wall_energy) × 100.
+
+    Accumulates wall energy vs. battery energy delta across all completed
+    sessions and updates once per session at cable disconnect.  Provides a
+    stable long-run efficiency estimate even when a single session is too
+    short to be representative.
+    Only available when the EV battery energy sensor is configured.
+    """
+
+    _attr_name = "Charging Overhead Average"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_icon = "mdi:transmission-tower-import"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_charging_overhead_avg_pct"
+        self._last_known_pct: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on HA restart/reload."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                self._last_known_pct = float(state.state)
+            except (ValueError, TypeError):
+                pass
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is not None:
+            value = self.coordinator.data.get("charging_overhead_avg_pct")
+            if value is not None:
+                self._last_known_pct = value
+                return value
+        return self._last_known_pct if self._last_known_pct is not None else 0.0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "charging_overhead_pct": data.get("charging_overhead_pct"),
         }
 
 
@@ -691,6 +742,7 @@ class EnergyNeededFullSensor(_BaseAdaptiveChargeSensor):
             "battery_capacity_kwh": data.get("battery_capacity_kwh"),
             "estimated_battery_capacity_kwh": data.get("estimated_battery_capacity_kwh"),
             "charging_overhead_pct": data.get("charging_overhead_pct"),
+            "charging_overhead_avg_pct": data.get("charging_overhead_avg_pct"),
         }
 
 
