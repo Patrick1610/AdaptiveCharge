@@ -335,7 +335,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current: float | None = None
         self._last_committed_int: int | None = None
         self._last_up_time: float | None = None
-        self._last_down_time: float | None = None
         self._last_on_time: float | None = None
         self._last_off_time: float | None = None
         self._confidence: str = CONFIDENCE_LOW
@@ -1950,8 +1949,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             post_call_mono = time.monotonic()
             if "up" in reason:
                 self._last_up_time = post_call_mono
-            elif "down" in reason:
-                self._last_down_time = post_call_mono
 
             self._last_action = f"modulate_{target_int}A"
             self._last_reason = reason
