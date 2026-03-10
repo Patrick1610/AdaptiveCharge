@@ -13,6 +13,8 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_ENABLE_UTILITY_METERS,
+    CONF_EV_BATTERY_ENERGY_SENSOR,
+    CONF_EXPERT_MODE,
     CONF_UTILITY_DAILY,
     CONF_UTILITY_MONTHLY,
     CONF_UTILITY_YEARLY,
@@ -54,9 +56,41 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> AdaptiveChargeCo
     return None
 
 
+# Sensor unique-ID suffixes for entities that are normally disabled by default
+# but should be automatically enabled when expert mode is active.
+_EXPERT_SENSOR_SUFFIXES = [
+    "_alignment_diagnostics",
+    "_input_skew_seconds",
+]
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload entry when options are updated."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _maybe_enable_expert_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Enable diagnostic entities that are disabled by default when expert mode is on.
+
+    Called after platform setup so that all entities are already registered.
+    Only entities disabled by the integration itself (not by the user) are
+    considered, so manual user preferences are always respected.
+    When expert mode is OFF this function is a no-op — entities that were
+    previously enabled are intentionally left as-is.
+    """
+    options = {**entry.data, **entry.options}
+    if not options.get(CONF_EXPERT_MODE):
+        return
+    registry = er.async_get(hass)
+    for suffix in _EXPERT_SENSOR_SUFFIXES:
+        unique_id = f"{entry.entry_id}{suffix}"
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        if not entity_id:
+            continue
+        entity_entry = registry.async_get(entity_id)
+        if entity_entry and entity_entry.disabled_by == er.RegistryEntryDisabler.INTEGRATION:
+            registry.async_update_entity(entity_id, disabled_by=None)
+            _LOGGER.debug("Expert mode: enabled entity %s", entity_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -103,6 +137,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # If expert mode is on, ensure normally-disabled diagnostic entities are
+    # enabled in the registry so they become active without a second reload.
+    _maybe_enable_expert_entities(hass, entry)
 
     # Reload integration when options change (so updated entity selections take effect)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -176,6 +214,13 @@ _PERIOD_MAP = {
     CONF_UTILITY_YEARLY: ("yearly", "Energy Charged Yearly"),
 }
 
+# Battery energy delta periods (same cycles, different sensor name suffix)
+_BATTERY_DELTA_PERIOD_MAP = {
+    CONF_UTILITY_DAILY: ("daily", "Battery Energy Delta Daily"),
+    CONF_UTILITY_MONTHLY: ("monthly", "Battery Energy Delta Monthly"),
+    CONF_UTILITY_YEARLY: ("yearly", "Battery Energy Delta Yearly"),
+}
+
 
 def _get_energy_charged_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
     """Look up the entity_id for the Energy Charged sensor of this entry."""
@@ -184,50 +229,41 @@ def _get_energy_charged_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> st
     return registry.async_get_entity_id("sensor", DOMAIN, unique_id)
 
 
-async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Create HA utility meter helpers based on config settings."""
-    options = {**entry.data, **entry.options}
-    if not options.get(CONF_ENABLE_UTILITY_METERS, False):
-        return
+def _get_battery_energy_delta_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
+    """Look up the entity_id for the Battery Energy Delta sensor of this entry."""
+    registry = er.async_get(hass)
+    unique_id = f"{entry.entry_id}_battery_energy_delta_kwh"
+    return registry.async_get_entity_id("sensor", DOMAIN, unique_id)
 
-    source_entity_id = _get_energy_charged_entity_id(hass, entry)
-    if not source_entity_id:
-        _LOGGER.warning(
-            "Cannot create utility meters: Energy Charged sensor not found for entry %s",
-            entry.entry_id,
-        )
-        return
 
-    # Track created utility meter entry IDs in domain data
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    um_key = f"{entry.entry_id}_utility_meters"
-    existing_ids: list[str] = domain_data.get(um_key, [])
-
-    for conf_key, (cycle, name_suffix) in _PERIOD_MAP.items():
+async def _async_create_utility_meters_for_source(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    source_entity_id: str,
+    period_map: dict,
+    options: dict,
+    existing_ids: list[str],
+) -> None:
+    """Create HA utility meter helpers for a given source sensor."""
+    for conf_key, (cycle, name_suffix) in period_map.items():
         if not options.get(conf_key, True):
             continue
 
-        # Check if a utility meter for this cycle already exists
-        # (either one we created before, or one the user made manually)
+        # Check if a utility meter for this cycle/source already exists
         already_exists = False
 
-        # Check our tracked entries still exist
         for um_entry_id in list(existing_ids):
             um_entry = hass.config_entries.async_get_entry(um_entry_id)
             if um_entry is None:
                 existing_ids.remove(um_entry_id)
                 continue
-            # Check if this tracked entry matches the current cycle
-            # SchemaConfigFlowHandler stores config in options, not data
             um_cfg = {**um_entry.data, **um_entry.options}
             if um_cfg.get("cycle") == cycle and um_cfg.get("source") == source_entity_id:
                 already_exists = True
                 break
 
-        # Also scan all utility_meter entries to avoid creating duplicates
         if not already_exists:
             for existing_entry in hass.config_entries.async_entries(_UTILITY_METER_DOMAIN):
-                # SchemaConfigFlowHandler stores config in options, not data
                 ex_cfg = {**existing_entry.data, **existing_entry.options}
                 if (
                     ex_cfg.get("source") == source_entity_id
@@ -242,11 +278,12 @@ async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -
             continue
 
         try:
+            meter_name = f"{entry.title} {name_suffix}"
             result = await hass.config_entries.flow.async_init(
                 _UTILITY_METER_DOMAIN,
                 context={"source": "user"},
                 data={
-                    "name": name_suffix,
+                    "name": meter_name,
                     "source": source_entity_id,
                     "cycle": cycle,
                     "offset": 0,
@@ -271,6 +308,46 @@ async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -
         except Exception:
             _LOGGER.exception("Failed to create %s utility meter", cycle)
 
+
+async def _async_setup_utility_meters(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Create HA utility meter helpers based on config settings."""
+    options = {**entry.data, **entry.options}
+    if not options.get(CONF_ENABLE_UTILITY_METERS, False):
+        # Utility meters disabled — remove any that were previously created
+        await _async_remove_utility_meters(hass, entry)
+        return
+
+    source_entity_id = _get_energy_charged_entity_id(hass, entry)
+    if not source_entity_id:
+        _LOGGER.warning(
+            "Cannot create utility meters: Energy Charged sensor not found for entry %s",
+            entry.entry_id,
+        )
+        return
+
+    # Track created utility meter entry IDs in domain data
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    um_key = f"{entry.entry_id}_utility_meters"
+    existing_ids: list[str] = domain_data.get(um_key, [])
+
+    # Create meters for Energy Charged sensor
+    await _async_create_utility_meters_for_source(
+        hass, entry, source_entity_id, _PERIOD_MAP, options, existing_ids
+    )
+
+    # Create meters for Battery Energy Delta sensor (only when sensor is configured)
+    if options.get(CONF_EV_BATTERY_ENERGY_SENSOR):
+        battery_delta_entity_id = _get_battery_energy_delta_entity_id(hass, entry)
+        if battery_delta_entity_id:
+            await _async_create_utility_meters_for_source(
+                hass,
+                entry,
+                battery_delta_entity_id,
+                _BATTERY_DELTA_PERIOD_MAP,
+                options,
+                existing_ids,
+            )
+
     domain_data[um_key] = existing_ids
 
 
@@ -279,6 +356,25 @@ async def _async_remove_utility_meters(hass: HomeAssistant, entry: ConfigEntry) 
     domain_data = hass.data.get(DOMAIN, {})
     um_key = f"{entry.entry_id}_utility_meters"
     um_entry_ids: list[str] = domain_data.pop(um_key, [])
+
+    # Also discover utility meters by source entity so removal works even
+    # after an HA restart (tracked IDs are lost from memory on restart).
+    source_entity_ids = []
+    energy_charged_id = _get_energy_charged_entity_id(hass, entry)
+    if energy_charged_id:
+        source_entity_ids.append(energy_charged_id)
+    battery_delta_id = _get_battery_energy_delta_entity_id(hass, entry)
+    if battery_delta_id:
+        source_entity_ids.append(battery_delta_id)
+
+    for source_entity_id in source_entity_ids:
+        for existing_entry in hass.config_entries.async_entries(_UTILITY_METER_DOMAIN):
+            ex_cfg = {**existing_entry.data, **existing_entry.options}
+            if (
+                ex_cfg.get("source") == source_entity_id
+                and existing_entry.entry_id not in um_entry_ids
+            ):
+                um_entry_ids.append(existing_entry.entry_id)
 
     for um_entry_id in um_entry_ids:
         um_entry = hass.config_entries.async_get_entry(um_entry_id)

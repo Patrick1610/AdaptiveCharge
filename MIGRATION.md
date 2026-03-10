@@ -1,5 +1,37 @@
 # Migration Guide
 
+## Upgrading to v4.1.5
+
+### Bug Fixes
+
+#### Energy Charged sensor no longer briefly shows 0 on reload
+
+Previously, when the integration reloaded (e.g. after a config change or HA restart), the `Energy Charged` sensor would momentarily report `0.0 kWh` before restoring its previous value. Because `Energy Charged` is a `TOTAL_INCREASING` sensor, HA utility meters interpreted this as a counter reset followed by `X kWh` of new energy — causing daily/monthly/yearly meters to jump by the full session total.
+
+**Fix**: Energy counters are now restored from the persistent store **before the first coordinator tick** on every reload. The sensor never sees 0 and utility meters are unaffected.
+
+#### Solar to EV Ratio no longer briefly shows unavailable on reload
+
+The `Solar to EV Ratio` sensor now caches its last known value and restores it immediately on reload, preventing a brief `unavailable` window that could distort energy statistics.
+
+### Improvements
+
+#### Charging Overhead is now live during a session
+
+Previously, `Charging Overhead %` only updated once at the end of each charging session (on cable disconnect). It now **blends the current session's partial data** into the displayed value while the cable is connected, updating every coordinator tick. The live update activates once at least 0.5 kWh has been charged in the current session to avoid noisy early-session readings.
+
+#### Expert mode automatically enables diagnostic entities
+
+When **Expert Mode** is enabled, the `Alignment Diagnostics` and `Input Skew` sensors are now automatically enabled in the entity registry. Turning expert mode off leaves them enabled — no dashboards are disrupted.
+
+### No Breaking Changes
+
+- All existing entity IDs are preserved
+- All existing config entries work without modification
+- Utility meters created before this update will self-correct going forward; no manual reset is needed
+
+---
+
 ## Upgrading to v1.2.0
 
 ### Deprecated Sensors

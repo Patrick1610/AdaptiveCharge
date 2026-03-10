@@ -15,6 +15,9 @@ def _empty_counters():
         "energy_import_wh": 0.0,
         "solar_production_total_wh": 0.0,
         "battery_capacity_estimate_kwh": 0.0,
+        "overhead_wall_wh": 0.0,
+        "overhead_battery_wh": 0.0,
+        "solar_capture_factor": 0.0,
         "migrated": False,
     }
 
@@ -33,6 +36,8 @@ class TestEmptyCounters:
         assert "energy_import_wh" in data
         assert "solar_production_total_wh" in data
         assert "battery_capacity_estimate_kwh" in data
+        assert "overhead_wall_wh" in data
+        assert "overhead_battery_wh" in data
         assert data["migrated"] is False
 
     def test_all_counters_start_at_zero(self):
@@ -164,3 +169,64 @@ class TestBatteryCapacityEstimateStorage:
         merged.update(old_data)
         assert "battery_capacity_estimate_kwh" in merged
         assert merged["battery_capacity_estimate_kwh"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Helper: mirror of storage.add_overhead
+# ---------------------------------------------------------------------------
+
+def _add_overhead(data: dict, wall_wh: float, battery_wh: float) -> None:
+    """Mirror of AdaptiveChargeStore.add_overhead."""
+    if wall_wh <= 0 or battery_wh <= 0:
+        return
+    data["overhead_wall_wh"] += wall_wh
+    data["overhead_battery_wh"] += battery_wh
+
+
+# ---------------------------------------------------------------------------
+# Tests: Overhead storage
+# ---------------------------------------------------------------------------
+
+class TestOverheadStorage:
+    """Tests for the overhead storage methods."""
+
+    def test_add_overhead_accumulates(self):
+        """Overhead deltas accumulate correctly."""
+        data = _empty_counters()
+        _add_overhead(data, 10000.0, 9000.0)
+        assert data["overhead_wall_wh"] == 10000.0
+        assert data["overhead_battery_wh"] == 9000.0
+        _add_overhead(data, 20000.0, 17000.0)
+        assert data["overhead_wall_wh"] == 30000.0
+        assert data["overhead_battery_wh"] == 26000.0
+
+    def test_add_overhead_rejects_zero_wall(self):
+        """Zero wall energy is rejected."""
+        data = _empty_counters()
+        _add_overhead(data, 0.0, 5000.0)
+        assert data["overhead_wall_wh"] == 0.0
+        assert data["overhead_battery_wh"] == 0.0
+
+    def test_add_overhead_rejects_negative_wall(self):
+        """Negative wall energy is rejected."""
+        data = _empty_counters()
+        _add_overhead(data, -100.0, 5000.0)
+        assert data["overhead_wall_wh"] == 0.0
+        assert data["overhead_battery_wh"] == 0.0
+
+    def test_add_overhead_rejects_zero_battery(self):
+        """Zero battery energy is rejected."""
+        data = _empty_counters()
+        _add_overhead(data, 5000.0, 0.0)
+        assert data["overhead_wall_wh"] == 0.0
+        assert data["overhead_battery_wh"] == 0.0
+
+    def test_overhead_keys_merged_from_old_store(self):
+        """Old stores without overhead keys get them via merge with defaults."""
+        old_data = {"energy_total_wh": 5000.0}
+        merged = _empty_counters()
+        merged.update(old_data)
+        assert "overhead_wall_wh" in merged
+        assert "overhead_battery_wh" in merged
+        assert merged["overhead_wall_wh"] == 0.0
+        assert merged["overhead_battery_wh"] == 0.0

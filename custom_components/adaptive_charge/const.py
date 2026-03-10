@@ -14,6 +14,8 @@ CONF_PRESENCE_ENTITY = "presence_entity"
 CONF_CABLE_SENSOR = "cable_sensor"
 CONF_CURRENT_RANGE_SENSOR = "current_range_sensor"
 CONF_BATTERY_SENSOR = "battery_sensor"
+CONF_EV_BATTERY_ENERGY_SENSOR = "ev_battery_energy_sensor"
+CONF_EV_ENERGY_ADDED_SENSOR = "ev_energy_added_sensor"
 CONF_CHARGE_LIMIT_SENSOR = "charge_limit_sensor"
 CONF_CHARGE_LIMIT_NUMBER = "charge_limit_number"
 CONF_DEFAULT_CHARGE_LIMIT = "default_charge_limit"
@@ -65,6 +67,14 @@ MODE_SURPLUS = "surplus"
 MODE_STOPPED = "stopped"
 MODE_NIGHT_TARGET = "night_target"
 
+# --- Charging Priority ---
+CONF_CHARGING_PRIORITY = "charging_priority"
+PRIORITY_BALANCE = "balance"
+PRIORITY_EXPORT = "export_priority"
+PRIORITY_IMPORT = "import_priority"
+PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
+PRIORITY_ZERO_PREFER_EXPORT = "zero_prefer_export"
+
 # --- Confidence Levels ---
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_MEDIUM = "medium"
@@ -108,7 +118,8 @@ CONF_IMPORT_GUARD_SETTLE_S = "import_guard_settle_s"
 DEFAULT_IMPORT_GUARD_HYSTERESIS_W = 50.0
 DEFAULT_IMPORT_GUARD_CLEAR_DURATION_S = 20.0
 DEFAULT_IMPORT_GUARD_SETTLE_S = 30.0
-DEFAULT_IMPORT_GUARD_ZERO_HOLD_S = 300.0  # hold at 0A for 5 min before hard stop
+DEFAULT_IMPORT_GUARD_ZERO_HOLD_S = 120.0  # hold at 0A for 2 min before hard stop
+DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S = 600.0  # 10 min cooldown after escalate_stop before allowing restart
 
 # Import guard states
 IMPORT_GUARD_OK = "ok"
@@ -137,7 +148,7 @@ DEFAULT_SETTLING_DURATION_S = 10.0
 DEFAULT_MIN_SWITCH_TOGGLE_INTERVAL_S = 10.0
 
 # --- Platforms ---
-PLATFORMS = ["sensor", "binary_sensor", "number", "switch"]
+PLATFORMS = ["sensor", "binary_sensor", "number", "switch", "select"]
 
 # --- Service names ---
 SERVICE_FORCE_START = "force_start"

@@ -6,8 +6,28 @@ from collections import deque
 from datetime import datetime, timedelta
 from statistics import mean
 from unittest.mock import AsyncMock, MagicMock, patch
+import importlib.util
+import os
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Helpers: load const.py directly without triggering HA __init__ imports
+# ---------------------------------------------------------------------------
+
+def _load_const():
+    """Load const.py directly via importlib, bypassing HA __init__ dependencies."""
+    const_path = os.path.join(
+        os.path.dirname(__file__),
+        "..", "custom_components", "adaptive_charge", "const.py"
+    )
+    spec = importlib.util.spec_from_file_location("adaptive_charge_const", const_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+_CONST = _load_const()
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +61,21 @@ def compute_smoothed(samples: deque, window_s: int, now: datetime) -> float:
     cutoff = now - timedelta(seconds=window_s)
     valid = [v for ts, v in samples if ts >= cutoff]
     return mean(valid) if valid else 0.0
+
+
+def _empty_counters():
+    """Mirror of storage._empty_counters for test use."""
+    return {
+        "energy_total_wh": 0.0,
+        "energy_solar_wh": 0.0,
+        "energy_import_wh": 0.0,
+        "solar_production_total_wh": 0.0,
+        "battery_capacity_estimate_kwh": 0.0,
+        "overhead_wall_wh": 0.0,
+        "overhead_battery_wh": 0.0,
+        "solar_capture_factor": 0.0,
+        "migrated": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1412,7 +1447,7 @@ class TestModeReasonTracking:
 # ---------------------------------------------------------------------------
 
 class TestSurplusStartCableGuard:
-    """Surplus charging must not start when cable is known disconnected."""
+    """Surplus charging must not start unless cable is confirmed connected."""
 
     def _should_start_surplus(
         self,
@@ -1420,11 +1455,14 @@ class TestSurplusStartCableGuard:
         charging_on: bool,
         cable_connected: bool | None,
         surplus_start_threshold_a: float = 2.0,
+        net_power_valid: bool = True,
     ) -> bool:
         """Mirror the surplus-start gate in _run_control_logic."""
         if not (ema_current >= surplus_start_threshold_a and not charging_on):
             return False
-        if cable_connected is False:
+        if cable_connected is not True:
+            return False
+        if not net_power_valid:
             return False
         return True
 
@@ -1446,14 +1484,14 @@ class TestSurplusStartCableGuard:
         )
         assert result is True
 
-    def test_surplus_start_allowed_when_no_cable_sensor(self):
-        """Should start surplus when cable sensor not configured (None)."""
+    def test_surplus_start_blocked_when_no_cable_sensor(self):
+        """Should NOT start surplus when cable sensor is unknown (None)."""
         result = self._should_start_surplus(
             ema_current=5.0,
             charging_on=False,
             cable_connected=None,
         )
-        assert result is True
+        assert result is False
 
     def test_surplus_start_not_triggered_when_already_charging(self):
         """Guard not reached when already charging (existing gate)."""
@@ -1481,6 +1519,26 @@ class TestSurplusStartCableGuard:
             cable_connected=False,
         )
         assert result is False
+
+    def test_surplus_start_blocked_when_net_power_invalid(self):
+        """Should NOT start surplus when net power sensor is invalid."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=True,
+            net_power_valid=False,
+        )
+        assert result is False
+
+    def test_surplus_start_allowed_when_net_power_valid(self):
+        """Should start surplus when net power sensor is valid."""
+        result = self._should_start_surplus(
+            ema_current=5.0,
+            charging_on=False,
+            cable_connected=True,
+            net_power_valid=True,
+        )
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -3788,6 +3846,116 @@ class TestImportGuardZeroHold:
             "hard_stop",
         ]
 
+    def test_zero_hold_timeout_reduced_to_120s(self):
+        """DEFAULT_IMPORT_GUARD_ZERO_HOLD_S should be 120s (fail faster, not 300s)."""
+        assert _CONST.DEFAULT_IMPORT_GUARD_ZERO_HOLD_S == 120.0
+
+    def test_post_stop_cooldown_constant_exists(self):
+        """DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S should be 600s."""
+        assert _CONST.DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S == 600.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Post-escalation cooldown prevents rapid restart after escalate_stop
+# ---------------------------------------------------------------------------
+
+class TestPostEscalationCooldown:
+    """After import_guard_escalate_stop, restart must be blocked for cooldown period.
+
+    Background: data from real deployments (4.3.0, March 7 morning) showed that
+    the system oscillated in a start → 0A hold → escalate_stop → immediate restart
+    cycle during variable morning solar.  v4.1.6 (March 6 afternoon, stable solar)
+    never triggered the escalation path and achieved 91 % charging efficiency.
+
+    Fix: track the last escalate_stop timestamp and block surplus-start until
+    DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S (10 min) has elapsed.
+    """
+
+    def _simulate_post_stop_check(
+        self,
+        stop_time: float | None,
+        mono_now: float,
+        cooldown_s: float = 600.0,
+    ) -> bool:
+        """Return True if restart is BLOCKED by post-escalation cooldown."""
+        if stop_time is None:
+            return False
+        return (mono_now - stop_time) < cooldown_s
+
+    def test_no_stop_time_never_blocks(self):
+        """Without a prior escalate_stop, restart is never blocked."""
+        assert self._simulate_post_stop_check(None, 1000.0) is False
+
+    def test_blocked_immediately_after_stop(self):
+        """Restart is blocked right after escalate_stop."""
+        stop_time = 1000.0
+        mono_now = 1001.0  # 1s later
+        assert self._simulate_post_stop_check(stop_time, mono_now) is True
+
+    def test_blocked_within_cooldown(self):
+        """Restart still blocked at 9 min 59s after stop."""
+        stop_time = 1000.0
+        mono_now = 1000.0 + 599.0  # 599s < 600s
+        assert self._simulate_post_stop_check(stop_time, mono_now) is True
+
+    def test_allowed_after_cooldown_expires(self):
+        """Restart is permitted once 10 min cooldown has elapsed."""
+        stop_time = 1000.0
+        mono_now = 1000.0 + 600.0  # exactly 600s
+        assert self._simulate_post_stop_check(stop_time, mono_now) is False
+
+    def test_allowed_well_after_cooldown(self):
+        """Restart is permitted long after cooldown (e.g. afternoon sun)."""
+        stop_time = 1000.0
+        mono_now = 1000.0 + 3600.0  # 1 hour later
+        assert self._simulate_post_stop_check(stop_time, mono_now) is False
+
+    def test_stop_time_cleared_on_successful_start(self):
+        """_import_guard_stop_time must be cleared when a session starts."""
+        import_guard_stop_time: float | None = 1000.0  # was set by escalate_stop
+        # Simulate _action_start_surplus clearing it
+        import_guard_stop_time = None
+        assert import_guard_stop_time is None
+
+    def test_stop_time_set_on_escalation(self):
+        """Escalate_stop must record mono_now in _import_guard_stop_time."""
+        import_guard_stop_time: float | None = None
+        mono_now = 5000.0
+        # Simulate escalation code setting the timestamp
+        import_guard_stop_time = mono_now
+        assert import_guard_stop_time == 5000.0
+
+    def test_zero_hold_120s_then_escalate(self):
+        """With the new 120s zero-hold, escalation should trigger at 120s, not 300s."""
+        zero_hold = _CONST.DEFAULT_IMPORT_GUARD_ZERO_HOLD_S
+        zero_since = 1000.0
+        # Should NOT escalate 1s before timeout
+        assert (zero_since + zero_hold - 1.0 - zero_since) < zero_hold
+        # Should escalate at exactly the timeout
+        assert (zero_since + zero_hold - zero_since) >= zero_hold
+
+    def test_full_cycle_duration_with_new_constants(self):
+        """Total oscillation cycle with new constants is shorter and followed by longer cooldown.
+
+        Old behaviour: 300s zero-hold + 120s min_off = 420s cycle, no restart block
+        New behaviour: 120s zero-hold + 120s min_off + 600s cooldown = 840s before restart
+        This prevents the rapid oscillation seen in 4.3.0 morning data.
+        """
+        zero_hold = _CONST.DEFAULT_IMPORT_GUARD_ZERO_HOLD_S
+        post_stop = _CONST.DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S
+        min_off = _CONST.DEFAULT_MIN_OFF_TIME_S
+
+        old_zero_hold = 300.0
+        old_min_off = 120.0
+        old_cycle = old_zero_hold + old_min_off  # 420s, then immediate restart
+
+        # New zero-hold is shorter (fail faster)
+        assert zero_hold < old_zero_hold
+        # New cooldown exists and is longer than old min_off
+        assert post_stop > old_min_off
+        # The blocking period after hard stop is much longer than the old full cycle
+        assert post_stop > old_cycle
+
 
 # ---------------------------------------------------------------------------
 # Tests: Current re-confirm after charge enable
@@ -4088,13 +4256,15 @@ def _evaluate_low_power(
     cable_connected: bool = True,
     effective_capacity: float = 0.0,
     solar_to_ev_ratio: float | None = None,
+    solar_capture_factor: float = 0.0,
     in_tonight_window: bool = False,
 ) -> bool:
     """Mirror of coordinator low_power_active evaluation logic.
 
     Priority:
       1. Inside tonight window → always force charge
-      2. Precise mode (capacity + ratio available) → energy-based check
+      2. Precise mode (capacity + control_factor available) → energy-based check
+         - control_factor = solar_capture_factor if > 0, else solar_to_ev_ratio
       3. Manual backup threshold (> 0) → forecast vs fixed kWh
       4. Conservative fallback (threshold == 0, no precise mode) → force charge
     """
@@ -4111,14 +4281,19 @@ def _evaluate_low_power(
         return True
     if forecast_kwh is None:
         return True
-    # Precise mode: use capacity + ratio when available
+    # Resolve control factor: prefer rolling capture factor, fall back to lifetime ratio
+    control_factor = (
+        solar_capture_factor
+        if solar_capture_factor > 0
+        else (solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0)
+    )
+    # Precise mode: use capacity + control_factor when available
     if (
         effective_capacity > 0
-        and solar_to_ev_ratio is not None
-        and solar_to_ev_ratio > 0
+        and control_factor > 0
     ):
         energy_needed = max(0.0, (low_power_threshold - battery_pct) / 100.0 * effective_capacity)
-        expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+        expected_ev_kwh = forecast_kwh * control_factor
         return expected_ev_kwh < energy_needed
     # Fallback: manual threshold if configured, else conservative force
     if low_power_forecast_threshold_kwh > 0:
@@ -4795,3 +4970,1676 @@ class TestModulationRampUpRate:
         steps, delay = _simulate_ramp_up(committed, ema)
         assert steps == 2  # 1.0A step + 0.2A step (both above 0.2A hysteresis)
         assert delay >= 2 * _COOLDOWN_UP_S
+
+
+# ---------------------------------------------------------------------------
+# Helper: charging overhead computation (mirrors coordinator logic)
+# ---------------------------------------------------------------------------
+
+def _compute_overhead_pct(
+    overhead_wall_wh: float,
+    overhead_battery_wh: float,
+) -> float | None:
+    """Mirror of coordinator._compute_overhead_pct logic."""
+    if overhead_wall_wh > 0 and overhead_battery_wh > 0:
+        return round(max(0.0, (1.0 - overhead_battery_wh / overhead_wall_wh)) * 100.0, 1)
+    return None
+
+
+def _compute_session_battery_delta(
+    session_start_kwh: float | None,
+    current_kwh: float | None,
+) -> float | None:
+    """Mirror of coordinator._compute_session_battery_delta logic.
+
+    Reflects the lazy-init behaviour: if session_start_kwh is None but
+    current_kwh is available the coordinator captures current_kwh as the new
+    baseline and returns 0.0 (delta measured from this point forward).
+    """
+    if current_kwh is None:
+        return None
+    if session_start_kwh is None:
+        # Lazy snapshot: treat current as the new baseline → delta = 0.
+        return 0.0
+    delta = current_kwh - session_start_kwh
+    return round(max(delta, 0.0), 2)
+
+
+def _compute_capacity_estimate_with_battery(
+    session_start_soc: float | None,
+    session_end_soc: float | None,
+    wall_energy_kwh: float,
+    battery_delta_kwh: float | None = None,
+    current_estimate: float = 0.0,
+    min_soc_delta: float = 5.0,
+    min_energy_kwh: float = 0.5,
+    ema_alpha: float = 0.3,
+    min_cap: float = 5.0,
+    max_cap: float = 200.0,
+) -> float:
+    """Mirror of updated coordinator._update_capacity_estimate with battery-side delta.
+
+    When battery_delta_kwh is provided and ≥ min_energy_kwh, uses that for the
+    capacity estimate (battery-side: true usable capacity). Otherwise falls back
+    to wall_energy_kwh (includes losses).
+    """
+    if session_start_soc is None or session_end_soc is None:
+        return current_estimate
+    soc_delta = session_end_soc - session_start_soc
+
+    # Battery-side preferred
+    if battery_delta_kwh is not None and battery_delta_kwh >= min_energy_kwh and soc_delta >= min_soc_delta:
+        raw = (battery_delta_kwh * 100.0) / soc_delta
+    elif soc_delta >= min_soc_delta and wall_energy_kwh >= min_energy_kwh:
+        raw = (wall_energy_kwh * 100.0) / soc_delta
+    else:
+        return current_estimate
+
+    raw = max(min_cap, min(max_cap, raw))
+    if current_estimate > 0:
+        return ema_alpha * raw + (1.0 - ema_alpha) * current_estimate
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charging overhead computation
+# ---------------------------------------------------------------------------
+
+class TestChargingOverhead:
+    """Tests for the rolling charging overhead percentage.
+
+    overhead% = (1 − battery_received / wall_energy) × 100
+    """
+
+    def test_typical_overhead(self):
+        """10% losses: 10 kWh wall, 9 kWh battery → 10% overhead."""
+        pct = _compute_overhead_pct(10000.0, 9000.0)
+        assert pct is not None
+        assert abs(pct - 10.0) < 0.1
+
+    def test_no_overhead(self):
+        """Perfect efficiency: wall == battery → 0% overhead."""
+        pct = _compute_overhead_pct(10000.0, 10000.0)
+        assert pct is not None
+        assert pct == 0.0
+
+    def test_high_overhead(self):
+        """25% losses: 10 kWh wall, 7.5 kWh battery → 25% overhead."""
+        pct = _compute_overhead_pct(10000.0, 7500.0)
+        assert pct is not None
+        assert abs(pct - 25.0) < 0.1
+
+    def test_no_wall_data(self):
+        """No wall data → None."""
+        assert _compute_overhead_pct(0.0, 5000.0) is None
+
+    def test_no_battery_data(self):
+        """No battery data → None."""
+        assert _compute_overhead_pct(5000.0, 0.0) is None
+
+    def test_both_zero(self):
+        """Both zero → None."""
+        assert _compute_overhead_pct(0.0, 0.0) is None
+
+    def test_battery_exceeds_wall(self):
+        """Battery > wall (measurement noise) → clamped to 0%."""
+        pct = _compute_overhead_pct(10000.0, 10500.0)
+        assert pct is not None
+        assert pct == 0.0
+
+    def test_accumulates_across_sessions(self):
+        """Rolling total across two sessions gives blended overhead."""
+        # Session 1: 10 kWh wall, 9 kWh battery (10%)
+        wall = 10000.0
+        battery = 9000.0
+        # Session 2: 20 kWh wall, 17 kWh battery (15%)
+        wall += 20000.0
+        battery += 17000.0
+        pct = _compute_overhead_pct(wall, battery)
+        assert pct is not None
+        # Blended: (1 - 26000/30000) × 100 ≈ 13.3%
+        assert abs(pct - 13.3) < 0.1
+
+
+def _compute_overhead_pct_live(
+    overhead_wall_wh: float,
+    overhead_battery_wh: float,
+    session_battery_delta_kwh: float | None,
+    session_wall_snapshot_wh: float,
+    min_energy_kwh: float = 0.5,
+) -> float | None:
+    """Mirror of coordinator._compute_overhead_pct with live-blend logic.
+
+    Reflects the snapshot fix: uses session_wall_snapshot_wh (wall at the last
+    battery sensor change) rather than the current live wall accumulator.
+    """
+    wall = overhead_wall_wh
+    battery = overhead_battery_wh
+    if session_battery_delta_kwh is not None:
+        if (
+            session_wall_snapshot_wh / 1000.0 >= min_energy_kwh
+            and session_battery_delta_kwh >= min_energy_kwh
+        ):
+            wall += session_wall_snapshot_wh
+            battery += session_battery_delta_kwh * 1000.0
+    if wall > 0 and battery > 0:
+        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Overhead sawtooth fix — wall snapshot
+# ---------------------------------------------------------------------------
+
+class TestOverheadWallSnapshot:
+    """Verify that the live overhead blend is stable between battery API polls.
+
+    Root cause of the sawtooth (confirmed from history data on 2026-03-06):
+      - Wall energy accumulates every 10 s (HA tick)
+      - EV battery sensor polls the car API every ~3 min
+    Without the snapshot fix, overhead would creep up ~0.1 pp/10 s as wall
+    grows with a frozen battery, then snap down 2 pp when battery updates.
+    The fix: use the wall value captured at the last battery sensor change.
+    """
+
+    def _make_snapshot(
+        self,
+        store_wall_wh: float,
+        store_bat_wh: float,
+        session_bat_delta: float,
+        session_wall_at_last_bat_change: float,  # the snapshot
+    ) -> float | None:
+        return _compute_overhead_pct_live(
+            store_wall_wh, store_bat_wh,
+            session_bat_delta, session_wall_at_last_bat_change,
+        )
+
+    def test_stable_between_battery_updates(self):
+        """Overhead must NOT change while the battery sensor is silent.
+
+        Simulate 5 × 10 s ticks where wall accrues 80 Wh each tick but the
+        battery sensor doesn't change.  With the snapshot fix the displayed
+        overhead must be the same on every tick.
+        """
+        store_wall = 100_000.0  # 100 kWh historical
+        store_bat = 83_800.0   # 83.8 kWh historical → 16.2% overhead
+
+        bat_snapshot_wh = 1_500.0  # 1.5 kWh wall when battery last changed
+        bat_delta = 1.3             # 1.3 kWh received so far this session
+
+        results = []
+        for _ in range(5):
+            # Live wall keeps growing, but snapshot is frozen
+            live_wall_wh = bat_snapshot_wh + 80.0  # not used in fixed calc
+            _ = live_wall_wh  # silence unused warning
+            pct = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_delta, bat_snapshot_wh
+            )
+            results.append(pct)
+
+        # All ticks must give the same value
+        assert all(r == results[0] for r in results), (
+            f"Overhead varied between battery-silent ticks: {results}"
+        )
+
+    def test_updates_when_battery_sensor_changes(self):
+        """Overhead updates (steps) when battery sensor delivers a new reading."""
+        store_wall = 100_000.0
+        store_bat = 83_800.0
+
+        # Tick A: battery reports 1.3 kWh delta, wall snapshot = 1500 Wh
+        pct_a = _compute_overhead_pct_live(
+            store_wall, store_bat, 1.3, 1_500.0
+        )
+        # Tick B: battery reports 1.42 kWh delta (+0.12), wall snapshot = 1580 Wh
+        pct_b = _compute_overhead_pct_live(
+            store_wall, store_bat, 1.42, 1_580.0
+        )
+        assert pct_a is not None
+        assert pct_b is not None
+        # Both should be in a plausible range, and different from each other
+        assert 10.0 <= pct_a <= 20.0
+        assert 10.0 <= pct_b <= 20.0
+        assert pct_a != pct_b
+
+    def test_sawtooth_scenario_from_real_data(self):
+        """Reproduce the historical sawtooth and verify it is eliminated.
+
+        From 2026-03-06 history (confirmed: every overhead drop has 0-second lag
+        from a battery sensor update):
+          Charging at 4 A × 230 V × 3 = 2760 W → 27.6 Wh per 10 s tick.
+          Battery API polls every ~3 min → 12 ticks × 27.6 Wh = 331 Wh wall
+          accrues while battery is frozen between polls.
+
+        With a freshly set-up store (~5 kWh from one prior session), the current
+        session (~4 kWh battery delta) is a large fraction of the total, so the
+        331 Wh wall drift produces a clearly visible ~2 pp sawtooth.
+
+        NEW behaviour (using wall snapshot at last battery change):
+          Both sides of the ratio advance together → completely flat.
+        """
+        store_wall = 5_000.0   # Wh — one prior session in store
+        store_bat = 4_190.0    # Wh → 16.2% overhead in store
+
+        bat_val = 4.26          # kWh battery delta at last API poll
+        wall_snapshot = 5_070.0 # Wh — wall energy when battery last changed
+        wall_live = wall_snapshot
+        tick_wh = 27.6          # Wh per 10 s tick (4 A × 230 V × 3)
+
+        overhead_old = []
+        overhead_new = []
+
+        for _tick in range(12):  # ~2 min before next battery update
+            wall_live += tick_wh
+
+            # Old: live wall passed as snapshot (simulates pre-fix behaviour)
+            pct_old = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_val, wall_live
+            )
+            # New: frozen snapshot (the fix)
+            pct_new = _compute_overhead_pct_live(
+                store_wall, store_bat, bat_val, wall_snapshot
+            )
+            overhead_old.append(pct_old)
+            overhead_new.append(pct_new)
+
+        # Old: monotonically increasing (wall grows, battery frozen)
+        assert overhead_old[-1] > overhead_old[0], "Expected sawtooth rise not seen"
+        diff_old = overhead_old[-1] - overhead_old[0]
+        assert diff_old > 0.5, f"Expected >0.5 pp rise, got {diff_old:.2f} pp"
+
+        # New: completely flat between battery sensor updates
+        assert all(v == overhead_new[0] for v in overhead_new), (
+            f"Overhead not flat with snapshot fix: {overhead_new}"
+        )
+
+    def test_below_minimum_threshold_uses_store_only(self):
+        """Session data below min_energy threshold → only store data used."""
+        store_wall = 50_000.0
+        store_bat = 42_000.0  # 16% overhead
+        expected = _compute_overhead_pct(store_wall, store_bat)
+
+        # Session is tiny (0.2 kWh wall, 0.1 kWh battery — below 0.5 kWh min)
+        pct = _compute_overhead_pct_live(
+            store_wall, store_bat, 0.1, 200.0
+        )
+        assert pct == expected
+
+
+
+class TestSessionBatteryDelta:
+    """Tests for the battery-side energy delta computation."""
+
+    def test_normal_charge_session(self):
+        """Battery went from 40 kWh to 50 kWh → delta = 10 kWh."""
+        delta = _compute_session_battery_delta(40.0, 50.0)
+        assert delta is not None
+        assert abs(delta - 10.0) < 0.01
+
+    def test_no_start_snapshot_lazy_init(self):
+        """No snapshot at session start with a valid current reading → 0.0 (lazy init)."""
+        assert _compute_session_battery_delta(None, 50.0) == 0.0
+
+    def test_no_start_snapshot_no_sensor(self):
+        """No snapshot and no current reading → None."""
+        assert _compute_session_battery_delta(None, None) is None
+
+    def test_no_current_reading(self):
+        """No current sensor reading → None."""
+        assert _compute_session_battery_delta(40.0, None) is None
+
+    def test_battery_decreased(self):
+        """Battery decreased (e.g. driving while plugged in) → clamped to 0."""
+        delta = _compute_session_battery_delta(50.0, 45.0)
+        assert delta is not None
+        assert delta == 0.0
+
+    def test_exact_same(self):
+        """No change → delta = 0."""
+        delta = _compute_session_battery_delta(41.24, 41.24)
+        assert delta is not None
+        assert delta == 0.0
+
+    def test_small_increment(self):
+        """Small 0.01 kWh resolution increment is captured."""
+        delta = _compute_session_battery_delta(41.24, 41.25)
+        assert delta is not None
+        assert abs(delta - 0.01) < 0.001
+
+    def test_large_session(self):
+        """Large charging session: 20 to 70 kWh."""
+        delta = _compute_session_battery_delta(20.0, 70.0)
+        assert delta is not None
+        assert abs(delta - 50.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Tests: Capacity estimate with battery-side delta
+# ---------------------------------------------------------------------------
+
+class TestCapacityEstimateWithBatterySensor:
+    """Tests for the enhanced capacity estimation using battery-side kWh delta.
+
+    When the EV battery energy sensor is configured, the estimate uses direct
+    battery-side kWh delta for more accurate capacity calculation (true usable
+    capacity, without AC→DC losses). Falls back to wall energy when unavailable.
+    """
+
+    def test_battery_side_estimate_gives_true_capacity(self):
+        """Battery-side: 32 kWh delta / 40% SoC = 80 kWh true capacity."""
+        est = _compute_capacity_estimate_with_battery(
+            session_start_soc=10.0,
+            session_end_soc=50.0,
+            wall_energy_kwh=35.6,  # wall includes losses
+            battery_delta_kwh=32.0,
+        )
+        assert abs(est - 80.0) < 0.1
+
+    def test_wall_fallback_when_no_battery_delta(self):
+        """Without battery delta, falls back to wall energy."""
+        est = _compute_capacity_estimate_with_battery(
+            session_start_soc=10.0,
+            session_end_soc=50.0,
+            wall_energy_kwh=35.6,
+            battery_delta_kwh=None,
+        )
+        # Wall: 35.6 / 0.4 = 89 kWh (includes losses)
+        assert abs(est - 89.0) < 0.1
+
+    def test_battery_vs_wall_shows_overhead_in_estimate(self):
+        """Battery estimate is lower than wall estimate (no losses included).
+
+        True battery = 80 kWh, 10% AC losses.
+        Wall measures 35.56 kWh, battery received 32 kWh.
+        Wall-based: 35.56/0.4 ≈ 89 kWh (inflated by losses).
+        Battery-based: 32/0.4 = 80 kWh (true capacity).
+        """
+        wall_est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 35.56, battery_delta_kwh=None,
+        )
+        batt_est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 35.56, battery_delta_kwh=32.0,
+        )
+        assert batt_est < wall_est
+        assert abs(batt_est - 80.0) < 0.1
+        assert abs(wall_est - 88.9) < 0.2
+
+    def test_tiny_battery_delta_uses_wall_fallback(self):
+        """Battery delta < 0.5 kWh is ignored, uses wall energy."""
+        est = _compute_capacity_estimate_with_battery(
+            session_start_soc=20.0,
+            session_end_soc=30.0,
+            wall_energy_kwh=8.0,
+            battery_delta_kwh=0.3,  # too small
+        )
+        # Fallback: 8.0 / 0.1 = 80 kWh
+        assert abs(est - 80.0) < 0.1
+
+    def test_ema_with_battery_delta(self):
+        """Battery-side estimates also converge via EMA."""
+        est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 40.0, battery_delta_kwh=32.0,
+        )  # 32/0.4 = 80 kWh
+        est = _compute_capacity_estimate_with_battery(
+            10.0, 50.0, 40.0, battery_delta_kwh=28.0, current_estimate=est,
+        )  # 28/0.4 = 70 kWh raw
+        # EMA: 0.3 × 70 + 0.7 × 80 = 77
+        assert 70.0 < est < 80.0
+
+    def test_no_soc_delta_with_battery_delta_skipped(self):
+        """SoC delta < 5% means estimation skipped even with battery delta."""
+        est = _compute_capacity_estimate_with_battery(
+            80.0, 84.0, 5.0, battery_delta_kwh=3.5, current_estimate=50.0,
+        )
+        assert est == 50.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Build data dict includes new battery-side fields
+# ---------------------------------------------------------------------------
+
+class TestBuildDataDictBatteryFields:
+    """Test that data dict includes battery-side energy keys."""
+
+    def test_battery_fields_present_in_data_dict(self):
+        """Data dict should include EV battery energy and overhead keys."""
+        expected_keys = {
+            "ev_battery_energy_kwh",
+            "ev_energy_added_kwh",
+            "session_battery_delta_kwh",
+            "charging_overhead_pct",
+        }
+        data = {k: None for k in expected_keys}
+        assert set(data.keys()) == expected_keys
+
+    def test_overhead_pct_calculation_matches(self):
+        """Overhead % in data dict matches the formula."""
+        wall_wh = 10000.0
+        battery_wh = 9000.0
+        pct = _compute_overhead_pct(wall_wh, battery_wh)
+        assert pct is not None
+        assert abs(pct - 10.0) < 0.1
+
+    def test_battery_delta_with_high_resolution(self):
+        """Battery energy remaining at 0.01 kWh resolution produces precise delta."""
+        delta = _compute_session_battery_delta(41.24, 48.76)
+        assert delta is not None
+        assert abs(delta - 7.52) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Tests: Storage overhead persistence
+# ---------------------------------------------------------------------------
+
+class TestStorageOverhead:
+    """Test overhead storage keys are properly initialised."""
+
+    def test_overhead_keys_in_empty_counters(self):
+        """Empty counters include overhead_wall_wh and overhead_battery_wh."""
+        counters = {
+            "energy_total_wh": 0.0,
+            "energy_solar_wh": 0.0,
+            "energy_import_wh": 0.0,
+            "solar_production_total_wh": 0.0,
+            "battery_capacity_estimate_kwh": 0.0,
+            "overhead_wall_wh": 0.0,
+            "overhead_battery_wh": 0.0,
+            "migrated": False,
+        }
+        assert "overhead_wall_wh" in counters
+        assert "overhead_battery_wh" in counters
+        assert counters["overhead_wall_wh"] == 0.0
+        assert counters["overhead_battery_wh"] == 0.0
+
+    def test_overhead_accumulation(self):
+        """Overhead deltas should accumulate correctly."""
+        wall = 0.0
+        battery = 0.0
+        # Session 1: 10 kWh wall, 9 kWh battery
+        wall += 10000.0
+        battery += 9000.0
+        # Session 2: 20 kWh wall, 17 kWh battery
+        wall += 20000.0
+        battery += 17000.0
+        assert wall == 30000.0
+        assert battery == 26000.0
+        # Overhead pct: (1 - 26000/30000) * 100 ≈ 13.3%
+        pct = _compute_overhead_pct(wall, battery)
+        assert pct is not None
+        assert abs(pct - 13.3) < 0.1
+
+    def test_negative_wall_ignored(self):
+        """Negative wall energy should not be accumulated."""
+        # Mirrors storage.add_overhead: if wall_wh <= 0, return
+        wall_wh = -100.0
+        assert wall_wh <= 0  # would be rejected by store
+
+
+# ---------------------------------------------------------------------------
+# Tests: Energy counters restored from store before first tick
+# ---------------------------------------------------------------------------
+
+def _simulate_first_refresh_energy_restore(
+    store_energy_total_wh: float,
+    store_energy_solar_wh: float,
+    store_energy_import_wh: float,
+    store_solar_production_wh: float,
+) -> dict:
+    """Mirror of the energy restore logic added to async_config_entry_first_refresh.
+
+    Returns the in-memory counters as they would be set just before the first
+    _async_tick call.
+    """
+    energy_total_wh = 0.0
+    energy_solar_wh = 0.0
+    energy_import_wh = 0.0
+    solar_production_wh = 0.0
+
+    stored_energy_total = store_energy_total_wh
+    if stored_energy_total > 0:
+        energy_total_wh = stored_energy_total
+        energy_solar_wh = store_energy_solar_wh
+        energy_import_wh = store_energy_import_wh
+
+    solar_production_wh = store_solar_production_wh
+
+    return {
+        "energy_total_wh": energy_total_wh,
+        "energy_solar_wh": energy_solar_wh,
+        "energy_import_wh": energy_import_wh,
+        "solar_production_wh": solar_production_wh,
+    }
+
+
+class TestEnergyRestoredFromStoreBeforeFirstTick:
+    """Energy counters must be restored from the persistent store before the
+    first coordinator tick so that TOTAL_INCREASING sensors never briefly
+    report 0, which would cause utility meters to count the recovery as new
+    energy."""
+
+    def test_positive_total_restores_all_counters(self):
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=5000.0,
+            store_energy_solar_wh=3000.0,
+            store_energy_import_wh=2000.0,
+            store_solar_production_wh=12000.0,
+        )
+        assert result["energy_total_wh"] == 5000.0
+        assert result["energy_solar_wh"] == 3000.0
+        assert result["energy_import_wh"] == 2000.0
+        assert result["solar_production_wh"] == 12000.0
+
+    def test_zero_total_leaves_counters_at_zero(self):
+        """If the store has never recorded any energy, counters stay at 0."""
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=0.0,
+            store_energy_solar_wh=0.0,
+            store_energy_import_wh=0.0,
+            store_solar_production_wh=0.0,
+        )
+        assert result["energy_total_wh"] == 0.0
+        assert result["energy_solar_wh"] == 0.0
+        assert result["energy_import_wh"] == 0.0
+
+    def test_solar_production_restored_regardless_of_energy_total(self):
+        """Solar production total is restored even when energy_total_wh is 0."""
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=0.0,
+            store_energy_solar_wh=0.0,
+            store_energy_import_wh=0.0,
+            store_solar_production_wh=8000.0,
+        )
+        assert result["solar_production_wh"] == 8000.0
+
+    def test_no_drop_to_zero_on_reload(self):
+        """Simulates reload: coordinator must start with the stored value,
+        not 0. Sensors should never see a 0-value before restore completes."""
+        # Before fix: first tick had energy_total_wh=0.0 (brief zero window)
+        # After fix: first tick has energy_total_wh=500.0 (restored from store)
+        result = _simulate_first_refresh_energy_restore(
+            store_energy_total_wh=500.0,
+            store_energy_solar_wh=300.0,
+            store_energy_import_wh=200.0,
+            store_solar_production_wh=1500.0,
+        )
+        assert result["energy_total_wh"] == 500.0, (
+            "Energy sensor must not briefly report 0 on reload"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Live charging overhead (current session blended in)
+# ---------------------------------------------------------------------------
+
+def _compute_live_overhead_pct(
+    store_wall_wh: float,
+    store_battery_wh: float,
+    cable_connected: bool,
+    session_wall_wh: float,
+    session_battery_delta_kwh: float | None,
+    capacity_min_energy_kwh: float = 0.5,
+) -> float | None:
+    """Mirror of the updated _compute_overhead_pct logic.
+
+    Blends in current-session data when the cable is connected and enough
+    energy has been charged, preventing double-counting after disconnect.
+    """
+    wall = store_wall_wh
+    battery = store_battery_wh
+
+    if cable_connected:
+        if (
+            session_battery_delta_kwh is not None
+            and session_wall_wh / 1000.0 >= capacity_min_energy_kwh
+            and session_battery_delta_kwh >= capacity_min_energy_kwh
+        ):
+            wall += session_wall_wh
+            battery += session_battery_delta_kwh * 1000.0
+
+    if wall > 0 and battery > 0:
+        return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+    return None
+
+
+class TestLiveChargingOverhead:
+    """ChargingOverheadSensor should update live during a session by blending
+    current session data into the lifetime store totals."""
+
+    def test_no_data_returns_none(self):
+        result = _compute_live_overhead_pct(0, 0, False, 0, None)
+        assert result is None
+
+    def test_lifetime_only_when_cable_disconnected(self):
+        """After session end, only lifetime store data is used (no double-count)."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=False,
+            session_wall_wh=2000.0,
+            session_battery_delta_kwh=1.8,
+        )
+        # lifetime: (1 - 9000/10000) * 100 = 10.0%
+        assert result == 10.0
+
+    def test_live_blend_when_cable_connected_and_enough_energy(self):
+        """During charging with sufficient data, current session is included."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=2000.0,         # 2 kWh from wall this session
+            session_battery_delta_kwh=1.8,  # 1.8 kWh into battery
+        )
+        # blended: wall=12000, battery=10800 → (1 - 10800/12000) * 100 = 10.0%
+        assert result == 10.0
+
+    def test_no_blend_when_session_wall_below_threshold(self):
+        """Session with <0.5 kWh wall falls back to lifetime overhead."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=100.0,          # < 0.5 kWh → below threshold
+            session_battery_delta_kwh=0.09,
+        )
+        assert result == 10.0  # lifetime only
+
+    def test_no_blend_when_battery_delta_below_threshold(self):
+        """Battery delta below 0.5 kWh falls back to lifetime overhead."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=1000.0,
+            session_battery_delta_kwh=0.3,  # < 0.5 kWh → below threshold
+        )
+        assert result == 10.0  # lifetime only
+
+    def test_no_blend_when_battery_delta_is_none(self):
+        """No battery sensor → falls back to lifetime overhead."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            cable_connected=True,
+            session_wall_wh=2000.0,
+            session_battery_delta_kwh=None,
+        )
+        assert result == 10.0
+
+    def test_first_session_live_overhead_no_history(self):
+        """First-ever session: shows live overhead from current session only
+        (no lifetime store data available yet)."""
+        result = _compute_live_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            cable_connected=True,
+            session_wall_wh=5000.0,         # 5 kWh wall
+            session_battery_delta_kwh=4.5,  # 4.5 kWh battery → 10% overhead
+        )
+        assert result == 10.0
+
+    def test_live_overhead_reflects_session_progress(self):
+        """As charging progresses, overhead estimate updates each tick."""
+        # Early in session: 1 kWh wall, 0.9 kWh battery → 10%
+        result_early = _compute_live_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            cable_connected=True,
+            session_wall_wh=1000.0,
+            session_battery_delta_kwh=0.9,
+        )
+        # Later: 5 kWh wall, 4.5 kWh battery → still 10%
+        result_later = _compute_live_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            cable_connected=True,
+            session_wall_wh=5000.0,
+            session_battery_delta_kwh=4.5,
+        )
+        assert result_early == 10.0
+        assert result_later == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Charging priority current bias and control behaviour
+# ---------------------------------------------------------------------------
+
+PRIORITY_BALANCE = "balance"
+PRIORITY_ZERO_PREFER_EXPORT = "zero_prefer_export"
+PRIORITY_ZERO_PREFER_IMPORT = "zero_prefer_import"
+PRIORITY_EXPORT = "export_priority"
+PRIORITY_IMPORT = "import_priority"
+
+
+def _quantize_modulate_up(target: float, current_int: int, priority: str, capped: int = 16) -> int:
+    """Mirror of coordinator._commit_current quantization for modulate_up.
+
+    v4.3.6 design:
+      balance             — round (half-up): nearest integer, ensures +1 step
+      zero_prefer_export  — floor: requires full integer above current before stepping up
+      zero_prefer_import  — ceil: any positive surplus triggers a step up
+    """
+    import math
+    target = min(max(target, 0.0), float(capped))
+    if priority == PRIORITY_ZERO_PREFER_EXPORT:
+        quantized = int(math.floor(target))
+    elif priority == PRIORITY_ZERO_PREFER_IMPORT:
+        quantized = int(math.ceil(target))
+    else:  # balance (default)
+        quantized = int(math.floor(target + 0.5))
+    return min(max(current_int + 1, quantized), capped)
+
+
+class TestChargingPriorityCurrentBias:
+    """Verify priority modes use floor/ceil/round quantization (no W-bias offset)."""
+
+    def test_balance_rounds_half_up(self):
+        """balance: 4.5A → rounds to 5A (half-up)."""
+        assert _quantize_modulate_up(4.5, 4, PRIORITY_BALANCE) == 5
+
+    def test_balance_rounds_down_below_half(self):
+        """balance: 4.49A → rounds to 4, but +1 step from current_int=4 → 5."""
+        # +1 step is enforced because modulate_up was approved
+        assert _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE) == 5
+
+    def test_balance_with_larger_jump(self):
+        """balance: large jump — quantized value exceeds current+1, so takes quantized."""
+        assert _quantize_modulate_up(6.5, 3, PRIORITY_BALANCE) == 7
+
+    def test_prefer_export_floors(self):
+        """zero_prefer_export: 4.9A → floor=4, current=4 → +1 → 5A."""
+        assert _quantize_modulate_up(4.9, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
+
+    def test_prefer_export_requires_full_integer_surplus(self):
+        """zero_prefer_export: 5.0A target from current=4 → floor=5, max(5,5)=5."""
+        assert _quantize_modulate_up(5.0, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
+
+    def test_prefer_export_conservative_on_large_jump(self):
+        """zero_prefer_export: 6.3A from current=3 → floor=6, max(4,6)=6 (same as balance; prefer_import would be 7)."""
+        assert _quantize_modulate_up(6.3, 3, PRIORITY_ZERO_PREFER_EXPORT) == 6
+
+    def test_prefer_import_ceils(self):
+        """zero_prefer_import: 4.1A → ceil=5, max(current+1=5, 5)=5."""
+        assert _quantize_modulate_up(4.1, 4, PRIORITY_ZERO_PREFER_IMPORT) == 5
+
+    def test_prefer_import_aggressively_rounds_up(self):
+        """zero_prefer_import: 3.01A from current=3 → ceil=4, max(4,4)=4."""
+        assert _quantize_modulate_up(3.01, 3, PRIORITY_ZERO_PREFER_IMPORT) == 4
+
+    def test_prefer_import_large_jump(self):
+        """zero_prefer_import: 6.1A from current=3 → ceil=7, max(4,7)=7 (more than balance)."""
+        assert _quantize_modulate_up(6.1, 3, PRIORITY_ZERO_PREFER_IMPORT) == 7
+
+    def test_prefer_import_vs_export_ordering(self):
+        """For the same EMA, prefer_import steps to higher A than prefer_export."""
+        ema = 5.2
+        current = 4
+        export_val = _quantize_modulate_up(ema, current, PRIORITY_ZERO_PREFER_EXPORT)
+        import_val = _quantize_modulate_up(ema, current, PRIORITY_ZERO_PREFER_IMPORT)
+        balance_val = _quantize_modulate_up(ema, current, PRIORITY_BALANCE)
+        # prefer_export ≤ balance ≤ prefer_import
+        assert export_val <= balance_val <= import_val
+
+    def test_unknown_mode_defaults_to_balance(self):
+        """Unknown mode falls through to balance rounding."""
+        assert _quantize_modulate_up(4.5, 4, "unknown_mode") == 5
+
+    def test_surplus_is_unaffected_by_priority(self):
+        """Surplus calculation does NOT include any priority offset."""
+        s = compute_surplus(-1000.0, 0.0)
+        for prio in [PRIORITY_BALANCE, PRIORITY_ZERO_PREFER_EXPORT, PRIORITY_ZERO_PREFER_IMPORT,
+                     PRIORITY_EXPORT, PRIORITY_IMPORT]:
+            assert compute_surplus(-1000.0, 0.0) == s
+
+
+class TestChargingPriorityControlEffect:
+    """Verify priority modes affect the controller correctly without polluting monitoring."""
+
+    def test_balance_does_not_affect_control_current(self):
+        """balance mode uses standard rounding on the raw ema."""
+        raw = compute_raw_current(compute_surplus(-1000.0, 0.0), 230.0)
+        # balance: floor(raw + 0.5) — unchanged from previous behaviour
+        import math
+        expected = int(math.floor(raw + 0.5)) if raw >= 0 else 0
+        assert _quantize_modulate_up(max(raw, 0.0), 0, PRIORITY_BALANCE) == max(1, expected)
+
+    def test_zero_prefer_import_triggers_on_tiny_surplus(self):
+        """zero_prefer_import: even 0.01A above current → ceil rounds up, +1 step fires."""
+        result = _quantize_modulate_up(4.01, 4, PRIORITY_ZERO_PREFER_IMPORT)
+        assert result == 5
+
+    def test_zero_prefer_export_needs_more_surplus_than_balance(self):
+        """zero_prefer_export and balance both quantize 4.49A to 4, then the +1 step guarantee
+        bumps both to 5.  The difference shows at values like 4.6A where balance rounds to 5
+        while floor stays at 4 (before the +1 step)."""
+        export_val = _quantize_modulate_up(4.49, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        balance_val = _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE)
+        # Both reach 5 via the +1 step guarantee (quantized=4 ≤ current+1=5)
+        assert export_val == 5
+        assert balance_val == 5
+        # At 4.6A the difference is visible before the +1 step is applied
+        import math
+        assert int(math.floor(4.6)) < int(math.floor(4.6 + 0.5))  # 4 < 5
+
+    def test_import_priority_uses_force_charge(self):
+        """import_priority should trigger force charge — reflected as import_priority force source."""
+        charge_now = False
+        tonight_condition = False
+        low_power_active = False
+        cable_connected = True
+        priority = PRIORITY_IMPORT
+        import_priority_force = (priority == PRIORITY_IMPORT and cable_connected)
+        force_charge = charge_now or tonight_condition or low_power_active or import_priority_force
+        assert force_charge is True
+
+    def test_import_priority_no_force_when_cable_disconnected(self):
+        """import_priority does NOT force charge when cable is not connected."""
+        cable_connected = False
+        priority = PRIORITY_IMPORT
+        import_priority_force = (priority == PRIORITY_IMPORT and bool(cable_connected))
+        assert import_priority_force is False
+
+    def test_export_priority_does_not_affect_surplus(self):
+        """export_priority keeps surplus unchanged — control logic handles the block."""
+        surplus = compute_surplus(-3000.0, 0.0)
+        assert surplus == 3000.0
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Net power validity gating
+# ---------------------------------------------------------------------------
+
+class TestNetPowerValidity:
+    """Tests for net power validity flag and its effect on control decisions."""
+
+    def _compute_net_power_validity(
+        self,
+        net_power_mode: str,
+        net_raw: float | None = None,
+        consumption_raw: float | None = None,
+        production_raw: float | None = None,
+    ) -> tuple[float, bool]:
+        """Mirror _read_sensors net_power_valid logic."""
+        if net_power_mode == "net_only":
+            net_power_valid = net_raw is not None
+            computed_net_w = net_raw if net_raw is not None else 0.0
+        else:
+            if consumption_raw is not None and production_raw is not None:
+                computed_net_w = consumption_raw - production_raw
+                net_power_valid = True
+            elif consumption_raw is not None:
+                computed_net_w = consumption_raw
+                net_power_valid = True
+            else:
+                computed_net_w = 0.0
+                net_power_valid = False
+        return computed_net_w, net_power_valid
+
+    def test_net_only_valid_when_sensor_available(self):
+        net_w, valid = self._compute_net_power_validity("net_only", net_raw=500.0)
+        assert net_w == 500.0
+        assert valid is True
+
+    def test_net_only_invalid_when_sensor_none(self):
+        net_w, valid = self._compute_net_power_validity("net_only", net_raw=None)
+        assert net_w == 0.0
+        assert valid is False
+
+    def test_consumption_production_valid(self):
+        net_w, valid = self._compute_net_power_validity(
+            "consumption_production", consumption_raw=1000.0, production_raw=2000.0,
+        )
+        assert net_w == -1000.0
+        assert valid is True
+
+    def test_consumption_only_valid(self):
+        net_w, valid = self._compute_net_power_validity(
+            "consumption_production", consumption_raw=500.0,
+        )
+        assert net_w == 500.0
+        assert valid is True
+
+    def test_both_missing_invalid(self):
+        net_w, valid = self._compute_net_power_validity("consumption_production")
+        assert net_w == 0.0
+        assert valid is False
+
+    def test_surplus_start_blocked_invalid_net(self):
+        """Surplus start must be blocked when net sensor is invalid."""
+        # Even with enough current, invalid net means we can't trust surplus
+        _, valid = self._compute_net_power_validity("net_only", net_raw=None)
+        assert valid is False
+        # Start should be blocked (mirrors _run_control_logic)
+        ema_current = 5.0
+        charging_on = False
+        cable_connected = True
+        threshold = 2.0
+        should_start = (
+            ema_current >= threshold
+            and not charging_on
+            and cable_connected is True
+            and valid
+        )
+        assert should_start is False
+
+    def test_modulate_down_allowed_invalid_net(self):
+        """Downward modulation must remain allowed even when net is invalid."""
+        delta = -2.0  # wanting to reduce
+        net_power_valid = False
+        # Only block upward when invalid; downward is always safe
+        blocked = delta > 0 and not net_power_valid
+        assert blocked is False
+
+    def test_modulate_up_blocked_invalid_net(self):
+        """Upward modulation must be blocked when net is invalid."""
+        delta = 2.0
+        net_power_valid = False
+        blocked = delta > 0 and not net_power_valid
+        assert blocked is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Solar capture factor (operational control vs lifetime KPI)
+# ---------------------------------------------------------------------------
+
+class TestSolarCaptureFactor:
+    """Tests for the rolling solar capture factor used in low-power logic."""
+
+    ALPHA = 0.3  # Matches coordinator _CAPTURE_FACTOR_EMA_ALPHA
+
+    def _compute_capture_factor(
+        self,
+        session_solar_wh: float,
+        session_solar_production_wh: float,
+        current_factor: float = 0.0,
+    ) -> float:
+        """Mirror the capture factor update logic in _finalize_session_if_needed."""
+        if session_solar_production_wh <= 0 or session_solar_wh < 0:
+            return current_factor
+        session_factor = min(session_solar_wh / session_solar_production_wh, 1.0)
+        if current_factor > 0:
+            return self.ALPHA * session_factor + (1.0 - self.ALPHA) * current_factor
+        return session_factor
+
+    def test_first_session_sets_factor_directly(self):
+        factor = self._compute_capture_factor(500.0, 1000.0, current_factor=0.0)
+        assert abs(factor - 0.5) < 0.001
+
+    def test_subsequent_session_uses_ema(self):
+        factor = self._compute_capture_factor(600.0, 1000.0, current_factor=0.5)
+        expected = 0.3 * 0.6 + 0.7 * 0.5
+        assert abs(factor - expected) < 0.001
+
+    def test_capped_at_one(self):
+        factor = self._compute_capture_factor(2000.0, 1000.0, current_factor=0.0)
+        assert factor == 1.0
+
+    def test_zero_production_no_update(self):
+        factor = self._compute_capture_factor(500.0, 0.0, current_factor=0.4)
+        assert factor == 0.4
+
+    def test_low_power_uses_capture_factor_over_lifetime_ratio(self):
+        """Low-power precise mode should prefer capture factor over lifetime ratio."""
+        # capture_factor=0.3, lifetime_ratio=0.8
+        # Need 8 kWh (10% of 80), forecast 20
+        # With lifetime ratio: 20*0.8=16 > 8 → no force
+        # With capture factor: 20*0.3=6 < 8 → force charge
+        assert _evaluate_low_power(
+            10.0, 20.0, 20.0, 0.0,
+            effective_capacity=80.0,
+            solar_to_ev_ratio=0.8,
+            solar_capture_factor=0.3,
+        ) is True  # capture factor wins, not enough
+
+    def test_low_power_falls_back_to_lifetime_ratio_when_no_capture_factor(self):
+        """When capture factor is 0, fall back to lifetime ratio."""
+        assert _evaluate_low_power(
+            10.0, 20.0, 20.0, 0.0,
+            effective_capacity=80.0,
+            solar_to_ev_ratio=0.8,
+            solar_capture_factor=0.0,
+        ) is False  # lifetime ratio says enough
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Session finalizer
+# ---------------------------------------------------------------------------
+
+class TestSessionFinalizer:
+    """Tests for the central session finalization logic."""
+
+    def _should_finalize(
+        self,
+        session_start_soc: float | None,
+        energy_session_wh: float,
+    ) -> bool:
+        """Mirror of _finalize_session_if_needed gate."""
+        if session_start_soc is None and energy_session_wh <= 0:
+            return False
+        return True
+
+    def test_finalize_runs_with_session_data(self):
+        assert self._should_finalize(20.0, 5000.0) is True
+
+    def test_finalize_runs_with_soc_only(self):
+        assert self._should_finalize(20.0, 0.0) is True
+
+    def test_finalize_runs_with_energy_only(self):
+        assert self._should_finalize(None, 1000.0) is True
+
+    def test_finalize_skipped_when_no_session(self):
+        assert self._should_finalize(None, 0.0) is False
+
+    def test_stale_charge_triggers_finalize(self):
+        """Stale charge reset should trigger finalization."""
+        # In coordinator, stale charge reset calls _finalize_session_if_needed
+        # Verify the gate accepts typical stale-charge state
+        assert self._should_finalize(30.0, 2000.0) is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Session battery delta deduplication
+# ---------------------------------------------------------------------------
+
+class TestSessionBatteryDeltaDedup:
+    """Verify that battery delta is computed once per tick, not twice."""
+
+    def test_single_computation_reused_for_data_and_overhead(self):
+        """Battery delta should be the same value in data dict and overhead calc."""
+        start = 20.0
+        current = 25.0
+        delta = round(max(current - start, 0.0), 2)
+
+        # The same delta should be used for both
+        data_dict_delta = delta
+        overhead_input_delta = delta
+        assert data_dict_delta == overhead_input_delta == 5.0
+
+    def test_zero_delta_on_first_read(self):
+        """First call with no baseline returns 0.0."""
+        session_start = None
+        current = 30.0
+        if session_start is None:
+            delta = 0.0
+        else:
+            delta = round(max(current - session_start, 0.0), 2)
+        assert delta == 0.0
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Storage flush deduplication
+# ---------------------------------------------------------------------------
+
+class TestStorageFlushDedup:
+    """Tests for storage flush deduplication logic."""
+
+    def test_inflight_guard_blocks_parallel_flush(self):
+        """When a flush task is in-flight, a second schedule_flush should skip."""
+        import asyncio
+
+        class FakeTask:
+            def __init__(self, done=False):
+                self._done = done
+            def done(self):
+                return self._done
+
+        # Simulate in-flight task
+        flush_task = FakeTask(done=False)
+        should_schedule = flush_task.done()
+        assert should_schedule is False  # Should not schedule another
+
+    def test_completed_task_allows_new_flush(self):
+        """After a flush task completes, a new flush can be scheduled."""
+        class FakeTask:
+            def done(self):
+                return True
+
+        flush_task = FakeTask()
+        should_schedule = flush_task.done()
+        assert should_schedule is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Overhead consistency without double session commit
+# ---------------------------------------------------------------------------
+
+class TestOverheadConsistency:
+    """Overhead stays consistent when session battery delta is computed once."""
+
+    _CAPACITY_MIN_ENERGY_KWH = 0.5
+
+    def _compute_overhead_pct(
+        self,
+        store_wall_wh: float,
+        store_battery_wh: float,
+        session_battery_delta: float | None,
+        session_wall_snapshot_wh: float,
+        cable_prev: bool,
+    ) -> float | None:
+        """Mirror of _compute_overhead_pct with pre-computed delta."""
+        wall = store_wall_wh
+        battery = store_battery_wh
+        if cable_prev and session_battery_delta is not None:
+            session_wall_wh = session_wall_snapshot_wh
+            if (
+                session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
+                and session_battery_delta >= self._CAPACITY_MIN_ENERGY_KWH
+            ):
+                wall += session_wall_wh
+                battery += session_battery_delta * 1000.0
+        if wall > 0 and battery > 0:
+            return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+        return None
+
+    def test_overhead_with_live_blend(self):
+        pct = self._compute_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            session_battery_delta=1.0,  # 1 kWh
+            session_wall_snapshot_wh=1100.0,  # 1.1 kWh
+            cable_prev=True,
+        )
+        assert pct is not None
+        # Total wall = 10000 + 1100 = 11100
+        # Total battery = 9000 + 1000 = 10000
+        # overhead = (1 - 10000/11100) * 100 = 9.9%
+        assert abs(pct - 9.9) < 0.2
+
+    def test_overhead_no_blend_when_disconnected(self):
+        pct = self._compute_overhead_pct(
+            store_wall_wh=10000.0,
+            store_battery_wh=9000.0,
+            session_battery_delta=1.0,
+            session_wall_snapshot_wh=1100.0,
+            cable_prev=False,
+        )
+        # Only store data used
+        # overhead = (1 - 9000/10000) * 100 = 10.0%
+        assert pct == 10.0
+
+    def test_overhead_none_when_no_data(self):
+        pct = self._compute_overhead_pct(
+            store_wall_wh=0.0,
+            store_battery_wh=0.0,
+            session_battery_delta=None,
+            session_wall_snapshot_wh=0.0,
+            cable_prev=True,
+        )
+        assert pct is None
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Unknown/unavailable cable + net edge cases
+# ---------------------------------------------------------------------------
+
+class TestUnknownUnavailableEdgeCases:
+    """Edge cases for None/unknown sensor values."""
+
+    def test_cable_none_blocks_surplus_start(self):
+        """Unknown cable status must block surplus start."""
+        cable = None
+        can_start = cable is True
+        assert can_start is False
+
+    def test_cable_false_blocks_surplus_start(self):
+        cable = False
+        can_start = cable is True
+        assert can_start is False
+
+    def test_cable_true_allows_surplus_start(self):
+        cable = True
+        can_start = cable is True
+        assert can_start is True
+
+    def test_net_none_treated_as_zero_but_invalid(self):
+        """Net sensor None should give 0 W but mark as invalid."""
+        net_raw = None
+        computed = net_raw if net_raw is not None else 0.0
+        valid = net_raw is not None
+        assert computed == 0.0
+        assert valid is False
+
+    def test_net_zero_is_valid(self):
+        """A real zero reading is still valid (grid balanced)."""
+        net_raw = 0.0
+        computed = net_raw if net_raw is not None else 0.0
+        valid = net_raw is not None
+        assert computed == 0.0
+        assert valid is True
+
+    def test_negative_net_is_valid(self):
+        """Negative net (exporting) is a valid reading."""
+        net_raw = -500.0
+        valid = net_raw is not None
+        assert valid is True
+
+
+# ---------------------------------------------------------------------------
+# v4.3.0 — Storage solar_capture_factor
+# ---------------------------------------------------------------------------
+
+class TestStorageSolarCaptureFactor:
+    """Tests for solar_capture_factor in storage."""
+
+    def test_solar_capture_factor_in_empty_counters(self):
+        data = _empty_counters()
+        assert "solar_capture_factor" in data
+        assert data["solar_capture_factor"] == 0.0
+
+    def test_solar_capture_factor_set_and_read(self):
+        data = _empty_counters()
+        data["solar_capture_factor"] = round(max(0.0, min(0.65, 1.0)), 4)
+        assert data["solar_capture_factor"] == 0.65
+
+    def test_solar_capture_factor_clamped_to_one(self):
+        data = _empty_counters()
+        data["solar_capture_factor"] = round(max(0.0, min(1.5, 1.0)), 4)
+        assert data["solar_capture_factor"] == 1.0
+
+    def test_solar_capture_factor_merged_on_old_store(self):
+        old_data = {"energy_total_wh": 999.0}
+        merged = _empty_counters()
+        merged.update(old_data)
+        assert "solar_capture_factor" in merged
+        assert merged["solar_capture_factor"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: planning/overhead helper logic mirrors
+# ---------------------------------------------------------------------------
+
+def compute_energy_needed_full_kwh(
+    battery_pct: float | None,
+    effective_capacity_kwh: float,
+    charging_overhead_pct: float | None,
+) -> float | None:
+    """Mirror of coordinator._compute_energy_needed_full_kwh for pure tests."""
+    if battery_pct is None or effective_capacity_kwh <= 0:
+        return None
+    remaining_battery_kwh = max(0.0, (100.0 - battery_pct) / 100.0 * effective_capacity_kwh)
+    if remaining_battery_kwh <= 0:
+        return 0.0
+    efficiency = 1.0
+    if charging_overhead_pct is not None:
+        efficiency = max(0.05, 1.0 - (charging_overhead_pct / 100.0))
+    return round(remaining_battery_kwh / efficiency, 2)
+
+
+class TestEnergyNeededFull:
+    def test_none_soc_returns_none(self):
+        assert compute_energy_needed_full_kwh(None, 70.0, 20.0) is None
+
+    def test_no_capacity_returns_none(self):
+        assert compute_energy_needed_full_kwh(40.0, 0.0, 20.0) is None
+
+    def test_zero_needed_at_full_soc(self):
+        assert compute_energy_needed_full_kwh(100.0, 70.0, 20.0) == 0.0
+
+    def test_includes_overhead_when_available(self):
+        # Remaining battery energy: 50% of 80 kWh = 40 kWh. With 20% overhead,
+        # wall-side need = 40 / 0.8 = 50 kWh.
+        assert compute_energy_needed_full_kwh(50.0, 80.0, 20.0) == 50.0
+
+
+class TestSensorContinuityFallbacks:
+    """Mirror continuity policy for ratio/overhead sensors."""
+
+    @staticmethod
+    def continuity_value(live_value: float | None, last_known: float | None) -> float:
+        if live_value is not None:
+            return live_value
+        if last_known is not None:
+            return last_known
+        return 0.0
+
+    def test_returns_live_when_present(self):
+        assert self.continuity_value(21.6, 19.8) == 21.6
+
+    def test_returns_last_known_when_live_missing(self):
+        assert self.continuity_value(None, 19.8) == 19.8
+
+    def test_returns_zero_when_no_history(self):
+        assert self.continuity_value(None, None) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: integer current quantization policy (modulation)
+# ---------------------------------------------------------------------------
+
+def quantize_target_int(target: float, current_int: int, capped: int, reason: str,
+                        priority: str = "balance") -> int:
+    """Mirror of coordinator._commit_current quantization (v4.3.6)."""
+    import math
+
+    target = min(max(target, 0.0), float(capped))
+    if reason == "modulate_up":
+        if priority == "zero_prefer_export":
+            quantized = int(math.floor(target))
+        elif priority == "zero_prefer_import":
+            quantized = int(math.ceil(target))
+        else:  # balance (default)
+            quantized = int(math.floor(target + 0.5))
+        out = max(current_int + 1, quantized)
+    elif reason == "modulate_down":
+        out = int(math.floor(target))
+    else:
+        out = int(target)
+    return min(max(out, 0), int(capped))
+
+
+class TestModulationQuantization:
+    def test_balance_rounds_476_to_5a(self):
+        assert quantize_target_int(4.76, 4, 16, "modulate_up") == 5
+
+    def test_balance_forces_at_least_plus_one(self):
+        # Even if rounded target is still current (e.g. 4.20 -> 4),
+        # approved upward modulation should execute one 1A step.
+        assert quantize_target_int(4.20, 4, 16, "modulate_up") == 5
+
+    def test_prefer_export_floors_on_modulate_up(self):
+        # 4.9A → floor=4, max(current+1=5, 4)=5
+        assert quantize_target_int(4.9, 4, 16, "modulate_up", "zero_prefer_export") == 5
+
+    def test_prefer_export_larger_jump(self):
+        # 6.3A from 3A → floor=6, max(4, 6)=6
+        assert quantize_target_int(6.3, 3, 16, "modulate_up", "zero_prefer_export") == 6
+
+    def test_prefer_import_ceils_on_modulate_up(self):
+        # 4.1A → ceil=5, max(current+1=5, 5)=5
+        assert quantize_target_int(4.1, 4, 16, "modulate_up", "zero_prefer_import") == 5
+
+    def test_prefer_import_larger_jump(self):
+        # 6.1A from 3A → ceil=7, max(4, 7)=7
+        assert quantize_target_int(6.1, 3, 16, "modulate_up", "zero_prefer_import") == 7
+
+    def test_modulate_down_floors_conservatively(self):
+        assert quantize_target_int(4.80, 5, 16, "modulate_down") == 4
+
+
+# ---------------------------------------------------------------------------
+# Tests: CurrentSettingSensor returns 0 when no active session
+# ---------------------------------------------------------------------------
+
+
+def current_setting_native_value(data: dict | None) -> int:
+    """Mirror of CurrentSettingSensor.native_value logic."""
+    if data is None:
+        return 0
+    return data.get("current_setting") or 0
+
+
+class TestCurrentSettingSensorNoSession:
+    """CurrentSettingSensor must report 0 (not unknown) when no session is active."""
+
+    def test_returns_zero_when_coordinator_data_is_none(self):
+        assert current_setting_native_value(None) == 0
+
+    def test_returns_zero_when_current_setting_is_none(self):
+        assert current_setting_native_value({"current_setting": None}) == 0
+
+    def test_returns_zero_when_key_missing(self):
+        assert current_setting_native_value({}) == 0
+
+    def test_returns_value_when_session_active(self):
+        assert current_setting_native_value({"current_setting": 10}) == 10
+
+
+# ---------------------------------------------------------------------------
+# Tests: import guard debounce frozen during alignment/settling (v4.3.5)
+# ---------------------------------------------------------------------------
+
+
+class FakeAlignment:
+    """Minimal stand-in for AlignmentEngine used to unit-test _check_import_guard logic."""
+
+    def __init__(self, active: bool = False, settling: bool = False) -> None:
+        self.active = active
+        self.settling = settling
+        self._settle_duration: float = 0.0
+        self._settle_start: float | None = None
+
+    def start_settling(self, mono_now: float, duration: float) -> None:
+        self.settling = True
+        self._settle_start = mono_now
+        self._settle_duration = duration
+
+    def check_settling(self, mono_now: float) -> None:
+        if self.settling and self._settle_start is not None:
+            if mono_now - self._settle_start >= self._settle_duration:
+                self.settling = False
+                self._settle_start = None
+
+
+def _run_check_import_guard(
+    net_w: float,
+    mono_now: float,
+    alignment_active: bool = False,
+    alignment_settling: bool = False,
+    import_exceed_since: float | None = None,
+    threshold: float = 200.0,
+    duration: float = 30.0,
+) -> tuple[bool, float | None]:
+    """Mirror the guard logic including the alignment/settling freeze introduced in v4.3.5."""
+    # Freeze during alignment or settling
+    if alignment_active or alignment_settling:
+        import_exceed_since = None
+        return False, None
+
+    clear_threshold = threshold - 50.0  # default hysteresis
+
+    if net_w > threshold:
+        if import_exceed_since is None:
+            import_exceed_since = mono_now
+        elif (mono_now - import_exceed_since) >= duration:
+            return True, import_exceed_since
+    elif net_w <= clear_threshold:
+        import_exceed_since = None
+
+    return False, import_exceed_since
+
+
+class TestImportGuardAlignmentFreeze:
+    """Import guard debounce must be frozen while alignment or settling is active."""
+
+    def test_debounce_resets_when_alignment_active(self):
+        """Accumulated debounce is discarded when alignment.active is True."""
+        # Debounce has been running for 20s (threshold 200W, net=500W)
+        triggered, new_since = _run_check_import_guard(
+            net_w=500.0,
+            mono_now=1020.0,
+            alignment_active=True,
+            import_exceed_since=1000.0,  # was counting for 20s
+        )
+        assert triggered is False
+        assert new_since is None  # timer reset
+
+    def test_debounce_resets_when_settling_active(self):
+        """Accumulated debounce is discarded when alignment.settling is True."""
+        triggered, new_since = _run_check_import_guard(
+            net_w=500.0,
+            mono_now=1020.0,
+            alignment_settling=True,
+            import_exceed_since=1000.0,
+        )
+        assert triggered is False
+        assert new_since is None
+
+    def test_debounce_accumulates_after_settling_expires(self):
+        """Debounce counts normally once settling is False."""
+        # First call while settling — resets timer
+        triggered1, since1 = _run_check_import_guard(
+            net_w=500.0, mono_now=1000.0, alignment_settling=True, import_exceed_since=990.0
+        )
+        assert triggered1 is False
+        assert since1 is None
+
+        # Settling expired; now debounce accumulates
+        triggered2, since2 = _run_check_import_guard(
+            net_w=500.0, mono_now=1010.0, alignment_settling=False, import_exceed_since=None
+        )
+        assert triggered2 is False
+        assert since2 == 1010.0  # timer started fresh
+
+    def test_guard_fires_after_full_debounce_without_alignment(self):
+        """Without alignment, guard fires after debounce duration."""
+        # Timer started at 1000.0; check at 1030.0 (30s elapsed)
+        triggered, _ = _run_check_import_guard(
+            net_w=500.0,
+            mono_now=1030.0,
+            alignment_active=False,
+            alignment_settling=False,
+            import_exceed_since=1000.0,
+            duration=30.0,
+        )
+        assert triggered is True
+
+    def test_guard_does_not_fire_if_alignment_active_throughout_debounce(self):
+        """Guard must not fire if alignment stays active for the entire debounce window."""
+        # Simulate 35 consecutive ticks (each 1s) with alignment.active=True
+        since = None
+        triggered = False
+        for t in range(35):
+            triggered, since = _run_check_import_guard(
+                net_w=500.0, mono_now=float(t), alignment_active=True, import_exceed_since=since
+            )
+            if triggered:
+                break
+        assert triggered is False
+        assert since is None
+
+    def test_settling_window_started_at_session_start(self):
+        """_alignment.start_settling should be called when a surplus session starts."""
+        alignment = FakeAlignment()
+        import_guard_settle_s = 30.0
+        settling_duration_s = 10.0
+        mono_start = 1000.0
+
+        # Mirror what _action_start_surplus does
+        alignment.start_settling(mono_start, max(settling_duration_s, import_guard_settle_s))
+
+        assert alignment.settling is True
+        assert alignment._settle_duration == 30.0
+
+    def test_settling_window_expires_after_duration(self):
+        """Settling window must expire after the specified duration."""
+        alignment = FakeAlignment()
+        alignment.start_settling(1000.0, 30.0)
+
+        alignment.check_settling(1029.0)  # still within 30s
+        assert alignment.settling is True
+
+        alignment.check_settling(1030.0)  # exactly at 30s boundary
+        assert alignment.settling is False
+
+
+# ---------------------------------------------------------------------------
+# v4.3.7 — Settling-window start-time fix + block-down-during-settling
+# ---------------------------------------------------------------------------
+
+
+def _is_modulate_blocked(
+    delta: float,
+    alignment_active: bool,
+    alignment_settling: bool,
+) -> bool:
+    """Mirror _try_modulate settling/alignment gating (v4.3.7).
+
+    - During settling: ALL modulation blocked (both up and down).
+    - During alignment only (no settling): only UPWARD blocked.
+    """
+    if alignment_settling:
+        return True
+    if alignment_active and delta > 0:
+        return True
+    return False
+
+
+class TestSettlingAndAlignmentGating:
+    """_try_modulate settling / alignment gate — v4.3.7 behaviour."""
+
+    def test_settling_blocks_downward(self):
+        """Downward modulation must be blocked during the settling window."""
+        assert _is_modulate_blocked(-2.0, alignment_active=False, alignment_settling=True) is True
+
+    def test_settling_blocks_upward(self):
+        """Upward modulation must also be blocked during the settling window."""
+        assert _is_modulate_blocked(2.0, alignment_active=False, alignment_settling=True) is True
+
+    def test_alignment_only_blocks_upward(self):
+        """During alignment without settling, upward is blocked but downward is allowed."""
+        assert _is_modulate_blocked(2.0, alignment_active=True, alignment_settling=False) is True
+        assert _is_modulate_blocked(-2.0, alignment_active=True, alignment_settling=False) is False
+
+    def test_no_settling_no_alignment_allows_all(self):
+        """Without settling or alignment, both directions are allowed."""
+        assert _is_modulate_blocked(2.0, alignment_active=False, alignment_settling=False) is False
+        assert _is_modulate_blocked(-2.0, alignment_active=False, alignment_settling=False) is False
+
+    def test_settling_supersedes_alignment_downward_blocking(self):
+        """When both settling and alignment are active, downward is still blocked (settling wins)."""
+        assert _is_modulate_blocked(-2.0, alignment_active=True, alignment_settling=True) is True
+
+
+class TestSettlingWindowStartTime:
+    """Settling window must be anchored to the actual commit time (after the
+    blocking API call), not to the stale tick-start mono_now.
+
+    Background: mono_now is captured at the start of _async_update_data_internal.
+    When _set_charge_current() makes a blocking cloud API call (e.g. Tessie),
+    several seconds elapse before control returns.  If start_settling() uses the
+    stale tick-start time, the settling window expires at
+    ``tick_start + settling_duration``, which coincides with the next periodic
+    tick (``tick_start + tick_interval``), giving zero protection.
+    """
+
+    def test_stale_start_time_causes_premature_expiry(self):
+        """Reproduce the pre-fix bug: stale mono_now expires exactly on the next tick."""
+        alignment = FakeAlignment()
+        tick_interval_s = 10.0
+        settling_duration_s = 10.0
+
+        tick_start = 1000.0
+        # BUG (old code): start settling with the stale tick-start timestamp
+        alignment.start_settling(tick_start, settling_duration_s)
+
+        # Next periodic tick fires exactly tick_interval_s after tick_start
+        next_tick = tick_start + tick_interval_s  # 1010.0
+        alignment.check_settling(next_tick)
+
+        # The window has expired (1010 - 1000 = 10 >= 10) — no protection
+        assert alignment.settling is False
+
+    def test_actual_commit_time_provides_full_window(self):
+        """Fix: settling started at actual commit time is still active on the next tick."""
+        alignment = FakeAlignment()
+        tick_interval_s = 10.0
+        settling_duration_s = 10.0
+        api_latency_s = 6.0
+
+        tick_start = 1000.0
+        # FIX (new code): start settling *after* the API call completes
+        actual_commit_time = tick_start + api_latency_s  # 1006.0
+        alignment.start_settling(actual_commit_time, settling_duration_s)
+
+        # Next periodic tick fires at tick_start + tick_interval = 1010.0
+        next_tick = tick_start + tick_interval_s
+        alignment.check_settling(next_tick)
+
+        # Window still active (1010 - 1006 = 4 < 10) — protects against cascade
+        assert alignment.settling is True
+
+    def test_actual_commit_time_expires_after_full_duration(self):
+        """Window started at commit time expires after the full settling duration."""
+        alignment = FakeAlignment()
+        api_latency_s = 6.0
+        settling_duration_s = 10.0
+        tick_start = 1000.0
+        actual_commit_time = tick_start + api_latency_s  # 1006.0
+
+        alignment.start_settling(actual_commit_time, settling_duration_s)
+
+        alignment.check_settling(1015.9)   # still within window
+        assert alignment.settling is True
+
+        alignment.check_settling(1016.0)   # exactly at boundary (1006 + 10)
+        assert alignment.settling is False

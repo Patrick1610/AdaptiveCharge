@@ -10,13 +10,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
+from homeassistant.const import EntityCategory, PERCENTAGE, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_EV_BATTERY_ENERGY_SENSOR, CONF_EXPERT_MODE, DOMAIN
 from .coordinator import AdaptiveChargeCoordinator
 from .helpers import device_info, get_version
 
@@ -55,6 +55,14 @@ async def async_setup_entry(
         RangeUpperLimitSensor(coordinator, entry),
         RangeLowerLimitSensor(coordinator, entry),
     ]
+
+    # EV battery-side sensors (only when the battery energy sensor is configured)
+    if options.get(CONF_EV_BATTERY_ENERGY_SENSOR):
+        entities.extend([
+            ChargingOverheadSensor(coordinator, entry),
+            BatteryEnergyDeltaSensor(coordinator, entry),
+            EnergyNeededFullSensor(coordinator, entry),
+        ])
 
     async_add_entities(entities)
 
@@ -121,12 +129,17 @@ class AlignmentDiagnosticSensor(_BaseAdaptiveChargeSensor):
     """Diagnostic sensor exposing alignment engine state."""
 
     _attr_name = "Alignment Diagnostics"
-    _attr_entity_registry_enabled_default = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_alignment_diagnostics"
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enabled by default only when expert mode is active."""
+        options = {**self._entry.data, **self._entry.options}
+        return bool(options.get(CONF_EXPERT_MODE, False))
 
     @property
     def native_value(self) -> str | None:
@@ -230,12 +243,17 @@ class InputSkewSensor(_BaseAdaptiveChargeSensor):
     _attr_name = "Input Skew"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "s"
-    _attr_entity_registry_enabled_default = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_input_skew_seconds"
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enabled by default only when expert mode is active."""
+        options = {**self._entry.data, **self._entry.options}
+        return bool(options.get(CONF_EXPERT_MODE, False))
 
     @property
     def native_value(self) -> float | None:
@@ -352,10 +370,10 @@ class CurrentSettingSensor(_BaseAdaptiveChargeSensor):
         self._attr_unique_id = f"{entry.entry_id}_current_setting"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> int:
         if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("current_setting")
+            return 0
+        return self.coordinator.data.get("current_setting") or 0
 
 
 class AvailableCurrentDecisionSensor(_BaseAdaptiveChargeSensor):
@@ -444,6 +462,8 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
             "session_energy_kwh": data.get("energy_session_kwh", 0.0),
             "session_solar_kwh": data.get("energy_session_solar_kwh", 0.0),
             "session_import_kwh": data.get("energy_session_import_kwh", 0.0),
+            "session_battery_delta_kwh": data.get("session_battery_delta_kwh"),
+            "charging_overhead_pct": data.get("charging_overhead_pct"),
             "battery_pct": data.get("battery_pct"),
         }
 
@@ -452,27 +472,50 @@ class EnergyChargedSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 # Solar-to-EV ratio sensor
 # ---------------------------------------------------------------------------
 
-class SolarToEvRatioSensor(_BaseAdaptiveChargeSensor):
-    """Lifetime ratio of solar energy that reached the EV vs total solar produced.
+class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
+    """Lifetime solar-to-EV ratio (dashboard KPI).
 
-    Computed as: energy_solar_wh / solar_production_total_wh (capped at 1.0).
-    Used internally by low-power protection to estimate how much of the remaining
-    solar forecast will actually reach the car.
+    Computed as: (energy_solar_wh / solar_production_total_wh) × 100, capped at 100 %.
+
+    This is a **lifetime** metric that shows the cumulative percentage of solar
+    production that was delivered to the EV across all sessions.  It is intended
+    as a dashboard KPI for long-term tracking.
+
+    Used by low-power forecast logic as a simple expected-yield factor:
+    ``expected_ev_kwh = forecast_kwh × solar_to_ev_ratio``.
     """
 
     _attr_name = "Solar to EV Ratio"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:solar-power-variant"
 
     def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_solar_to_ev_ratio"
+        self._last_known_pct: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on HA restart/reload."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                self._last_known_pct = float(state.state)
+            except (ValueError, TypeError):
+                pass
 
     @property
     def native_value(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("solar_to_ev_ratio")
+        if self.coordinator.data is not None:
+            ratio = self.coordinator.data.get("solar_to_ev_ratio")
+            if ratio is not None:
+                pct = round(ratio * 100, 2)
+                self._last_known_pct = pct
+                return pct
+        # Keep graph continuity: use restored value while coordinator is
+        # starting; if no history exists yet, return 0.0 instead of None.
+        return self._last_known_pct if self._last_known_pct is not None else 0.0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -482,6 +525,7 @@ class SolarToEvRatioSensor(_BaseAdaptiveChargeSensor):
             **base,
             "energy_solar_kwh": data.get("energy_solar_kwh", 0.0),
             "solar_production_kwh": data.get("solar_production_kwh", 0.0),
+            "solar_capture_factor": data.get("solar_capture_factor"),
             "low_power_active": data.get("low_power_active"),
             "low_power_threshold_pct": data.get("low_power_threshold_pct"),
         }
@@ -560,3 +604,131 @@ class RangeLowerLimitSensor(_BaseAdaptiveChargeSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return _range_threshold_attributes(self.coordinator.data or {})
+
+
+# ---------------------------------------------------------------------------
+# Charging overhead sensor (requires EV battery energy sensor)
+# ---------------------------------------------------------------------------
+
+class ChargingOverheadSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
+    """Rolling charging overhead percentage: (1 − battery_received / wall_energy) × 100.
+
+    Measures the AC→DC conversion losses between the wall (EV power sensor)
+    and the actual energy stored in the battery (EV battery energy delta).
+    Only available when the EV battery energy sensor is configured.
+    """
+
+    _attr_name = "Charging Overhead"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_icon = "mdi:transmission-tower-import"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_charging_overhead_pct"
+        self._last_known_pct: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on HA restart/reload."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                self._last_known_pct = float(state.state)
+            except (ValueError, TypeError):
+                pass
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is not None:
+            value = self.coordinator.data.get("charging_overhead_pct")
+            if value is not None:
+                self._last_known_pct = value
+                return value
+        # Keep graph continuity: use restored value while live data is
+        # temporarily unavailable; fallback to 0.0 when no history exists yet.
+        return self._last_known_pct if self._last_known_pct is not None else 0.0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "energy_session_kwh": data.get("energy_session_kwh", 0.0),
+            "session_battery_delta_kwh": data.get("session_battery_delta_kwh"),
+            "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
+        }
+
+
+
+class EnergyNeededFullSensor(_BaseAdaptiveChargeSensor):
+    """Estimated wall energy needed to reach 100% SoC including overhead."""
+
+    _attr_name = "Energy Needed Full"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:battery-arrow-up"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_energy_needed_full_kwh"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("energy_needed_full_kwh")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "battery_pct": data.get("battery_pct"),
+            "battery_capacity_kwh": data.get("battery_capacity_kwh"),
+            "estimated_battery_capacity_kwh": data.get("estimated_battery_capacity_kwh"),
+            "charging_overhead_pct": data.get("charging_overhead_pct"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Battery energy delta sensor (requires EV battery energy sensor)
+# ---------------------------------------------------------------------------
+
+class BatteryEnergyDeltaSensor(_BaseAdaptiveChargeSensor):
+    """Actual energy received by the battery in the current charging session.
+
+    Computed from the EV battery energy remaining sensor: current − session_start.
+    More accurate than wall-measured energy because it excludes AC→DC losses.
+    """
+
+    _attr_name = "Battery Energy Delta"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:battery-plus-variant"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_battery_energy_delta_kwh"
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("session_battery_delta_kwh")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "energy_session_kwh": data.get("energy_session_kwh", 0.0),
+            "charging_overhead_pct": data.get("charging_overhead_pct"),
+            "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
+            "ev_energy_added_kwh": data.get("ev_energy_added_kwh"),
+        }

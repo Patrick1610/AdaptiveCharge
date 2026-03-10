@@ -21,9 +21,14 @@ A Home Assistant custom integration that intelligently controls EV charging base
 - **Solar Done detection**: detects when solar generation has finished for the day
 - **Enhanced import guard**: multi-stage protection (debounce → reduce → stop) with hysteresis
 - **Dynamic measurement alignment**: adaptive skew detection and coherence scoring
-- **Persistent storage**: energy counters survive restarts
-- **Utility meters**: optional daily/monthly/yearly energy tracking sensors (store-backed, opt-in)
+- **Low-power protection**: force-charges if battery SoC drops below threshold, with solar forecast awareness
+- **Persistent storage**: energy counters survive restarts, reloads, and reboots without ever briefly dropping to zero
+- **Utility meters**: optional daily/monthly/yearly energy tracking sensors (standard HA helper, opt-in)
 - **Mode tracking**: reason, source, timestamps, and transition history on every mode change
+- **Solar-to-EV ratio**: lifetime percentage of solar energy that reached the EV vs. total produced (displayed as `%` with 2 decimal places)
+- **Battery energy tracking**: live battery-side energy delta and AC→DC charging overhead per session (requires EV battery energy sensor)
+- **Charging priority**: five selectable modes control whether surplus, export, or import is preferred — without affecting any monitoring sensor values
+- **Expert mode**: unlocks advanced controller-tuning sensors, parameters, and priority bias
 - **Full debug attributes**: every sensor exposes source values, mode and last action
 
 ---
@@ -75,6 +80,8 @@ The integration computes `net = consumption − production`.
 - **Cable Sensor**: `binary_sensor` — on when cable is plugged in
 - **Current Range Sensor**: `sensor` reporting current battery range in km
 - **Battery Level Sensor** _(optional)_: `sensor` reporting battery SoC %
+- **EV Battery Energy Sensor** _(optional)_: `sensor` reporting energy remaining in the battery (kWh). Enables live battery-side energy delta and AC→DC overhead tracking.
+- **EV Energy Added Sensor** _(optional)_: `sensor` reporting session energy added by the charger (kWh). Used together with the battery energy sensor for capacity estimation.
 
 ### Step 5 – Charge Buffer, Hysteresis & Default Limit
 
@@ -104,7 +111,7 @@ Set the start and end times (HH:MM) for the night charging window. The **Charge 
 
 ### Step 8 – Solar & Forecast Sensors _(optional)_
 
-One or more `sensor` entities for total solar yield (W or kW). Used to detect _Solar Done_ state.
+One or more `sensor` entities for total solar yield (W or kW). Used to detect _Solar Done_ state and accumulate the solar-to-EV ratio.
 Optionally add one or more **Remaining Forecast Today** sensors (e.g. Solcast `remaining_today`) — multiple values are summed.
 
 ### Step 9 – Actuators _(optional)_
@@ -129,6 +136,23 @@ If left empty the integration tracks state internally but does not issue actual 
 | Import Guard Threshold | 200 W | Grid import above which the import guard activates |
 | Import Guard Duration | 30 s | How long import must exceed threshold before action |
 | Enable Utility Meters | off | Opt-in for daily/monthly/yearly period tracking sensors |
+
+### Step 11 – Expert Mode _(optional)_
+
+Enable **Expert Mode** to access advanced controller-tuning parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Max Step (A) | 1 A | Maximum current change per modulation step |
+| Hysteresis Up (A) | 0.2 A | Minimum EMA increase required before stepping up |
+| Hysteresis Down (A) | 1.0 A | Minimum EMA decrease required before stepping down |
+| Settling Duration (s) | 10 s | Post-commit window during which upward steps are suppressed |
+
+Expert mode also **automatically enables** two normally-hidden diagnostic sensors:
+- **Alignment Diagnostics** — full alignment engine state
+- **Input Skew** — real-time timestamp skew between net and EV power streams
+
+These sensors are only enabled when expert mode is on. Turning expert mode off leaves them enabled so no data or dashboards are disrupted.
 
 ---
 
@@ -160,11 +184,11 @@ The controller computes a **coherence score** (0–1) from the timestamp skew be
 
 ### 5. Float-Based Control with Hysteresis
 
-Internal calculations use float current values. Integer rounding only happens at the final actuator call. A ±1A hysteresis dead zone prevents rapid toggling at integer boundaries (e.g. 1↔2A).
+Internal calculations use float current values. Integer rounding only happens at the final actuator call. A configurable hysteresis dead zone prevents rapid toggling at integer boundaries.
 
 ### 6. Rate Limiting & Cooldown
 
-- Max 1A change per step.
+- Max 1A change per step (configurable in Expert Mode).
 - 45s minimum between upward steps.
 - Downward steps and safety actions are immediate.
 
@@ -202,9 +226,99 @@ The Charge Tonight switch automatically turns off when:
 - The EV cable is unplugged
 - The `solar_done` condition transitions from active to inactive (solar production recovers)
 
-### Diagnostics
+### 11. Persistent Storage & Reload Stability
 
-The **Alignment Diagnostics** sensor exposes:
+Energy counters are persisted to `.storage/adaptive_charge.counters.<entry_id>` using HA's `Store` helper and are restored **before the first coordinator tick** on each reload. This means:
+
+- `Energy Charged` (a `TOTAL_INCREASING` sensor) never briefly drops to 0 on reload — **utility meters tracking it will not incorrectly count the recovery as new energy**.
+- `Solar to EV Ratio` caches its last known value and restores it immediately on reload, preventing a brief unavailable/zero window.
+- Throttled writes (max once per 30s) avoid disk I/O spam.
+
+### 12. Solar-to-EV Ratio & Solar Capture Factor
+
+**Solar to EV Ratio** (sensor) is a **lifetime KPI** — it tracks what fraction of _all_ solar energy produced has actually reached the EV battery, across every charging session:
+
+```
+ratio = min(energy_solar_wh / solar_production_total_wh, 1.0)
+```
+
+This is displayed as a percentage (0–100 %) and serves as a **dashboard metric** for long-term self-consumption tracking.
+
+**Solar Capture Factor** (attribute on the ratio sensor) is a **rolling operational metric** — it is an EMA of the per-session solar capture efficiency, updated at the end of each charging session. It is currently provided for diagnostics/trending and is **not** used in control decisions.
+
+Low-power forecast logic uses a deterministic lifetime-ratio check:
+
+```
+expected_ev_kwh = forecast_kwh × solar_to_ev_ratio
+```
+
+### 12a. Fail-Safe Behaviour (v4.3.0)
+
+**Net power sensor invalid/unavailable**: when the net power sensor returns `unknown`, `unavailable`, or no value:
+- The surplus calculation falls back to 0 W (safe default)
+- Surplus **start** and **modulate-up** are **blocked** — the integration will not begin or increase charging based on an unreliable reading
+- Safety actions (**stop**, **modulate-down**, **import guard**) continue to work normally
+- A `net_power_valid` flag is exposed in the data dict and logged for diagnostics
+
+**Cable sensor unknown**: surplus charging only starts when `cable_connected` is explicitly `True`. Unknown (`None`) or disconnected (`False`) both block surplus start. Force charge still works when triggered by `Charge Now`, `Charge Tonight`, or `import_priority`.
+
+### 12b. Session Finalizer (v4.3.0)
+
+Battery capacity estimation, overhead calculation, and solar capture factor are now finalized via a **central session finalizer** triggered by:
+1. Cable disconnection
+2. Stale charge detection (car stopped independently for >60 s)
+3. HA shutdown/unload (best-effort)
+
+This ensures session data is persisted even when the cable remains connected (e.g. car reaches its own charge limit).
+
+### 13. Battery Energy Tracking _(optional)_
+
+When the **EV Battery Energy Sensor** is configured:
+
+- **Battery Energy Delta**: live reading of how much energy has entered the battery this session (`current_battery_kwh − session_start_battery_kwh`), updated every coordinator tick.
+- **Charging Overhead**: rolling AC→DC conversion loss percentage, **updated live** during charging by blending the current session's partial data with the lifetime totals. Falls back to lifetime history-only when the cable is disconnected.
+
+```
+overhead% = (1 − battery_received_kwh / wall_energy_kwh) × 100
+```
+
+Live blending only activates once at least 0.5 kWh has been charged in the current session to avoid noisy readings at session start.
+
+The live blend uses a **wall-energy snapshot** — the wall value captured at the exact moment the battery sensor last changed — rather than the continuously-growing live accumulator. This keeps the displayed overhead stable between car API polls (typically every ~3 minutes) and prevents a sawtooth pattern where the overhead would drift up between updates and snap back down on each new battery reading.
+
+
+
+**Integer setpoint quantization (important):**
+- EVSE current is integer amps. The controller computes a float target first and then quantizes.
+- For upward modulation the target is now rounded-to-nearest (half-up) and executes at least +1A when an up-step is approved.
+- For downward modulation the target is floored (conservative).
+- This prevents a stall where `available_current` can stay above `current_setting` (e.g. 4.7A vs 4A) without ever ramping up.
+
+### 14. Charging Priority
+
+The **Charging Priority** select entity (`select.adaptivecharge_charging_priority`) controls how the float EMA current is rounded to the integer amp value sent to the EVSE. All monitoring sensors (`surplus_w`, `ema_current_a`, etc.) are always computed from real measurements and are never affected by the priority setting.
+
+| Mode | Quantization | Effect |
+|------|-------------|--------|
+| `balance` _(default)_ | **Round** (half-up) | Steps up when EMA is ≥ 0.5 A above current setpoint. Symmetric around 0 W net — pure surplus behaviour. |
+| `zero_prefer_export` | **Floor** | Steps up only when EMA is ≥ 1 A above current setpoint. Naturally biases toward exporting rather than consuming. |
+| `zero_prefer_import` | **Ceil** | Steps up as soon as EMA is any positive fraction above current setpoint. Biases toward charging while staying near zero net. |
+| `export_priority` | — | Stops any active surplus session and prevents new ones. All solar is exported. **Overridden** by `Charge Now`, `Charge Tonight`, and low-power protection. |
+| `import_priority` | — | Permanent force-charge whenever the cable is connected — equivalent to leaving `Charge Now` on. Import guard is automatically bypassed. |
+
+The three surplus modes are exact mirrors of each other around the half-integer point: `prefer_export` is the most conservative (floor), `balance` is neutral (round), and `prefer_import` is the most liberal (ceil). No additional configuration is needed.
+
+#### Override hierarchy for `export_priority`
+
+`export_priority` is a soft block — it only prevents *surplus* charging. The following always override it (highest to lowest priority):
+
+1. **Charge Now** switch — force charge immediately
+2. **Charge Tonight** switch — overnight range-target charging
+3. **Low-power protection** — force charge when battery SoC is below the threshold *and* the solar forecast is genuinely insufficient to cover the deficit (the precise-mode forecast check determines this)
+
+
+
+The **Alignment Diagnostics** sensor _(enabled automatically in Expert Mode)_ exposes:
 
 | Attribute | Description |
 |-----------|-------------|
@@ -237,15 +351,6 @@ The **Mode** sensor exposes:
 | `mode_source` | What triggered it (auto_rule, charge_now_switch, user_toggle, import_guard) |
 | `mode_since` | ISO timestamp of when current mode was entered |
 | `last_transition` | Previous → current mode with reason |
-
----
-
-### 11. Persistent Storage
-
-Energy counters (energy charged) are persisted to `.storage/adaptive_charge.counters.<entry_id>` using HA's `Store` helper. Benefits:
-- Data survives restarts, reloads, and reboots
-- Throttled writes (max once per 30s) to avoid disk I/O spam
-- One-time migration from old `RestoreEntity` state on first run
 
 ---
 
@@ -334,17 +439,24 @@ When the cable sensor transitions off → on:
 | Entity | Unit | Description |
 |--------|------|-------------|
 | `sensor.adaptivecharge_net_surplus_excl_ev_w` | W | Surplus available for EV charging |
-| `sensor.adaptivecharge_mode` | — | Current control mode (`force`, `surplus`, `stopped`, `night_target`) |
-| `sensor.adaptivecharge_current_setting` | A | Last current value sent to charger |
-| `sensor.adaptivecharge_available_current_decision` | A | EMA-smoothed available current |
-| `sensor.adaptivecharge_last_action` | — | Most recent control action |
-| `sensor.adaptivecharge_last_reason` | — | Reason for last action |
-| `sensor.adaptivecharge_input_skew` _(diagnostic)_ | s | Timestamp skew between net and EV sensors |
-| `sensor.adaptivecharge_import_guard_state` | — | Import guard state: `ok`, `reducing`, `stopped` |
-| `sensor.adaptivecharge_alignment_diagnostics` _(diagnostic)_ | — | Alignment engine state and diagnostics |
+| `sensor.adaptivecharge_mode` | — | Current control mode (`force`, `surplus`, `stopped`, `night_target`, `off`) |
+| `sensor.adaptivecharge_current_setting` _(diagnostic)_ | A | Last current value sent to charger |
+| `sensor.adaptivecharge_available_current_decision` _(diagnostic)_ | A | EMA-smoothed available current used for decisions |
+| `sensor.adaptivecharge_last_action` _(diagnostic)_ | — | Most recent control action |
+| `sensor.adaptivecharge_last_reason` _(diagnostic)_ | — | Reason for last action |
+| `sensor.adaptivecharge_import_guard_state` _(diagnostic)_ | — | Import guard state: `ok`, `reducing`, `stopped` |
 | `sensor.adaptivecharge_version` _(diagnostic)_ | — | Integration version from manifest |
-| `sensor.adaptivecharge_energy_charged_kwh` | kWh | Total energy charged |
-| `sensor.adaptivecharge_definitive_range_km` | km | Computed effective range |
+| `sensor.adaptivecharge_energy_charged_kwh` | kWh | Cumulative energy charged (TOTAL_INCREASING, utility-meter safe) |
+| `sensor.adaptivecharge_solar_to_ev_ratio` | — | Lifetime fraction of solar production that reached the EV (0–1) |
+| `sensor.adaptivecharge_range_upper_limit_km` | km | Range upper threshold — charging stops here |
+| `sensor.adaptivecharge_range_lower_limit_km` | km | Range lower threshold — charging starts when below this |
+| `sensor.adaptivecharge_alignment_diagnostics` _(diagnostic, expert)_ | — | Alignment engine internals; auto-enabled in Expert Mode |
+| `sensor.adaptivecharge_input_skew` _(diagnostic, expert)_ | s | Timestamp skew between net and EV sensors; auto-enabled in Expert Mode |
+| `sensor.adaptivecharge_charging_overhead_pct` _(optional)_ | % | Rolling AC→DC conversion loss %; live during charging session |
+| `sensor.adaptivecharge_battery_energy_delta_kwh` _(optional)_ | kWh | Energy received by the battery this session (live, resets on cable plug-in) |
+| `sensor.adaptivecharge_energy_needed_full_kwh` _(optional)_ | kWh | Estimated wall energy still needed to reach 100% SoC (includes charging overhead) |
+
+_Optional sensors are only created when the EV Battery Energy Sensor is configured._
 
 ### Binary Sensors
 
@@ -352,6 +464,7 @@ When the cable sensor transitions off → on:
 |--------|-------------|
 | `binary_sensor.adaptivecharge_force_charge` | True when Charge Now switch is on |
 | `binary_sensor.adaptivecharge_charging_active` | True when actively controlling charging |
+| `binary_sensor.adaptivecharge_low_power_active` | True when low-power protection is forcing a charge |
 
 ### Number Entities
 
@@ -367,6 +480,12 @@ When the cable sensor transitions off → on:
 | `switch.adaptivecharge_charge_now` | Force charge at maximum current immediately |
 | `switch.adaptivecharge_charge_tonight` | Enable overnight charge-to-range scheduling |
 
+### Select Entities
+
+| Entity | Options | Description |
+|--------|---------|-------------|
+| `select.adaptivecharge_charging_priority` | `balance`, `zero_prefer_export`, `zero_prefer_import`, `export_priority`, `import_priority` | Charging priority mode (see §14) |
+
 ### Services
 
 | Service | Description |
@@ -379,13 +498,15 @@ When the cable sensor transitions off → on:
 
 ### Utility Meter Sensors _(opt-in)_
 
-When **Enable Utility Meters** is turned on, these additional store-backed period sensors are available:
+When **Enable Utility Meters** is turned on in Advanced Settings, these additional HA utility meter helpers are created, tracking the `Energy Charged` sensor:
 
 | Entity | Period |
 |--------|--------|
 | `sensor.adaptivecharge_energy_charged_daily` | Daily |
 | `sensor.adaptivecharge_energy_charged_monthly` | Monthly |
 | `sensor.adaptivecharge_energy_charged_yearly` | Yearly |
+
+> **Note**: Because `Energy Charged` is a `TOTAL_INCREASING` sensor and its value is now fully persisted before the first tick on every reload, these utility meters will never incorrectly accumulate energy during an integration restart.
 
 ---
 
@@ -401,6 +522,8 @@ If you use [Tessie](https://tessie.com/) or the Tesla integration, map entities 
 | Cable Sensor | `binary_sensor.my_car_charging_cable_connected` |
 | Current Range Sensor | `sensor.my_car_battery_range` |
 | Battery Level Sensor | `sensor.my_car_battery_level` |
+| EV Battery Energy Sensor | `sensor.my_car_energy_remaining` |
+| EV Energy Added Sensor | `sensor.my_car_energy_added` |
 | Charge Switch | `switch.my_car_charger` |
 | Charge Current Number | `number.my_car_charging_amps` |
 | Charge Limit Number | `number.my_car_charge_limit` |
@@ -439,3 +562,102 @@ Every sensor exposes the following extra attributes:
 **Force charge not working**
 - Ensure `Charge Switch` is configured and the entity is available.
 - Check Home Assistant logs for service call errors.
+
+**Utility meters jumped after an integration reload**
+- This was a bug fixed in v4.1.5. The `Energy Charged` sensor now restores its value from the persistent store before the very first coordinator tick, so it never briefly shows 0 on reload.
+
+**Charging Overhead or Battery Energy Delta showing Unknown after integration reload**
+- Fixed in v4.1.6. The Battery Energy Delta sensor now lazily captures a new start snapshot the moment its source sensor becomes available — even if the integration was reloaded or restarted while the cable was already connected.
+
+**Charging Overhead or Battery Energy Delta not updating during a session**
+- The Battery Energy Delta is already updated live each coordinator tick.
+- The Charging Overhead becomes live once ≥0.5 kWh has been charged in the current session (threshold avoids noisy early-session readings).
+- Both sensors depend on the EV Battery Energy Sensor being configured and its update frequency — they are only as fresh as the source sensor.
+
+**Charging Overhead shows a sawtooth / flickering pattern**
+- Fixed in v4.2.2. The live overhead blend now uses a wall-energy snapshot (taken at the moment the battery sensor last changed) rather than the live wall accumulator. This prevents the ~2 pp sawtooth that previously appeared every time the car API delivered a new battery reading (~3 min apart).
+
+**Alignment Diagnostics / Input Skew sensor not visible**
+- These sensors are hidden by default. Enable **Expert Mode** in the integration options to make them appear automatically. Alternatively, enable them manually via **Settings → Devices & Services → AdaptiveCharge → Entities**.
+
+---
+
+## Changelog
+
+### v4.3.6
+
+**Charging Priority redesign (simpler, no configuration needed):**
+- `zero_prefer_export` and `zero_prefer_import` now use **floor** and **ceil** quantization respectively, instead of a configurable W-bias offset. This makes the distinction intuitive:
+  - `balance` (default) — **round** (half-up): neutral, steps at ±0.5 A around the setpoint.
+  - `zero_prefer_export` — **floor**: requires a full integer amp of surplus above the current setpoint before stepping up; conservatively biases toward export.
+  - `zero_prefer_import` — **ceil**: any positive fraction above the setpoint triggers a step up; liberally biases toward charging.
+- Removed **Priority Bias** (W) setting from Expert Mode. The mode itself now fully encodes the intent, with no numeric parameter to tune.
+- `surplus_w` and `ema_current_a` remain unaffected — monitoring is always clean.
+
+**Import guard oscillation fix (EV startup transient):**
+- Import guard debounce is now frozen while `alignment.active` or `alignment.settling` is `True`. This prevents the guard from reacting to the expected power transient during EV charger startup (Tesla draws at max current for up to 80 s before applying the commanded limit).
+- Session start (`_action_start_surplus`) explicitly opens a 30 s settling window and resets the debounce, covering the full startup transient.
+
+### v4.3.3
+
+**Surplus ramp-up fix (balanced mode):**
+- Fixed integer setpoint quantization so approved upward modulation no longer stalls below the next whole amp.
+- Example: previous behaviour could hold at 4A when decision hovered around 4.7–4.9A; now it ramps to 5A once up-modulation is allowed.
+- `committed_current` now always reflects the actual integer current sent to the charger.
+
+**Rate-limiter consistency:**
+- Upward cooldown now uses the configured `modulate_min_interval` instead of a hardcoded constant, so the setting in options directly controls ramp-up speed.
+
+
+### v4.3.2
+
+**Control behaviour correction:**
+- Removed the v4.3.1 upward EMA "snap". In balanced mode this could bias behaviour toward earlier import-like ramp-up. Balanced now again follows pure filtered surplus without extra upward bias.
+
+**Sensor reliability (no graph gaps):**
+- `Solar to EV Ratio` now always reports a continuous value: restored last known value on restart/reload, and `0.0` fallback when no history exists yet.
+- `Charging Overhead` now also restores/holds the last known value and uses a `0.0` fallback before first valid sample, preventing temporary `unknown` holes during startup or source outages.
+
+**Docs consistency:**
+- Clarified that `solar_capture_factor` is currently diagnostic only; low-power forecast control uses `solar_to_ev_ratio` directly.
+
+
+### v4.3.1
+
+**Control & logic improvements:**
+- **Faster up-modulation response**: EMA now applies an upward snap when raw surplus clearly exceeds filtered current, reducing delayed ramp-up during sudden export spikes.
+- **Simplified low-power forecast rule**: low-power protection now uses the lifetime `solar_to_ev_ratio` directly for expected EV energy (`forecast × ratio`) to keep behaviour transparent and predictable.
+- **Solar noise gate**: solar production accumulation now ignores very low readings (`<= 50 W`) to reduce ratio drift from standby/noise values.
+
+**New battery planning sensor:**
+- Added `Energy Needed Full` (kWh): estimated wall energy required to go from current SoC to 100%, including charging overhead when available.
+
+
+### v4.3.0
+
+**Critical fixes:**
+- **Net sensor fail-safe**: invalid/unavailable net power sensor no longer treated as 0 W for control decisions. Surplus start and upward modulation are blocked; safety/downward actions remain active.
+- **Cable guard strictened**: surplus start now requires `cable_connected = True`. Unknown (`None`) cable status blocks charging start (previously allowed as permissive fallback).
+- **Solar ratio semantics split**: the lifetime Solar-to-EV Ratio remains a dashboard KPI. A new rolling Solar Capture Factor (EMA per session) is used for low-power forecast decisions, reflecting short-term conditions faster.
+- **Session finalizer**: central `_finalize_session_if_needed()` ensures capacity estimates, overhead, and capture factor are persisted on cable disconnect, stale charge reset, _and_ HA shutdown — not only on cable-disconnect events.
+- **Battery delta deduplication**: `_compute_session_battery_delta()` is called once per tick; the result is reused for both the data dict and overhead calculation, eliminating double sensor reads with side-effects.
+
+**Improvements:**
+- **Storage flush deduplication**: in-flight async flush task guard prevents parallel save scheduling.
+- **Sensor clarity**: SolarToEvRatioSensor docstring and attributes updated; `solar_capture_factor` exposed as attribute.
+- **38 new edge-case tests** covering net/cable unknown/unavailable, capture factor logic, session finalizer, and storage.
+
+**Backward compatibility:**
+- All existing entity IDs remain unchanged.
+- `solar_capture_factor` is added as a new storage key (defaults to 0.0, merged on load from older stores).
+- `net_power_valid` is a new key in the data dict (informational only — no entity change).
+- Low-power forecast logic now prefers `solar_capture_factor`; it falls back to the lifetime ratio when the factor has not yet been populated (first session after upgrade).
+
+**Migration notes:**
+- No manual migration required. Upgrade and restart.
+- The `solar_capture_factor` will be populated after the first completed charging session.
+- Cable sensor: if you previously relied on surplus starting with an unknown cable state, this is now blocked. Ensure your cable sensor is configured and reporting correctly.
+
+**Known limitations / follow-ups:**
+- `solar_capture_factor` uses a session-level EMA — it does not weight by season or time-of-day. Future versions may add a sliding-window approach.
+- The session finalizer is best-effort on shutdown; if HA crashes without a graceful shutdown, the most recent session data may be lost (same as before, but now also includes capture factor updates).

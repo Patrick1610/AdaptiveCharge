@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -28,6 +29,9 @@ from .const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
+    CONF_CHARGING_PRIORITY,
+    CONF_EV_BATTERY_ENERGY_SENSOR,
+    CONF_EV_ENERGY_ADDED_SENSOR,
     CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_LIMIT_SENSOR,
     CONF_DEFAULT_CHARGE_LIMIT,
@@ -81,8 +85,6 @@ from .const import (
     DEFAULT_ALIGNMENT_TIMEOUT_MIN,
     DEFAULT_CHARGE_BUFFER,
     DEFAULT_CHARGE_LIMIT,
-    DEFAULT_COOLDOWN_DOWN_S,
-    DEFAULT_COOLDOWN_UP_S,
     DEFAULT_DESIRED_RANGE,
     DEFAULT_EMA_SPAN_S,
     DEFAULT_EV_STEP_THRESHOLD_W,
@@ -94,6 +96,7 @@ from .const import (
     DEFAULT_IMPORT_GUARD_SETTLE_S,
     DEFAULT_IMPORT_GUARD_THRESHOLD_W,
     DEFAULT_IMPORT_GUARD_ZERO_HOLD_S,
+    DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S,
     DEFAULT_IMPORT_SAFETY_DURATION_S,
     DEFAULT_IMPORT_SAFETY_THRESHOLD_W,
     DEFAULT_MAX_CURRENT_LIMIT,
@@ -130,6 +133,11 @@ from .const import (
     MODE_NET_ONLY,
     MODE_STOPPED,
     MODE_SURPLUS,
+    PRIORITY_BALANCE,
+    PRIORITY_EXPORT,
+    PRIORITY_IMPORT,
+    PRIORITY_ZERO_PREFER_EXPORT,
+    PRIORITY_ZERO_PREFER_IMPORT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -141,6 +149,10 @@ _LAG_WARMUP_SAMPLES = 5
 
 # Maximum time delta (hours) for energy accumulation; skip if exceeded (missed ticks)
 _MAX_ENERGY_DT_HOURS = 0.1  # 6 minutes
+
+# Ignore tiny solar noise when computing solar-production-based ratios.
+_SOLAR_RATIO_MIN_POWER_W = 50.0
+
 
 
 def _get_float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
@@ -202,6 +214,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._cable_sensor: str | None = options.get(CONF_CABLE_SENSOR)
         self._current_range_sensor: str | None = options.get(CONF_CURRENT_RANGE_SENSOR)
         self._battery_sensor: str | None = options.get(CONF_BATTERY_SENSOR)
+        self._ev_battery_energy_sensor: str | None = options.get(CONF_EV_BATTERY_ENERGY_SENSOR)
+        self._ev_energy_added_sensor: str | None = options.get(CONF_EV_ENERGY_ADDED_SENSOR)
         self._charge_limit_sensor: str | None = options.get(CONF_CHARGE_LIMIT_SENSOR)
         self._charge_limit_number: str | None = options.get(CONF_CHARGE_LIMIT_NUMBER)
         self._default_charge_limit: int = int(options.get(CONF_DEFAULT_CHARGE_LIMIT, DEFAULT_CHARGE_LIMIT))
@@ -277,6 +291,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Master controller switch — default OFF for safe first install
         self._controller_enabled: bool = False
 
+        # Charging priority mode — controls current bias and import guard behaviour
+        self._charging_priority: str = PRIORITY_BALANCE
+
         # Control state
         self._charging_on: bool = False
         self._current_mode: str = MODE_STOPPED
@@ -318,7 +335,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._committed_current: float | None = None
         self._last_committed_int: int | None = None
         self._last_up_time: float | None = None
-        self._last_down_time: float | None = None
         self._last_on_time: float | None = None
         self._last_off_time: float | None = None
         self._confidence: str = CONFIDENCE_LOW
@@ -333,6 +349,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_below_since: float | None = None
         self._import_guard_last_reduce_time: float | None = None
         self._import_guard_zero_since: float | None = None  # when we first held at 0A
+        self._import_guard_stop_time: float | None = None  # when last escalate_stop triggered
         self._ev_zero_since: float | None = None  # when EV power first read 0 while _charging_on
 
         # Previous values for step detection
@@ -355,6 +372,36 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._energy_session_import_wh: float = 0.0
         self._solar_production_wh: float = 0.0
         self._last_energy_mono: float | None = None
+
+        # --- Solar capture factor (operational control) ---
+        # Rolling EMA of (session_solar_wh / session_solar_production_wh) per
+        # completed charging session.  Used by low-power forecast logic instead
+        # of the lifetime solar-to-EV ratio KPI, so short-term capture
+        # efficiency (clouds, shading, panel degradation) is reflected faster.
+        self._solar_capture_factor: float = 0.0
+        # Per-session solar production accumulation for capture factor.
+        self._session_solar_production_wh: float = 0.0
+
+        # --- EV battery-side energy tracking ---
+        # Snapshot of EV battery energy remaining at session start (kWh).
+        self._session_start_battery_kwh: float | None = None
+        # Last battery sensor value seen — used to detect when it changes so we
+        # can snapshot the wall energy at that exact moment (see below).
+        self._prev_battery_energy_kwh: float | None = None
+        # Wall energy (session Wh) captured the last time the battery sensor
+        # reported a new value.  _compute_overhead_pct uses this snapshot rather
+        # than the live _energy_session_wh to avoid a sawtooth:
+        #   • Wall energy accumulates every 10 s (HA integration tick)
+        #   • Battery sensor polls the car API every ~3 min
+        # Without the snapshot, overhead creeps up ~0.1 pp/10 s between battery
+        # updates then snaps down 2–3 pp when the battery finally reports a new
+        # reading — a perfectly regular sawtooth visible in the HA history graph.
+        # Using the wall value at the moment the battery changed gives a matched
+        # pair, so the displayed overhead is stable between car API polls.
+        self._session_battery_wall_snapshot_wh: float = 0.0
+        # Rolling overhead tracking (wall energy vs battery-received).
+        self._overhead_total_wall_wh: float = 0.0
+        self._overhead_total_battery_wh: float = 0.0
 
         # --- Battery capacity auto-detection ---
         # SoC recorded when cable is plugged in, used to compute session estimate.
@@ -397,6 +444,26 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         stored_estimate = self._store.get("battery_capacity_estimate_kwh")
         if stored_estimate > 0:
             self._estimated_battery_capacity_kwh = stored_estimate
+        # Restore overhead totals from the store
+        self._overhead_total_wall_wh = self._store.get("overhead_wall_wh")
+        self._overhead_total_battery_wh = self._store.get("overhead_battery_wh")
+        # Restore energy counters from the store so that sensors report their
+        # correct value in the very first tick rather than briefly showing 0.
+        # Without this, TOTAL_INCREASING sensors (e.g. Energy Charged) would
+        # momentarily drop to 0 on reload, causing HA utility meters to
+        # incorrectly count the recovery as new energy.
+        stored_energy_total = self._store.get("energy_total_wh")
+        if stored_energy_total > 0:
+            self._energy_total_wh = stored_energy_total
+            self._energy_solar_wh = self._store.get("energy_solar_wh")
+            self._energy_import_wh = self._store.get("energy_import_wh")
+        # Restore solar production total so the solar_production_kwh attribute
+        # is also correct from the first tick (used by SolarToEvRatioSensor).
+        self._solar_production_wh = self._store.get("solar_production_total_wh")
+        # Restore rolling solar capture factor for low-power forecast logic.
+        stored_capture = self._store.get("solar_capture_factor")
+        if stored_capture > 0:
+            self._solar_capture_factor = stored_capture
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -443,6 +510,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._pending_task.cancel()
         if self._pending_modulate_task and not self._pending_modulate_task.done():
             self._pending_modulate_task.cancel()
+        # Best-effort session finalization on shutdown so capacity/overhead/
+        # capture factor are persisted even if the cable is never unplugged.
+        self._finalize_session_if_needed("shutdown")
         # Flush persistent counters to disk on shutdown
         await self._store.async_save()
 
@@ -516,6 +586,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         import_guard_triggered = self._check_import_guard(
             sensor_data["computed_net_w"], mono_now
         )
+        # When explicitly targeting import (PRIORITY_IMPORT), the user accepts
+        # grid draw — disable import guard so it does not reduce current.
+        if self._charging_priority == PRIORITY_IMPORT:
+            import_guard_triggered = False
 
         # --- Phase 7b: Energy accumulation ---
         self._accumulate_energy(sensor_data, mono_now)
@@ -534,6 +608,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 coherence=analysis["coherence"],
                 control_reason=analysis["control_reason"],
                 cable_connected=sensor_data["cable_connected"],
+                net_power_valid=sensor_data["net_power_valid"],
             )
 
         self._last_raw_floored = analysis["raw_floored"]
@@ -580,6 +655,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         current_range = _get_float_state(self.hass, self._current_range_sensor)
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
+        ev_battery_energy_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        ev_energy_added_kwh = _get_float_state(self.hass, self._ev_energy_added_sensor)
 
         # Sum all remaining-forecast sensor values (kWh remaining today)
         forecast_kwh: float | None = None
@@ -596,7 +673,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # solar_w already summed and converted above
         solar_w = solar_raw
 
+        # Determine net power validity: True when the underlying sensor(s)
+        # provided a real numeric value, False when the value is unknown/
+        # unavailable and we are falling back to 0 W.
+        net_power_valid: bool
         if self._net_power_mode == MODE_NET_ONLY:
+            net_power_valid = net_w is not None
             computed_net_w = net_w if net_w is not None else 0.0
             # Apply invert if configured (flip sign for sensors with reversed convention)
             if self._invert_net_power:
@@ -604,13 +686,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         else:
             if consumption_w is not None and production_w is not None:
                 computed_net_w = consumption_w - production_w
+                net_power_valid = True
             elif consumption_w is not None:
                 computed_net_w = consumption_w
+                net_power_valid = True
             else:
                 computed_net_w = 0.0
+                net_power_valid = False
 
         return {
             "computed_net_w": computed_net_w,
+            "net_power_valid": net_power_valid,
             "ev_w": ev_w,
             "voltage": voltage,
             "solar_w": solar_w,
@@ -620,6 +706,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "battery_pct": battery_pct,
             "charge_limit_pct": charge_limit_pct,
             "forecast_kwh": forecast_kwh,
+            "ev_battery_energy_kwh": ev_battery_energy_kwh,
+            "ev_energy_added_kwh": ev_energy_added_kwh,
         }
 
     # ------------------------------------------------------------------
@@ -896,10 +984,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     if self._battery_capacity_kwh > 0
                     else self._estimated_battery_capacity_kwh
                 )
+                # Keep forecast logic simple and explainable: use the
+                # lifetime solar-to-EV ratio directly.
+                control_factor = solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0
                 if (
                     effective_capacity > 0
-                    and solar_to_ev_ratio is not None
-                    and solar_to_ev_ratio > 0
+                    and control_factor > 0
                 ):
                     # Precise mode: wall-energy-based capacity already includes
                     # charging losses, so energy_needed is pre-overhead.
@@ -907,7 +997,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         0.0,
                         (self._low_power_threshold - battery_pct) / 100.0 * effective_capacity,
                     )
-                    expected_ev_kwh = forecast_kwh * solar_to_ev_ratio
+                    expected_ev_kwh = forecast_kwh * control_factor
                     low_power_active = expected_ev_kwh < energy_needed_kwh
                 else:
                     # Fallback: use manual kWh threshold if configured, otherwise
@@ -918,11 +1008,20 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         low_power_active = True
 
         force_charge = self._charge_now or tonight_condition or low_power_active
+        # import_priority acts like a permanent charge_now — force charge whenever
+        # the cable is connected (regardless of solar, range, or tonight schedule).
+        import_priority_force = (
+            self._charging_priority == PRIORITY_IMPORT
+            and bool(cable_connected)
+        )
+        force_charge = force_charge or import_priority_force
         if force_charge:
             if self._charge_now:
                 self._force_source = "charge_now_switch"
             elif tonight_condition:
                 self._force_source = "charge_tonight"
+            elif import_priority_force:
+                self._force_source = "import_priority"
             else:
                 self._force_source = "low_power"
 
@@ -961,9 +1060,10 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         # --- Solar production accumulation ---
         solar_w_val = sensor_data.get("solar_w")
-        if solar_w_val is not None and solar_w_val > 0:
+        if solar_w_val is not None and solar_w_val > _SOLAR_RATIO_MIN_POWER_W:
             solar_production_wh = solar_w_val * dt_h
             self._solar_production_wh += solar_production_wh
+            self._session_solar_production_wh += solar_production_wh
             self._store.add_solar_production(solar_production_wh)
 
         # --- Energy charged accumulation ---
@@ -991,13 +1091,145 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             # Persist energy charged
             self._store.add_energy_charged(energy_wh, solar_wh, import_wh)
 
+    def _compute_energy_needed_full_kwh(
+        self,
+        battery_pct: float | None,
+        charging_overhead_pct: float | None,
+    ) -> float | None:
+        """Estimate wall energy still needed for 100% SoC (incl. overhead)."""
+        if battery_pct is None:
+            return None
+
+        effective_capacity = (
+            self._battery_capacity_kwh
+            if self._battery_capacity_kwh > 0
+            else self._estimated_battery_capacity_kwh
+        )
+        if effective_capacity <= 0:
+            return None
+
+        # Remaining capacity expressed using the same basis as effective_capacity.
+        remaining_battery_kwh = max(0.0, (100.0 - battery_pct) / 100.0 * effective_capacity)
+        if remaining_battery_kwh <= 0:
+            return 0.0
+
+        # If no overhead is provided, or we are using an estimated capacity that may already
+        # be wall-side (including charging losses), return the remaining energy as-is.
+        if charging_overhead_pct is None:
+            return round(remaining_battery_kwh, 2)
+
+        used_config_capacity = self._battery_capacity_kwh > 0
+        if not used_config_capacity:
+            # Effective capacity is estimated and may already include overhead; avoid
+            # double-counting by not applying the efficiency factor again.
+            return round(remaining_battery_kwh, 2)
+
+        efficiency = max(0.05, 1.0 - (charging_overhead_pct / 100.0))
+        return round(remaining_battery_kwh / efficiency, 2)
+
     def reset_session_energy(self) -> None:
         """Reset per-session energy counters (called on cable plug-in)."""
         self._energy_session_wh = 0.0
         self._energy_session_solar_wh = 0.0
         self._energy_session_import_wh = 0.0
+        self._session_solar_production_wh = 0.0
         # Snapshot the current SoC as the session baseline for capacity estimation.
         self._session_start_soc = _get_float_state(self.hass, self._battery_sensor)
+        # Snapshot EV battery energy remaining for battery-side delta tracking.
+        self._session_start_battery_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        # Reset battery-snapshot tracking so _compute_overhead_pct starts fresh.
+        self._prev_battery_energy_kwh = self._session_start_battery_kwh
+        self._session_battery_wall_snapshot_wh = 0.0
+
+    def _compute_session_battery_delta(self) -> float | None:
+        """Return the battery-side energy delta for the current session (kWh).
+
+        Uses the EV battery energy remaining sensor: end − start snapshot.
+        Returns None if the sensor is not configured or currently unavailable.
+
+        The start snapshot is captured lazily: if it was never set (e.g. the
+        integration restarted while the cable was already connected, or the
+        sensor was temporarily unavailable at actual plug-in time) the first
+        valid sensor reading becomes the new baseline and 0.0 is returned.
+
+        Side-effect: whenever the sensor reports a new value, the current
+        session wall energy (_energy_session_wh) is captured in
+        _session_battery_wall_snapshot_wh.  _compute_overhead_pct uses this
+        snapshot instead of the live wall total to prevent a sawtooth pattern
+        (see _session_battery_wall_snapshot_wh docstring in __init__).
+        """
+        current = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        if current is None:
+            return None
+        # Lazily capture snapshot when not yet set (restart / sensor-not-ready
+        # at plug-in time).  Return 0.0 for this tick; subsequent ticks will
+        # produce the real delta.
+        if self._session_start_battery_kwh is None:
+            self._session_start_battery_kwh = current
+            self._prev_battery_energy_kwh = current
+            self._session_battery_wall_snapshot_wh = self._energy_session_wh
+            return 0.0
+        # Capture a matched wall-energy snapshot whenever the battery sensor
+        # reports a new reading.  This ensures _compute_overhead_pct always
+        # uses a (battery, wall) pair measured at the same instant rather than
+        # a stale battery value paired with an ever-growing wall accumulator.
+        if current != self._prev_battery_energy_kwh:
+            self._prev_battery_energy_kwh = current
+            self._session_battery_wall_snapshot_wh = self._energy_session_wh
+        delta = current - self._session_start_battery_kwh
+        return round(max(delta, 0.0), 2)
+
+    def _compute_overhead_pct(self, session_battery_delta: float | None = None) -> float | None:
+        """Return the rolling charging overhead percentage.
+
+        overhead% = (1 − battery_received / wall_energy) × 100
+
+        Uses lifetime totals from the persistent store.  When the cable is
+        currently connected and at least CAPACITY_MIN_ENERGY_KWH has been
+        charged in the current session, the in-progress session data is blended
+        in so the metric updates live during charging rather than only at
+        session end.  The current session is excluded once the cable
+        disconnects (``_cable_prev`` becomes False) to prevent double-counting
+        when the same session data is later committed to the store.
+
+        The live blend uses _session_battery_wall_snapshot_wh (the wall energy
+        captured at the last battery sensor change) rather than the live
+        _energy_session_wh accumulator.  This prevents a ~2 pp sawtooth that
+        would otherwise appear every time the car API delivers a new battery
+        reading: between API polls (typically ~3 min) the wall total grows
+        every 10 s while the battery value is frozen, driving the ratio higher
+        until the next battery update snaps it back down.  By using the wall
+        snapshot taken at the same instant as the battery reading, both sides
+        of the ratio advance together and the displayed value stays stable.
+
+        Args:
+            session_battery_delta: Pre-computed battery delta for the current
+                session (kWh).  When provided, avoids a redundant sensor read
+                in _compute_session_battery_delta.
+
+        Returns None when insufficient data.
+        """
+        wall = self._store.get("overhead_wall_wh")
+        battery = self._store.get("overhead_battery_wh")
+
+        # Live blend: add current session's partial data while charging.
+        # _cable_prev holds the most recently observed cable state — updated
+        # by _detect_cable_plugin (Phase 6) before _build_data_dict calls this.
+        if self._cable_prev:
+            # Use the wall snapshot from the last battery sensor change rather
+            # than the live accumulator (see docstring above).
+            session_wall_wh = self._session_battery_wall_snapshot_wh
+            if (
+                session_battery_delta is not None
+                and session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
+                and session_battery_delta >= self._CAPACITY_MIN_ENERGY_KWH
+            ):
+                wall += session_wall_wh
+                battery += session_battery_delta * 1000.0
+
+        if wall > 0 and battery > 0:
+            return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
+        return None
 
     # ------------------------------------------------------------------
     # Phase 6: Cable plug-in detection
@@ -1075,6 +1307,56 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._committed_current = None
             self._last_committed_int = None
             self._last_commit_reason = "stale_charge_reset"
+            self._finalize_session_if_needed("stale_charge_reset")
+
+    # ------------------------------------------------------------------
+    # Session finalizer
+    # ------------------------------------------------------------------
+
+    # EMA weight for the solar capture factor (same as capacity EMA).
+    _CAPTURE_FACTOR_EMA_ALPHA: float = 0.3
+
+    def _finalize_session_if_needed(self, trigger: str) -> None:
+        """Central session finalization: capacity estimate, overhead, capture factor.
+
+        Idempotent — only runs when there is meaningful session data
+        (session_start_soc set, session energy > 0).
+
+        Triggers: cable_disconnect, stale_charge_reset, shutdown.
+        """
+        if self._session_start_soc is None and self._energy_session_wh <= 0:
+            return
+
+        _LOGGER.info(
+            "AdaptiveCharge: finalizing session (trigger=%s, "
+            "session_wh=%.1f, session_solar_wh=%.1f)",
+            trigger, self._energy_session_wh, self._energy_session_solar_wh,
+        )
+
+        # 1. Update battery capacity estimate + overhead
+        self._update_capacity_estimate()
+
+        # 2. Update rolling solar capture factor
+        if (
+            self._session_solar_production_wh > 0
+            and self._energy_session_solar_wh >= 0
+        ):
+            session_factor = min(
+                self._energy_session_solar_wh / self._session_solar_production_wh, 1.0
+            )
+            if self._solar_capture_factor > 0:
+                self._solar_capture_factor = (
+                    self._CAPTURE_FACTOR_EMA_ALPHA * session_factor
+                    + (1.0 - self._CAPTURE_FACTOR_EMA_ALPHA) * self._solar_capture_factor
+                )
+            else:
+                self._solar_capture_factor = session_factor
+            self._store.set_solar_capture_factor(self._solar_capture_factor)
+            _LOGGER.info(
+                "AdaptiveCharge: solar capture factor updated to %.4f "
+                "(session=%.4f, trigger=%s)",
+                self._solar_capture_factor, session_factor, trigger,
+            )
 
     # ------------------------------------------------------------------
     # Build data dict
@@ -1093,8 +1375,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Assemble the coordinator data dict."""
         computed_net_w = sensor_data["computed_net_w"]
         skew = analysis["skew"]
+        # Compute session battery delta ONCE to avoid double sensor reads
+        # with side-effects (snapshot capture).
+        session_battery_delta = self._compute_session_battery_delta()
+        charging_overhead_pct = self._compute_overhead_pct(session_battery_delta)
+        energy_needed_full_kwh = self._compute_energy_needed_full_kwh(
+            sensor_data.get("battery_pct"),
+            charging_overhead_pct,
+        )
         return {
             "net_w": computed_net_w,
+            "net_power_valid": sensor_data.get("net_power_valid", True),
             "ev_w": sensor_data["ev_w"],
             "voltage": sensor_data["voltage"],
             "surplus_w": analysis["surplus_w"],
@@ -1232,10 +1523,23 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "solar_production_kwh": round(self._solar_production_wh / 1000.0, 3),
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "estimated_battery_capacity_kwh": round(self._estimated_battery_capacity_kwh, 2),
-            # --- Solar-to-EV ratio ---
+            # --- Solar-to-EV ratio (lifetime KPI) ---
             "solar_to_ev_ratio": (
                 round(solar_to_ev_ratio, 4) if solar_to_ev_ratio is not None else None
             ),
+            # --- Solar capture factor (operational control) ---
+            "solar_capture_factor": (
+                round(self._solar_capture_factor, 4)
+                if self._solar_capture_factor > 0 else None
+            ),
+            # --- EV battery-side metrics ---
+            "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
+            "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
+            "session_battery_delta_kwh": session_battery_delta,
+            "charging_overhead_pct": charging_overhead_pct,
+            "energy_needed_full_kwh": energy_needed_full_kwh,
+            # --- Charging priority ---
+            "charging_priority": self._charging_priority,
         }
 
     # ------------------------------------------------------------------
@@ -1248,6 +1552,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         Uses debounce (require sustained import for N seconds) and hysteresis
         (require import < threshold - margin for M seconds before clearing).
         """
+        # During alignment or settling the EV power is in a transient state —
+        # the car may draw at startup-level current before applying the
+        # commanded limit.  Freeze (reset) the debounce timer so we do not
+        # react to these expected transients.
+        if self._alignment.active or self._alignment.settling:
+            self._import_exceed_since = None
+            return False
+
         threshold = self._import_guard_threshold
         duration = self._import_guard_duration
         clear_threshold = threshold - self._import_guard_hysteresis
@@ -1310,11 +1622,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._set_mode(MODE_STOPPED, "controller_disabled", "user_toggle")
         self._last_action = "controller_disabled_stop"
         self._last_action_ts = time.monotonic()
-        self._last_off_time = time.monotonic()
+        self._last_off_time = self._last_action_ts
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "controller_disabled"
         self._import_guard_zero_since = None
+        self._import_guard_stop_time = None  # clear post-escalation cooldown on controller disable
 
     # ------------------------------------------------------------------
     # Control logic
@@ -1330,6 +1643,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         coherence: float,
         control_reason: str,
         cable_connected: bool | None = None,
+        net_power_valid: bool = True,
     ) -> None:
         """Evaluate and schedule control actions."""
         force_changed = force_charge != self._force_charge_prev
@@ -1352,6 +1666,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 return
 
         if force_charge:
+            return
+
+        # Export priority: block all surplus charging so all solar is exported.
+        # Force charge (charge_now / charge_tonight) overrides this — handled above.
+        if self._charging_priority == PRIORITY_EXPORT:
+            if self._charging_on and self._current_mode == MODE_SURPLUS:
+                if self._pending_task is None or self._pending_task.done():
+                    self._pending_task = self.hass.async_create_task(
+                        self._debounced(self._stop_delay, self._action_stop_surplus),
+                        eager_start=False,
+                    )
             return
 
         # --- Import safety: escalation ladder ---
@@ -1397,17 +1722,26 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     self._last_commit_reason = "import_guard_escalate_stop"
                     self._last_reason = "import_guard_escalate_stop"
                     self._last_action_ts = time.monotonic()
+                    self._import_guard_stop_time = mono_now  # record for post-stop cooldown
                     self._import_guard_zero_since = None
                 # else: continue holding at 0A (session alive, no power)
             return
 
         # --- Start surplus charging ---
         if ema_current >= self._surplus_start_threshold_a and not self._charging_on:
-            # Don't start when cable is known to be disconnected
-            if cable_connected is False:
+            # Don't start when cable is not confirmed connected (None=unknown or False=disconnected)
+            if cable_connected is not True:
                 _LOGGER.debug(
-                    "AdaptiveCharge: surplus start blocked — cable not connected "
-                    "(ema=%.2fA threshold=%.1fA)",
+                    "AdaptiveCharge: surplus start blocked — cable not confirmed "
+                    "connected (cable=%s, ema=%.2fA threshold=%.1fA)",
+                    cable_connected, ema_current, self._surplus_start_threshold_a,
+                )
+                return
+            # Don't start when net power sensor is invalid/unavailable
+            if not net_power_valid:
+                _LOGGER.debug(
+                    "AdaptiveCharge: surplus start blocked — net power sensor "
+                    "invalid/unavailable (ema=%.2fA threshold=%.1fA)",
                     ema_current, self._surplus_start_threshold_a,
                 )
                 return
@@ -1419,6 +1753,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                         "AdaptiveCharge: surplus start blocked by min-off-time "
                         "(%.0fs / %.0fs), ema=%.2fA threshold=%.1fA",
                         off_elapsed, DEFAULT_MIN_OFF_TIME_S,
+                        ema_current, self._surplus_start_threshold_a,
+                    )
+                    return
+            # Respect post-escalation cooldown: after an import_guard_escalate_stop,
+            # wait for solar to stabilise before allowing a new session.  This prevents
+            # the rapid restart-oscillation seen when morning solar is variable.
+            if self._import_guard_stop_time is not None:
+                stop_elapsed = mono_now - self._import_guard_stop_time
+                if stop_elapsed < DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S:
+                    _LOGGER.debug(
+                        "AdaptiveCharge: surplus start blocked by post-escalation cooldown "
+                        "(%.0fs / %.0fs), ema=%.2fA threshold=%.1fA",
+                        stop_elapsed, DEFAULT_IMPORT_GUARD_POST_STOP_COOLDOWN_S,
                         ema_current, self._surplus_start_threshold_a,
                     )
                     return
@@ -1455,9 +1802,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             and self._current_mode == MODE_SURPLUS
             and self._committed_current is not None
         ):
-            await self._try_modulate(ema_current, mono_now)
+            await self._try_modulate(ema_current, mono_now, net_power_valid=net_power_valid)
 
-    async def _try_modulate(self, ema_current: float, mono_now: float) -> None:
+    async def _try_modulate(self, ema_current: float, mono_now: float, *, net_power_valid: bool = True) -> None:
         """Apply hysteresis and rate limiting to modulate current."""
         current_setpoint = self._committed_current
         if current_setpoint is None:
@@ -1467,12 +1814,29 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         target = min(max(ema_current, 0.0), capped)
         delta = target - current_setpoint
 
-        # During alignment or settling, only allow decreases (safety), hold otherwise
-        if (self._alignment.active or self._alignment.settling) and delta > 0:
+        # During the settling window (the period right after a setpoint change)
+        # block ALL modulation in both directions.  The EV is still transitioning
+        # to the new current, so the EMA may transiently dip below the new
+        # setpoint and trigger a spurious cascade of further reductions.
+        #
+        # NOTE: import-guard is intentionally suppressed during settling, so it
+        # will not mitigate brief import excursions in this window. This is an
+        # accepted trade-off: short spikes are tolerated to avoid unstable,
+        # oscillatory current adjustments while the EV is converging.
+        if self._alignment.settling:
             _LOGGER.debug(
-                "AdaptiveCharge: modulate up blocked by alignment/settling "
-                "(alignment=%s settling=%s) delta=+%.2fA",
-                self._alignment.active, self._alignment.settling, delta,
+                "AdaptiveCharge: modulate blocked by settling (delta=%.2fA)",
+                delta,
+            )
+            return
+
+        # During alignment (EV power in transient but no fresh setpoint change)
+        # only block upward modulation; downward is still allowed for safety.
+        if self._alignment.active and delta > 0:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked by alignment "
+                "(delta=+%.2fA)",
+                delta,
             )
             return
 
@@ -1480,6 +1844,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if delta > 0 and self._confidence == CONFIDENCE_LOW:
             _LOGGER.debug(
                 "AdaptiveCharge: modulate up blocked by low confidence, delta=+%.2fA",
+                delta,
+            )
+            return
+
+        # Net power validity gating — block upward modulation when net sensor
+        # is invalid/unavailable (surplus is unreliable); downward is allowed.
+        if delta > 0 and not net_power_valid:
+            _LOGGER.debug(
+                "AdaptiveCharge: modulate up blocked — net power sensor "
+                "invalid/unavailable, delta=+%.2fA",
                 delta,
             )
             return
@@ -1499,17 +1873,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
         new_target = min(max(new_target, 0.0), capped)
 
-        # Cooldown
-        if delta > 0:
-            if self._last_up_time is not None:
-                up_elapsed = mono_now - self._last_up_time
-                if up_elapsed < DEFAULT_COOLDOWN_UP_S:
-                    _LOGGER.debug(
-                        "AdaptiveCharge: modulate up blocked by cooldown "
-                        "(%.0fs / %.0fs) target=%.1fA",
-                        up_elapsed, DEFAULT_COOLDOWN_UP_S, new_target,
-                    )
-                    return
+        # Cooldown / minimum modulation interval
+        if delta > 0 and self._last_up_time is not None:
+            up_elapsed = mono_now - self._last_up_time
+            up_cooldown = float(max(self._modulate_min_interval, 0))
+            if up_elapsed < up_cooldown:
+                _LOGGER.debug(
+                    "AdaptiveCharge: modulate up blocked by cooldown "
+                    "(%.0fs / %.0fs) target=%.1fA",
+                    up_elapsed, up_cooldown, new_target,
+                )
+                return
 
         reason = "modulate_up" if delta > 0 else "modulate_down"
         await self._commit_current(new_target, mono_now, reason=reason)
@@ -1520,7 +1894,39 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         """Commit a new current setpoint to the actuator."""
         capped = min(self._max_current_limit, MAX_CURRENT_ABS)
         target = min(max(target, 0.0), capped)
-        target_int = max(int(target), 0)
+
+        current_int = self._last_committed_int if self._last_committed_int is not None else 0
+        # Quantize float target to EVSE integer amps.
+        #
+        # Upward modulation quantization depends on the charging priority:
+        #   balance             — round (half-up): step when surplus ≥ 0.5 A above
+        #                         current setpoint.  Symmetric around the halfway
+        #                         point, matching pure surplus behaviour.
+        #   zero_prefer_export  — floor: requires the surplus EMA to be at least 1 A
+        #                         above the current setpoint before stepping up.
+        #                         Naturally biases toward exporting rather than
+        #                         consuming, without any configurable W offset.
+        #   zero_prefer_import  — ceil: any positive surplus (even 0.01 A above the
+        #                         setpoint) triggers a step up.  Biases toward
+        #                         charging while staying close to zero import.
+        #
+        # Downward modulation: always floor (conservative — avoids over-reducing).
+        # Other paths (start / force / import-guard): direct integer truncation.
+        if reason == "modulate_up":
+            priority = self._charging_priority
+            if priority == PRIORITY_ZERO_PREFER_EXPORT:
+                quantized = int(math.floor(target))
+            elif priority == PRIORITY_ZERO_PREFER_IMPORT:
+                quantized = int(math.ceil(target))
+            else:  # balance (default) and any unknown mode
+                quantized = int(math.floor(target + 0.5))
+            target_int = max(current_int + 1, quantized)
+        elif reason == "modulate_down":
+            target_int = int(math.floor(target))
+        else:
+            target_int = int(target)
+
+        target_int = min(max(target_int, 0), int(capped))
 
         # Idempotent: skip if same integer value already sent
         if target_int == self._last_committed_int:
@@ -1532,22 +1938,30 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 target_int, target, reason, self._confidence,
             )
             await self._set_charge_current(target_int)
-            self._committed_current = target
+            # Keep committed_current aligned to what was actually sent (integer A).
+            self._committed_current = float(target_int)
             self._last_committed_int = target_int
             self._last_commit_reason = reason
 
+            # Capture one post-call timestamp so that all tracking fields and
+            # the settling window share a consistent anchor, avoiding clock
+            # skew between the stale tick-start mono_now and the fresh call.
+            post_call_mono = time.monotonic()
             if "up" in reason:
-                self._last_up_time = mono_now
-            elif "down" in reason:
-                self._last_down_time = mono_now
+                self._last_up_time = post_call_mono
 
             self._last_action = f"modulate_{target_int}A"
             self._last_reason = reason
-            self._last_action_ts = mono_now
+            self._last_action_ts = post_call_mono
 
-            # Start settling window to avoid self-induced dip flapping
+            # Start settling window to avoid self-induced dip flapping.
+            # IMPORTANT: capture a fresh timestamp *after* the blocking
+            # service-call so that cloud-API latency (e.g. Tessie) does not
+            # eat into the window.  Using the stale tick-start mono_now would
+            # cause the window to expire exactly when the next periodic tick
+            # fires, providing zero protection against rapid cascades.
             self._alignment.start_settling(
-                mono_now, self._settling_duration_s
+                post_call_mono, self._settling_duration_s
             )
 
     def _set_mode(self, new_mode: str, reason: str, source: str) -> None:
@@ -1600,7 +2014,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = "start_force"
         self._last_reason = "force_charge_active"
         self._last_action_ts = time.monotonic()
-        self._last_on_time = time.monotonic()
+        self._last_on_time = self._last_action_ts
         self._committed_current = float(start_a)
         self._last_committed_int = start_a
         self._last_commit_reason = "start_force"
@@ -1614,7 +2028,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = "stop_force"
         self._last_reason = "force_charge_stopped"
         self._last_action_ts = time.monotonic()
-        self._last_off_time = time.monotonic()
+        self._last_off_time = self._last_action_ts
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_force"
@@ -1633,10 +2047,21 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = f"start_surplus_{current_a}A"
         self._last_reason = "surplus_above_threshold"
         self._last_action_ts = time.monotonic()
-        self._last_on_time = time.monotonic()
+        self._last_on_time = self._last_action_ts
         self._committed_current = float(current_a)
         self._last_committed_int = current_a
         self._last_commit_reason = "start_surplus"
+        self._import_guard_stop_time = None  # clear post-escalation cooldown on successful start
+        # Start a settling window to cover the EV startup transient.  Many EVs
+        # (including Tesla) draw at maximum current for several seconds after the
+        # charger is enabled before respecting the commanded current limit.
+        # Combined with the alignment-based debounce freeze in _check_import_guard
+        # this prevents the import guard from reacting to an expected power spike.
+        self._alignment.start_settling(
+            self._last_action_ts,
+            max(self._settling_duration_s, self._import_guard_settle),
+        )
+        self._import_exceed_since = None  # fresh debounce for this session
 
     async def _action_stop_surplus(self) -> None:
         _LOGGER.info("AdaptiveCharge: stop_surplus")
@@ -1648,7 +2073,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._last_action = "stop_surplus"
         self._last_reason = reason
         self._last_action_ts = time.monotonic()
-        self._last_off_time = time.monotonic()
+        self._last_off_time = self._last_action_ts
         self._committed_current = None
         self._last_committed_int = None
         self._last_commit_reason = "stop_surplus"
@@ -1666,9 +2091,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         there is no risk of a current spike. It ensures the EVSE is in a ready
         state for the next session (or for charging elsewhere at full power).
         """
-        # Update battery capacity estimate from the completed session before
+        # Finalize the session (capacity, overhead, capture factor) before
         # energy counters are reset by the next plug-in.
-        self._update_capacity_estimate()
+        self._finalize_session_if_needed("cable_disconnect")
         if self._charging_on:
             await self._action_stop_surplus()
         max_a = int(min(self._max_current_limit, MAX_CURRENT_ABS))
@@ -1687,13 +2112,25 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def _update_capacity_estimate(self) -> None:
         """Estimate battery capacity from the just-completed charging session.
 
-        The estimate is derived from wall-measured energy (EV power sensor), so
-        it already includes AC→battery charging losses. This means the resulting
-        ``energy_needed`` calculation in the low-power check is automatically
+        When the EV battery energy sensor is configured, the estimate uses
+        direct battery-side kWh delta — this is more accurate than the
+        SoC%-based method because:
+          • SoC is rounded to whole-percent or 0.5% steps → noisy
+          • Battery energy remaining has 0.01 kWh resolution
+
+        As a side-effect, when both wall energy and battery-side delta are
+        available, the **charging overhead** (AC→DC losses) is computed and
+        accumulated for the rolling overhead percentage.
+
+        Fallback: if the battery energy sensor is unavailable, the legacy
+        SoC-based method is used (wall energy / SoC delta × 100).
+
+        The wall-energy-based estimate already includes AC→battery charging
+        losses, so ``energy_needed`` in the low-power check is automatically
         pre-overhead — no separate efficiency factor is required.
 
-        Only updates when the SoC increased by at least 5 % and at least 0.5 kWh
-        was added in the session, to avoid noise from rounding or tiny top-ups.
+        Only updates when at least 0.5 kWh was added in the session and either
+        the SoC increased by ≥5% or the battery-side kWh delta is ≥0.5 kWh.
         """
         if self._session_start_soc is None:
             return
@@ -1701,11 +2138,40 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         if end_soc is None:
             return
         soc_delta = end_soc - self._session_start_soc
-        energy_kwh = self._energy_session_wh / 1000.0
-        if soc_delta < self._CAPACITY_MIN_SOC_DELTA or energy_kwh < self._CAPACITY_MIN_ENERGY_KWH:
+        wall_energy_kwh = self._energy_session_wh / 1000.0
+
+        # --- Battery-side delta (preferred when available) ---
+        battery_delta_kwh: float | None = None
+        if self._session_start_battery_kwh is not None:
+            end_battery = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+            if end_battery is not None:
+                delta = end_battery - self._session_start_battery_kwh
+                if delta >= self._CAPACITY_MIN_ENERGY_KWH:
+                    battery_delta_kwh = delta
+
+        # --- Overhead computation ---
+        if battery_delta_kwh is not None and wall_energy_kwh >= self._CAPACITY_MIN_ENERGY_KWH:
+            self._overhead_total_wall_wh += wall_energy_kwh * 1000.0
+            self._overhead_total_battery_wh += battery_delta_kwh * 1000.0
+            self._store.add_overhead(wall_energy_kwh * 1000.0, battery_delta_kwh * 1000.0)
+            session_overhead_pct = max(0.0, (1.0 - battery_delta_kwh / wall_energy_kwh)) * 100.0
+            _LOGGER.info(
+                "AdaptiveCharge: session charging overhead %.1f%% "
+                "(wall=%.2f kWh, battery=%.2f kWh)",
+                session_overhead_pct, wall_energy_kwh, battery_delta_kwh,
+            )
+
+        # --- Capacity estimation ---
+        # Prefer battery-side estimate when we have both kWh delta and SoC delta.
+        if battery_delta_kwh is not None and soc_delta >= self._CAPACITY_MIN_SOC_DELTA:
+            # Battery-side: direct kWh ÷ SoC% = true usable capacity
+            raw_estimate = (battery_delta_kwh * 100.0) / soc_delta
+        elif soc_delta >= self._CAPACITY_MIN_SOC_DELTA and wall_energy_kwh >= self._CAPACITY_MIN_ENERGY_KWH:
+            # Fallback: wall energy ÷ SoC% (includes losses)
+            raw_estimate = (wall_energy_kwh * 100.0) / soc_delta
+        else:
             return
 
-        raw_estimate = (energy_kwh * 100.0) / soc_delta
         raw_estimate = max(self._CAPACITY_MIN_KWH, min(self._CAPACITY_MAX_KWH, raw_estimate))
 
         if self._estimated_battery_capacity_kwh > 0:
@@ -1717,12 +2183,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._estimated_battery_capacity_kwh = raw_estimate
 
         self._store.set_battery_capacity_estimate(self._estimated_battery_capacity_kwh)
+        source = "battery_sensor" if battery_delta_kwh is not None else "wall"
         _LOGGER.info(
             "AdaptiveCharge: battery capacity estimate updated to %.1f kWh "
-            "(soc_delta=%.1f%%, energy=%.2f kWh, raw=%.1f kWh)",
+            "(source=%s, soc_delta=%.1f%%, energy=%.2f kWh, raw=%.1f kWh)",
             self._estimated_battery_capacity_kwh,
+            source,
             soc_delta,
-            energy_kwh,
+            battery_delta_kwh if battery_delta_kwh is not None else wall_energy_kwh,
             raw_estimate,
         )
 
@@ -1877,6 +2345,15 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""
         self._max_current_limit = value
+
+    def set_charging_priority(self, value: str) -> None:
+        """Set the charging priority mode."""
+        self._charging_priority = value
+
+    @property
+    def charging_priority(self) -> str:
+        """Return the current charging priority mode."""
+        return self._charging_priority
 
     def restore_energy_state(
         self, total_wh: float, solar_wh: float, import_wh: float

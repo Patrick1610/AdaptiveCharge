@@ -34,6 +34,11 @@ def _empty_counters() -> dict[str, Any]:
         "solar_production_total_wh": 0.0,
         # Auto-detected battery capacity (EMA over sessions)
         "battery_capacity_estimate_kwh": 0.0,
+        # Charging overhead (wall vs battery-received)
+        "overhead_wall_wh": 0.0,
+        "overhead_battery_wh": 0.0,
+        # Solar capture factor (rolling EMA, operational control)
+        "solar_capture_factor": 0.0,
         # Migration flag
         "migrated": False,
     }
@@ -50,6 +55,7 @@ class AdaptiveChargeStore:
         self._dirty = False
         self._last_flush: float = 0.0
         self._flush_unsub: Any | None = None
+        self._flush_task: Any | None = None  # In-flight flush guard
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -76,12 +82,19 @@ class AdaptiveChargeStore:
         _LOGGER.debug("AdaptiveCharge store flushed for %s", self._entry_id)
 
     def schedule_flush(self) -> None:
-        """Mark data as dirty and schedule a throttled flush."""
+        """Mark data as dirty and schedule a throttled flush.
+
+        Uses an in-flight guard to prevent parallel save scheduling: if a
+        flush task is already running, we skip creating a new one.
+        """
         self._dirty = True
         now = time.monotonic()
         if now - self._last_flush >= _FLUSH_THROTTLE_S:
-            task = self._hass.async_create_task(self.async_save(), eager_start=False)
-            task.add_done_callback(self._flush_done_callback)
+            # Guard: skip if a flush task is already in-flight
+            if self._flush_task is not None and not self._flush_task.done():
+                return
+            self._flush_task = self._hass.async_create_task(self.async_save(), eager_start=False)
+            self._flush_task.add_done_callback(self._flush_done_callback)
 
     @staticmethod
     def _flush_done_callback(task) -> None:
@@ -115,6 +128,19 @@ class AdaptiveChargeStore:
     def set_battery_capacity_estimate(self, kwh: float) -> None:
         """Persist an updated battery capacity estimate."""
         self._data["battery_capacity_estimate_kwh"] = round(kwh, 2)
+        self.schedule_flush()
+
+    def add_overhead(self, wall_wh: float, battery_wh: float) -> None:
+        """Accumulate wall vs battery-received energy for overhead calculation."""
+        if wall_wh <= 0 or battery_wh <= 0:
+            return
+        self._data["overhead_wall_wh"] += wall_wh
+        self._data["overhead_battery_wh"] += battery_wh
+        self.schedule_flush()
+
+    def set_solar_capture_factor(self, factor: float) -> None:
+        """Persist the rolling solar capture factor (0–1)."""
+        self._data["solar_capture_factor"] = round(max(0.0, min(factor, 1.0)), 4)
         self.schedule_flush()
 
     # ------------------------------------------------------------------
