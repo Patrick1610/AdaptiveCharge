@@ -39,6 +39,11 @@ def _empty_counters() -> dict[str, Any]:
         "overhead_battery_wh": 0.0,
         # Solar capture factor (rolling EMA, operational control)
         "solar_capture_factor": 0.0,
+        # Desired range (persisted across reloads to prevent 100 km glitch)
+        "desired_range_km": 0.0,
+        # Forecast-to-EV capture factor accumulators
+        "forecast_capture_solar_wh": 0.0,
+        "forecast_capture_opportunity_wh": 0.0,
         # Migration flag
         "migrated": False,
     }
@@ -142,6 +147,20 @@ class AdaptiveChargeStore:
         """Persist the rolling solar capture factor (0–1)."""
         self._data["solar_capture_factor"] = round(max(0.0, min(factor, 1.0)), 4)
         self.schedule_flush()
+
+    def set_desired_range(self, range_km: float) -> None:
+        """Persist the desired range (km) so it survives reload/restart."""
+        self._data["desired_range_km"] = round(max(0.0, range_km), 1)
+        self.schedule_flush()
+
+    def add_forecast_capture(self, solar_wh: float, opportunity_wh: float) -> None:
+        """Accumulate EV solar capture and EV-relevant solar opportunity energy."""
+        if solar_wh > 0:
+            self._data["forecast_capture_solar_wh"] += solar_wh
+        if opportunity_wh > 0:
+            self._data["forecast_capture_opportunity_wh"] += opportunity_wh
+        if solar_wh > 0 or opportunity_wh > 0:
+            self.schedule_flush()
 
     # ------------------------------------------------------------------
     # Read accessors  (kWh for sensor consumption)

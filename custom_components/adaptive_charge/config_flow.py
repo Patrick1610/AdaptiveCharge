@@ -14,7 +14,6 @@ from .const import (
     CONF_BATTERY_SENSOR,
     CONF_CABLE_SENSOR,
     CONF_EV_BATTERY_ENERGY_SENSOR,
-    CONF_EV_ENERGY_ADDED_SENSOR,
     CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_LIMIT_SENSOR,
     CONF_CHARGE_BUFFER,
@@ -242,9 +241,6 @@ class AdaptiveChargeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {"entity": {"domain": "sensor"}}
                 ),
                 vol.Optional(CONF_EV_BATTERY_ENERGY_SENSOR): selector.selector(
-                    {"entity": {"domain": "sensor"}}
-                ),
-                vol.Optional(CONF_EV_ENERGY_ADDED_SENSOR): selector.selector(
                     {"entity": {"domain": "sensor"}}
                 ),
             }
@@ -762,10 +758,6 @@ class AdaptiveChargeOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_EV_BATTERY_ENERGY_SENSOR,
                     description={"suggested_value": current.get(CONF_EV_BATTERY_ENERGY_SENSOR, "")},
-                ): selector.selector({"entity": {"domain": "sensor"}}),
-                vol.Optional(
-                    CONF_EV_ENERGY_ADDED_SENSOR,
-                    description={"suggested_value": current.get(CONF_EV_ENERGY_ADDED_SENSOR, "")},
                 ): selector.selector({"entity": {"domain": "sensor"}}),
             }
         )

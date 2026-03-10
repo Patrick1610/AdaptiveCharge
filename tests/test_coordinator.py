@@ -5714,10 +5714,10 @@ PRIORITY_IMPORT = "import_priority"
 def _quantize_modulate_up(target: float, current_int: int, priority: str, capped: int = 16) -> int:
     """Mirror of coordinator._commit_current quantization for modulate_up.
 
-    v4.3.6 design:
-      balance             — round (half-up): nearest integer, ensures +1 step
-      zero_prefer_export  — floor: requires full integer above current before stepping up
-      zero_prefer_import  — ceil: any positive surplus triggers a step up
+    v4.4.0 design (no forced minimum +1 step):
+      balance             — round (half-up): step only when EMA rounds to integer > current
+      zero_prefer_export  — floor: requires EMA ≥ (current_int + 1) before stepping up
+      zero_prefer_import  — ceil: any positive surplus above current integer triggers step
     """
     import math
     target = min(max(target, 0.0), float(capped))
@@ -5727,51 +5727,60 @@ def _quantize_modulate_up(target: float, current_int: int, priority: str, capped
         quantized = int(math.ceil(target))
     else:  # balance (default)
         quantized = int(math.floor(target + 0.5))
-    return min(max(current_int + 1, quantized), capped)
+    return min(max(quantized, 0), capped)
 
 
 class TestChargingPriorityCurrentBias:
-    """Verify priority modes use floor/ceil/round quantization (no W-bias offset)."""
+    """Verify priority modes use floor/ceil/round quantization (no W-bias offset, no forced +1 step)."""
 
     def test_balance_rounds_half_up(self):
-        """balance: 4.5A → rounds to 5A (half-up)."""
+        """balance: 4.5A → rounds to 5A (half-up), step occurs."""
         assert _quantize_modulate_up(4.5, 4, PRIORITY_BALANCE) == 5
 
-    def test_balance_rounds_down_below_half(self):
-        """balance: 4.49A → rounds to 4, but +1 step from current_int=4 → 5."""
-        # +1 step is enforced because modulate_up was approved
-        assert _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE) == 5
+    def test_balance_rounds_down_below_half_no_step(self):
+        """balance: 4.49A → rounds to 4 = current → no step (idempotent, correct)."""
+        # In v4.4.0 there is no forced +1 minimum step.  4.49 rounds to 4 which
+        # equals the current setpoint, so the idempotent check blocks the commit.
+        assert _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE) == 4
+
+    def test_balance_5_27a_from_5a_no_spurious_step(self):
+        """balance: 5.27A from committed=5A → round(5.27)=5 → no step (fixes 5→6A bug)."""
+        assert _quantize_modulate_up(5.27, 5, PRIORITY_BALANCE) == 5
+
+    def test_balance_5_5a_from_5a_steps_to_6(self):
+        """balance: 5.5A from committed=5A → round(5.5)=6 → step to 6A."""
+        assert _quantize_modulate_up(5.5, 5, PRIORITY_BALANCE) == 6
 
     def test_balance_with_larger_jump(self):
-        """balance: large jump — quantized value exceeds current+1, so takes quantized."""
+        """balance: large jump — quantized value is well above current."""
         assert _quantize_modulate_up(6.5, 3, PRIORITY_BALANCE) == 7
 
-    def test_prefer_export_floors(self):
-        """zero_prefer_export: 4.9A → floor=4, current=4 → +1 → 5A."""
-        assert _quantize_modulate_up(4.9, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
+    def test_prefer_export_below_next_integer_no_step(self):
+        """zero_prefer_export: 4.9A → floor=4 = current=4 → no step (EV at 4A, need 5A gap)."""
+        assert _quantize_modulate_up(4.9, 4, PRIORITY_ZERO_PREFER_EXPORT) == 4
 
-    def test_prefer_export_requires_full_integer_surplus(self):
-        """zero_prefer_export: 5.0A target from current=4 → floor=5, max(5,5)=5."""
+    def test_prefer_export_at_full_integer_steps(self):
+        """zero_prefer_export: 5.0A → floor=5 > current=4 → step to 5A."""
         assert _quantize_modulate_up(5.0, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
 
     def test_prefer_export_conservative_on_large_jump(self):
-        """zero_prefer_export: 6.3A from current=3 → floor=6, max(4,6)=6 (same as balance; prefer_import would be 7)."""
+        """zero_prefer_export: 6.3A from current=3 → floor=6 → step to 6A."""
         assert _quantize_modulate_up(6.3, 3, PRIORITY_ZERO_PREFER_EXPORT) == 6
 
     def test_prefer_import_ceils(self):
-        """zero_prefer_import: 4.1A → ceil=5, max(current+1=5, 5)=5."""
+        """zero_prefer_import: 4.1A → ceil=5 → step to 5A."""
         assert _quantize_modulate_up(4.1, 4, PRIORITY_ZERO_PREFER_IMPORT) == 5
 
     def test_prefer_import_aggressively_rounds_up(self):
-        """zero_prefer_import: 3.01A from current=3 → ceil=4, max(4,4)=4."""
+        """zero_prefer_import: 3.01A from current=3 → ceil=4 → step to 4A."""
         assert _quantize_modulate_up(3.01, 3, PRIORITY_ZERO_PREFER_IMPORT) == 4
 
     def test_prefer_import_large_jump(self):
-        """zero_prefer_import: 6.1A from current=3 → ceil=7, max(4,7)=7 (more than balance)."""
+        """zero_prefer_import: 6.1A from current=3 → ceil=7 → step to 7A."""
         assert _quantize_modulate_up(6.1, 3, PRIORITY_ZERO_PREFER_IMPORT) == 7
 
     def test_prefer_import_vs_export_ordering(self):
-        """For the same EMA, prefer_import steps to higher A than prefer_export."""
+        """For the same EMA ≥ current+1, prefer_import ≥ balance ≥ prefer_export."""
         ema = 5.2
         current = 4
         export_val = _quantize_modulate_up(ema, current, PRIORITY_ZERO_PREFER_EXPORT)
@@ -5796,30 +5805,27 @@ class TestChargingPriorityControlEffect:
     """Verify priority modes affect the controller correctly without polluting monitoring."""
 
     def test_balance_does_not_affect_control_current(self):
-        """balance mode uses standard rounding on the raw ema."""
+        """balance mode uses standard rounding on the raw ema (no forced min step)."""
         raw = compute_raw_current(compute_surplus(-1000.0, 0.0), 230.0)
-        # balance: floor(raw + 0.5) — unchanged from previous behaviour
         import math
         expected = int(math.floor(raw + 0.5)) if raw >= 0 else 0
-        assert _quantize_modulate_up(max(raw, 0.0), 0, PRIORITY_BALANCE) == max(1, expected)
+        assert _quantize_modulate_up(max(raw, 0.0), 0, PRIORITY_BALANCE) == expected
 
     def test_zero_prefer_import_triggers_on_tiny_surplus(self):
-        """zero_prefer_import: even 0.01A above current → ceil rounds up, +1 step fires."""
+        """zero_prefer_import: even 0.01A above current integer → ceil rounds up."""
         result = _quantize_modulate_up(4.01, 4, PRIORITY_ZERO_PREFER_IMPORT)
         assert result == 5
 
-    def test_zero_prefer_export_needs_more_surplus_than_balance(self):
-        """zero_prefer_export and balance both quantize 4.49A to 4, then the +1 step guarantee
-        bumps both to 5.  The difference shows at values like 4.6A where balance rounds to 5
-        while floor stays at 4 (before the +1 step)."""
-        export_val = _quantize_modulate_up(4.49, 4, PRIORITY_ZERO_PREFER_EXPORT)
-        balance_val = _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE)
-        # Both reach 5 via the +1 step guarantee (quantized=4 ≤ current+1=5)
-        assert export_val == 5
-        assert balance_val == 5
-        # At 4.6A the difference is visible before the +1 step is applied
-        import math
-        assert int(math.floor(4.6)) < int(math.floor(4.6 + 0.5))  # 4 < 5
+    def test_zero_prefer_export_requires_full_integer_above_current(self):
+        """zero_prefer_export at 4.49A from current=4: floor=4 = current → no step.
+        At 4.6A: floor=4 = current → no step (need ≥ 5A to step).
+        At 5.0A: floor=5 > current=4 → step."""
+        export_val_low = _quantize_modulate_up(4.49, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        export_val_mid = _quantize_modulate_up(4.6, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        export_val_full = _quantize_modulate_up(5.0, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        assert export_val_low == 4  # no step — floor(4.49) = 4 = current
+        assert export_val_mid == 4  # no step — floor(4.6) = 4 = current
+        assert export_val_full == 5  # step — floor(5.0) = 5 > current
 
     def test_import_priority_uses_force_charge(self):
         """import_priority should trigger force charge — reflected as import_priority force source."""
@@ -6301,14 +6307,13 @@ class TestSensorContinuityFallbacks:
     def test_returns_zero_when_no_history(self):
         assert self.continuity_value(None, None) == 0.0
 
-
 # ---------------------------------------------------------------------------
 # Tests: integer current quantization policy (modulation)
 # ---------------------------------------------------------------------------
 
 def quantize_target_int(target: float, current_int: int, capped: int, reason: str,
                         priority: str = "balance") -> int:
-    """Mirror of coordinator._commit_current quantization (v4.3.6)."""
+    """Mirror of coordinator._commit_current quantization (v4.4.0, no forced +1 step)."""
     import math
 
     target = min(max(target, 0.0), float(capped))
@@ -6319,7 +6324,7 @@ def quantize_target_int(target: float, current_int: int, capped: int, reason: st
             quantized = int(math.ceil(target))
         else:  # balance (default)
             quantized = int(math.floor(target + 0.5))
-        out = max(current_int + 1, quantized)
+        out = quantized
     elif reason == "modulate_down":
         out = int(math.floor(target))
     else:
@@ -6331,25 +6336,38 @@ class TestModulationQuantization:
     def test_balance_rounds_476_to_5a(self):
         assert quantize_target_int(4.76, 4, 16, "modulate_up") == 5
 
-    def test_balance_forces_at_least_plus_one(self):
-        # Even if rounded target is still current (e.g. 4.20 -> 4),
-        # approved upward modulation should execute one 1A step.
-        assert quantize_target_int(4.20, 4, 16, "modulate_up") == 5
+    def test_balance_at_4_20_no_step(self):
+        # In v4.4.0 there is no forced +1 minimum step.
+        # 4.20A rounds to 4 = current_int=4 → idempotent (no command sent).
+        assert quantize_target_int(4.20, 4, 16, "modulate_up") == 4
 
-    def test_prefer_export_floors_on_modulate_up(self):
-        # 4.9A → floor=4, max(current+1=5, 4)=5
-        assert quantize_target_int(4.9, 4, 16, "modulate_up", "zero_prefer_export") == 5
+    def test_balance_5_27_from_5_no_step(self):
+        # The key regression test: 5.27A from committed 5A in balanced mode.
+        # round(5.27) = 5 = current_int → no spurious jump to 6A.
+        assert quantize_target_int(5.27, 5, 16, "modulate_up") == 5
+
+    def test_balance_5_5_from_5_steps_to_6(self):
+        # 5.5A → round = 6 > current=5 → step to 6A.
+        assert quantize_target_int(5.5, 5, 16, "modulate_up") == 6
+
+    def test_prefer_export_below_next_integer_no_step(self):
+        # 4.9A → floor=4 = current=4 → no step (needs 5.0A to step)
+        assert quantize_target_int(4.9, 4, 16, "modulate_up", "zero_prefer_export") == 4
+
+    def test_prefer_export_at_full_integer_steps(self):
+        # 5.0A → floor=5 > current=4 → step to 5A
+        assert quantize_target_int(5.0, 4, 16, "modulate_up", "zero_prefer_export") == 5
 
     def test_prefer_export_larger_jump(self):
-        # 6.3A from 3A → floor=6, max(4, 6)=6
+        # 6.3A from 3A → floor=6 → step to 6A
         assert quantize_target_int(6.3, 3, 16, "modulate_up", "zero_prefer_export") == 6
 
     def test_prefer_import_ceils_on_modulate_up(self):
-        # 4.1A → ceil=5, max(current+1=5, 5)=5
+        # 4.1A → ceil=5 → step to 5A
         assert quantize_target_int(4.1, 4, 16, "modulate_up", "zero_prefer_import") == 5
 
     def test_prefer_import_larger_jump(self):
-        # 6.1A from 3A → ceil=7, max(4, 7)=7
+        # 6.1A from 3A → ceil=7 → step to 7A
         assert quantize_target_int(6.1, 3, 16, "modulate_up", "zero_prefer_import") == 7
 
     def test_modulate_down_floors_conservatively(self):
@@ -6643,3 +6661,134 @@ class TestSettlingWindowStartTime:
 
         alignment.check_settling(1016.0)   # exactly at boundary (1006 + 10)
         assert alignment.settling is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: External current override detection / Tessie resync (v4.4.0)
+# ---------------------------------------------------------------------------
+
+def _simulate_resync(
+    committed_int: int,
+    ema_current_a: float,
+    settling: bool,
+    alignment_active: bool,
+    charging_on: bool,
+    ticks_needed: int = 3,
+) -> tuple[bool, int]:
+    """Mirror of coordinator._detect_external_current_override logic.
+
+    Returns (resynced, new_committed_int).
+    """
+    import math
+
+    _RESYNC_THRESHOLD_A = 0.9
+    _RESYNC_MIN_STABLE_TICKS = 3
+
+    if not charging_on:
+        return False, committed_int
+    if committed_int is None:
+        return False, committed_int
+    if settling or alignment_active:
+        return False, committed_int
+
+    ema_int = int(math.floor(ema_current_a))
+    diff = abs(committed_int - ema_int)
+
+    if diff < _RESYNC_THRESHOLD_A:
+        return False, committed_int
+
+    # Simulate running for ticks_needed ticks
+    for _ in range(ticks_needed):
+        pass  # each tick increments stable_ticks
+
+    if ticks_needed >= _RESYNC_MIN_STABLE_TICKS:
+        return True, ema_int
+    return False, committed_int
+
+
+class TestExternalCurrentResync:
+    """External current override (Tessie) must be detected and resynced."""
+
+    def test_no_resync_when_not_charging(self):
+        resynced, _ = _simulate_resync(6, 5.0, False, False, charging_on=False)
+        assert resynced is False
+
+    def test_no_resync_during_settling(self):
+        resynced, _ = _simulate_resync(6, 5.0, settling=True, alignment_active=False, charging_on=True)
+        assert resynced is False
+
+    def test_no_resync_during_alignment(self):
+        resynced, _ = _simulate_resync(6, 5.0, settling=False, alignment_active=True, charging_on=True)
+        assert resynced is False
+
+    def test_no_resync_when_ema_matches_committed(self):
+        """When EMA implies the same integer as committed — no resync needed."""
+        # committed=6A, ema=6.4A → floor(6.4)=6 = committed → diff=0 → no resync
+        resynced, _ = _simulate_resync(
+            committed_int=6, ema_current_a=6.4,
+            settling=False, alignment_active=False, charging_on=True
+        )
+        assert resynced is False
+
+    def test_resync_after_stable_ticks(self):
+        """1A offset detected for 3+ ticks triggers resync to EMA-implied value."""
+        resynced, new_int = _simulate_resync(
+            committed_int=6, ema_current_a=5.0,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=3,
+        )
+        assert resynced is True
+        assert new_int == 5
+
+    def test_resync_target_is_floor_of_ema(self):
+        """Resync uses floor(ema) for conservative estimate."""
+        import math
+        ema = 4.8
+        ema_int = int(math.floor(ema))
+        resynced, new_int = _simulate_resync(
+            committed_int=6, ema_current_a=ema,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=3,
+        )
+        assert resynced is True
+        assert new_int == ema_int  # floor(4.8) = 4
+
+
+# ---------------------------------------------------------------------------
+# Tests: Forecast-to-EV Capture Factor computation (v4.4.0)
+# ---------------------------------------------------------------------------
+
+def _compute_forecast_capture_factor_coord(solar_wh: float, opportunity_wh: float) -> float:
+    """Mirror of coordinator._compute_forecast_capture_factor."""
+    if opportunity_wh <= 0:
+        return 0.0
+    return round(min(1.0, max(0.0, solar_wh / opportunity_wh)), 4)
+
+
+class TestForecastCaptureFactorCoordinator:
+    """Forecast-to-EV Capture Factor semantics."""
+
+    def test_no_opportunity_returns_zero(self):
+        assert _compute_forecast_capture_factor_coord(0.0, 0.0) == 0.0
+
+    def test_zero_capture_returns_zero(self):
+        assert _compute_forecast_capture_factor_coord(0.0, 1000.0) == 0.0
+
+    def test_full_capture_returns_one(self):
+        assert _compute_forecast_capture_factor_coord(1000.0, 1000.0) == 1.0
+
+    def test_half_capture(self):
+        assert _compute_forecast_capture_factor_coord(500.0, 1000.0) == 0.5
+
+    def test_clamped_to_one(self):
+        assert _compute_forecast_capture_factor_coord(1200.0, 1000.0) == 1.0
+
+    def test_independent_from_solar_to_ev_ratio(self):
+        """Different inputs can give a different result — they are not aliases."""
+        # Solar-to-EV ratio: ev_solar / total_solar (includes all periods)
+        # Forecast factor: ev_solar / ev_relevant_opportunity (only EV-available periods)
+        # With 40% solar-to-EV but high EV-relevant capture, factor > ratio is normal
+        solar_to_ev = 1000.0 / 5000.0  # 20%
+        capture_factor = _compute_forecast_capture_factor_coord(1000.0, 1500.0)  # 66.7%
+        assert abs(capture_factor - 1000.0 / 1500.0) < 0.001
+        assert capture_factor != solar_to_ev  # semantically different
