@@ -41,12 +41,10 @@
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
           "battery_sensor": "Battery Level Sensor (optional)",
-          "ev_battery_energy_sensor": "EV Battery Energy Remaining (optional)",
-          "ev_energy_added_sensor": "EV Charge Energy Added (optional)"
+          "ev_battery_energy_sensor": "EV Battery Energy Remaining (optional)"
         },
         "data_description": {
-          "ev_battery_energy_sensor": "Sensor showing the actual kWh stored in the EV battery (e.g. Tessie Energy remaining, TeslaMate usable_battery_level × capacity). Enables overhead tracking and improved capacity estimation.",
-          "ev_energy_added_sensor": "Sensor showing session energy added as reported by the EV (e.g. Tessie Charge energy added). Used for diagnostics alongside the battery energy delta."
+          "ev_battery_energy_sensor": "Sensor showing the actual kWh stored in the EV battery (e.g. Tessie Energy remaining, TeslaMate usable_battery_level × capacity). Enables overhead tracking and improved capacity estimation."
         }
       },
       "range": {
@@ -244,12 +242,10 @@
           "cable_sensor": "Cable Connected Sensor",
           "current_range_sensor": "Current Range Sensor",
           "battery_sensor": "Battery Level Sensor (optional)",
-          "ev_battery_energy_sensor": "EV Battery Energy Remaining (optional)",
-          "ev_energy_added_sensor": "EV Charge Energy Added (optional)"
+          "ev_battery_energy_sensor": "EV Battery Energy Remaining (optional)"
         },
         "data_description": {
-          "ev_battery_energy_sensor": "Sensor showing the actual kWh stored in the EV battery (e.g. Tessie Energy remaining, TeslaMate usable_battery_level × capacity). Enables overhead tracking and improved capacity estimation.",
-          "ev_energy_added_sensor": "Sensor showing session energy added as reported by the EV (e.g. Tessie Charge energy added). Used for diagnostics alongside the battery energy delta."
+          "ev_battery_energy_sensor": "Sensor showing the actual kWh stored in the EV battery (e.g. Tessie Energy remaining, TeslaMate usable_battery_level × capacity). Enables overhead tracking and improved capacity estimation."
         }
       },
       "range": {
