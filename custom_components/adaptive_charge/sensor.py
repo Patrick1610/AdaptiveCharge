@@ -51,6 +51,8 @@ async def async_setup_entry(
         EnergyChargedSensor(coordinator, entry),
         # Solar-to-EV ratio (used by low-power protection)
         SolarToEvRatioSensor(coordinator, entry),
+        # Forecast-to-EV capture factor (dedicated forecasting diagnostic)
+        ForecastToEvCaptureFactorSensor(coordinator, entry),
         # Range thresholds
         RangeUpperLimitSensor(coordinator, entry),
         RangeLowerLimitSensor(coordinator, entry),
@@ -532,6 +534,71 @@ class SolarToEvRatioSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
 
 
 # ---------------------------------------------------------------------------
+# Forecast-to-EV Capture Factor sensor
+# ---------------------------------------------------------------------------
+
+class ForecastToEvCaptureFactorSensor(RestoreEntity, _BaseAdaptiveChargeSensor):
+    """Forecast-to-EV Capture Factor: fraction of EV-relevant solar opportunity captured.
+
+    Semantics (independent from Solar-to-EV Ratio):
+      forecast_to_ev_capture_factor = actual_ev_solar_capture / ev_relevant_opportunity
+
+    Where:
+      actual_ev_solar_capture  = cumulative solar energy that reached the EV
+                                  while the EV was actively charging
+      ev_relevant_opportunity  = cumulative solar surplus available to the EV
+                                  only when: vehicle is present, battery < 90%,
+                                  cable connected (if configured), and charging
+                                  priority is not PRIORITY_EXPORT
+
+    Intended use:
+      estimated_usable_forecast = remaining_forecast_today_kwh × factor
+
+    This is a stable cumulative factor (not a rapidly oscillating value).
+    Range: 0.0–1.0.  Returns 0.0 when insufficient history exists.
+    """
+
+    _attr_name = "Forecast to EV Capture Factor"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:weather-sunny-alert"
+
+    def __init__(self, coordinator: AdaptiveChargeCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_forecast_to_ev_capture_factor"
+        self._last_known_factor: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on HA restart/reload."""
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in ("unknown", "unavailable", ""):
+            try:
+                self._last_known_factor = float(state.state)
+            except (ValueError, TypeError):
+                pass
+
+    @property
+    def native_value(self) -> float:
+        if self.coordinator.data is not None:
+            factor = self.coordinator.data.get("forecast_to_ev_capture_factor")
+            if factor is not None:
+                self._last_known_factor = factor
+                return factor
+        return self._last_known_factor if self._last_known_factor is not None else 0.0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        base = super().extra_state_attributes
+        return {
+            **base,
+            "forecast_capture_solar_kwh": data.get("forecast_capture_solar_kwh", 0.0),
+            "forecast_capture_opportunity_kwh": data.get("forecast_capture_opportunity_kwh", 0.0),
+            "solar_to_ev_ratio_pct": data.get("solar_to_ev_ratio"),
+        }
+
+
+# ---------------------------------------------------------------------------
 # Range threshold sensors: upper limit (stop) and lower limit (start)
 # ---------------------------------------------------------------------------
 
@@ -730,5 +797,4 @@ class BatteryEnergyDeltaSensor(_BaseAdaptiveChargeSensor):
             "energy_session_kwh": data.get("energy_session_kwh", 0.0),
             "charging_overhead_pct": data.get("charging_overhead_pct"),
             "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
-            "ev_energy_added_kwh": data.get("ev_energy_added_kwh"),
         }

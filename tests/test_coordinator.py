@@ -5402,10 +5402,13 @@ class TestBuildDataDictBatteryFields:
     """Test that data dict includes battery-side energy keys."""
 
     def test_battery_fields_present_in_data_dict(self):
-        """Data dict should include EV battery energy and overhead keys."""
+        """Data dict should include EV battery energy and overhead keys.
+
+        ev_energy_added_kwh was removed in v4.4.0 — it is no longer passed
+        through the data dict or exposed in any sensor attributes.
+        """
         expected_keys = {
             "ev_battery_energy_kwh",
-            "ev_energy_added_kwh",
             "session_battery_delta_kwh",
             "charging_overhead_pct",
         }
@@ -5714,10 +5717,10 @@ PRIORITY_IMPORT = "import_priority"
 def _quantize_modulate_up(target: float, current_int: int, priority: str, capped: int = 16) -> int:
     """Mirror of coordinator._commit_current quantization for modulate_up.
 
-    v4.3.6 design:
-      balance             — round (half-up): nearest integer, ensures +1 step
-      zero_prefer_export  — floor: requires full integer above current before stepping up
-      zero_prefer_import  — ceil: any positive surplus triggers a step up
+    v4.4.0 design (no forced minimum +1 step):
+      balance             — round (half-up): step only when EMA rounds to integer > current
+      zero_prefer_export  — floor: requires EMA ≥ (current_int + 1) before stepping up
+      zero_prefer_import  — ceil: any positive surplus above current integer triggers step
     """
     import math
     target = min(max(target, 0.0), float(capped))
@@ -5727,51 +5730,60 @@ def _quantize_modulate_up(target: float, current_int: int, priority: str, capped
         quantized = int(math.ceil(target))
     else:  # balance (default)
         quantized = int(math.floor(target + 0.5))
-    return min(max(current_int + 1, quantized), capped)
+    return min(max(quantized, 0), capped)
 
 
 class TestChargingPriorityCurrentBias:
-    """Verify priority modes use floor/ceil/round quantization (no W-bias offset)."""
+    """Verify priority modes use floor/ceil/round quantization (no W-bias offset, no forced +1 step)."""
 
     def test_balance_rounds_half_up(self):
-        """balance: 4.5A → rounds to 5A (half-up)."""
+        """balance: 4.5A → rounds to 5A (half-up), step occurs."""
         assert _quantize_modulate_up(4.5, 4, PRIORITY_BALANCE) == 5
 
-    def test_balance_rounds_down_below_half(self):
-        """balance: 4.49A → rounds to 4, but +1 step from current_int=4 → 5."""
-        # +1 step is enforced because modulate_up was approved
-        assert _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE) == 5
+    def test_balance_rounds_down_below_half_no_step(self):
+        """balance: 4.49A → rounds to 4 = current → no step (idempotent, correct)."""
+        # In v4.4.0 there is no forced +1 minimum step.  4.49 rounds to 4 which
+        # equals the current setpoint, so the idempotent check blocks the commit.
+        assert _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE) == 4
+
+    def test_balance_5_27a_from_5a_no_spurious_step(self):
+        """balance: 5.27A from committed=5A → round(5.27)=5 → no step (fixes 5→6A bug)."""
+        assert _quantize_modulate_up(5.27, 5, PRIORITY_BALANCE) == 5
+
+    def test_balance_5_5a_from_5a_steps_to_6(self):
+        """balance: 5.5A from committed=5A → round(5.5)=6 → step to 6A."""
+        assert _quantize_modulate_up(5.5, 5, PRIORITY_BALANCE) == 6
 
     def test_balance_with_larger_jump(self):
-        """balance: large jump — quantized value exceeds current+1, so takes quantized."""
+        """balance: large jump — quantized value is well above current."""
         assert _quantize_modulate_up(6.5, 3, PRIORITY_BALANCE) == 7
 
-    def test_prefer_export_floors(self):
-        """zero_prefer_export: 4.9A → floor=4, current=4 → +1 → 5A."""
-        assert _quantize_modulate_up(4.9, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
+    def test_prefer_export_below_next_integer_no_step(self):
+        """zero_prefer_export: 4.9A → floor=4 = current=4 → no step (EV at 4A, need 5A gap)."""
+        assert _quantize_modulate_up(4.9, 4, PRIORITY_ZERO_PREFER_EXPORT) == 4
 
-    def test_prefer_export_requires_full_integer_surplus(self):
-        """zero_prefer_export: 5.0A target from current=4 → floor=5, max(5,5)=5."""
+    def test_prefer_export_at_full_integer_steps(self):
+        """zero_prefer_export: 5.0A → floor=5 > current=4 → step to 5A."""
         assert _quantize_modulate_up(5.0, 4, PRIORITY_ZERO_PREFER_EXPORT) == 5
 
     def test_prefer_export_conservative_on_large_jump(self):
-        """zero_prefer_export: 6.3A from current=3 → floor=6, max(4,6)=6 (same as balance; prefer_import would be 7)."""
+        """zero_prefer_export: 6.3A from current=3 → floor=6 → step to 6A."""
         assert _quantize_modulate_up(6.3, 3, PRIORITY_ZERO_PREFER_EXPORT) == 6
 
     def test_prefer_import_ceils(self):
-        """zero_prefer_import: 4.1A → ceil=5, max(current+1=5, 5)=5."""
+        """zero_prefer_import: 4.1A → ceil=5 → step to 5A."""
         assert _quantize_modulate_up(4.1, 4, PRIORITY_ZERO_PREFER_IMPORT) == 5
 
     def test_prefer_import_aggressively_rounds_up(self):
-        """zero_prefer_import: 3.01A from current=3 → ceil=4, max(4,4)=4."""
+        """zero_prefer_import: 3.01A from current=3 → ceil=4 → step to 4A."""
         assert _quantize_modulate_up(3.01, 3, PRIORITY_ZERO_PREFER_IMPORT) == 4
 
     def test_prefer_import_large_jump(self):
-        """zero_prefer_import: 6.1A from current=3 → ceil=7, max(4,7)=7 (more than balance)."""
+        """zero_prefer_import: 6.1A from current=3 → ceil=7 → step to 7A."""
         assert _quantize_modulate_up(6.1, 3, PRIORITY_ZERO_PREFER_IMPORT) == 7
 
     def test_prefer_import_vs_export_ordering(self):
-        """For the same EMA, prefer_import steps to higher A than prefer_export."""
+        """For the same EMA ≥ current+1, prefer_import ≥ balance ≥ prefer_export."""
         ema = 5.2
         current = 4
         export_val = _quantize_modulate_up(ema, current, PRIORITY_ZERO_PREFER_EXPORT)
@@ -5796,30 +5808,27 @@ class TestChargingPriorityControlEffect:
     """Verify priority modes affect the controller correctly without polluting monitoring."""
 
     def test_balance_does_not_affect_control_current(self):
-        """balance mode uses standard rounding on the raw ema."""
+        """balance mode uses standard rounding on the raw ema (no forced min step)."""
         raw = compute_raw_current(compute_surplus(-1000.0, 0.0), 230.0)
-        # balance: floor(raw + 0.5) — unchanged from previous behaviour
         import math
         expected = int(math.floor(raw + 0.5)) if raw >= 0 else 0
-        assert _quantize_modulate_up(max(raw, 0.0), 0, PRIORITY_BALANCE) == max(1, expected)
+        assert _quantize_modulate_up(max(raw, 0.0), 0, PRIORITY_BALANCE) == expected
 
     def test_zero_prefer_import_triggers_on_tiny_surplus(self):
-        """zero_prefer_import: even 0.01A above current → ceil rounds up, +1 step fires."""
+        """zero_prefer_import: even 0.01A above current integer → ceil rounds up."""
         result = _quantize_modulate_up(4.01, 4, PRIORITY_ZERO_PREFER_IMPORT)
         assert result == 5
 
-    def test_zero_prefer_export_needs_more_surplus_than_balance(self):
-        """zero_prefer_export and balance both quantize 4.49A to 4, then the +1 step guarantee
-        bumps both to 5.  The difference shows at values like 4.6A where balance rounds to 5
-        while floor stays at 4 (before the +1 step)."""
-        export_val = _quantize_modulate_up(4.49, 4, PRIORITY_ZERO_PREFER_EXPORT)
-        balance_val = _quantize_modulate_up(4.49, 4, PRIORITY_BALANCE)
-        # Both reach 5 via the +1 step guarantee (quantized=4 ≤ current+1=5)
-        assert export_val == 5
-        assert balance_val == 5
-        # At 4.6A the difference is visible before the +1 step is applied
-        import math
-        assert int(math.floor(4.6)) < int(math.floor(4.6 + 0.5))  # 4 < 5
+    def test_zero_prefer_export_requires_full_integer_above_current(self):
+        """zero_prefer_export at 4.49A from current=4: floor=4 = current → no step.
+        At 4.6A: floor=4 = current → no step (need ≥ 5A to step).
+        At 5.0A: floor=5 > current=4 → step."""
+        export_val_low = _quantize_modulate_up(4.49, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        export_val_mid = _quantize_modulate_up(4.6, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        export_val_full = _quantize_modulate_up(5.0, 4, PRIORITY_ZERO_PREFER_EXPORT)
+        assert export_val_low == 4  # no step — floor(4.49) = 4 = current
+        assert export_val_mid == 4  # no step — floor(4.6) = 4 = current
+        assert export_val_full == 5  # step — floor(5.0) = 5 > current
 
     def test_import_priority_uses_force_charge(self):
         """import_priority should trigger force charge — reflected as import_priority force source."""
@@ -6301,14 +6310,13 @@ class TestSensorContinuityFallbacks:
     def test_returns_zero_when_no_history(self):
         assert self.continuity_value(None, None) == 0.0
 
-
 # ---------------------------------------------------------------------------
 # Tests: integer current quantization policy (modulation)
 # ---------------------------------------------------------------------------
 
 def quantize_target_int(target: float, current_int: int, capped: int, reason: str,
                         priority: str = "balance") -> int:
-    """Mirror of coordinator._commit_current quantization (v4.3.6)."""
+    """Mirror of coordinator._commit_current quantization (v4.4.0, no forced +1 step)."""
     import math
 
     target = min(max(target, 0.0), float(capped))
@@ -6319,7 +6327,7 @@ def quantize_target_int(target: float, current_int: int, capped: int, reason: st
             quantized = int(math.ceil(target))
         else:  # balance (default)
             quantized = int(math.floor(target + 0.5))
-        out = max(current_int + 1, quantized)
+        out = quantized
     elif reason == "modulate_down":
         out = int(math.floor(target))
     else:
@@ -6331,25 +6339,38 @@ class TestModulationQuantization:
     def test_balance_rounds_476_to_5a(self):
         assert quantize_target_int(4.76, 4, 16, "modulate_up") == 5
 
-    def test_balance_forces_at_least_plus_one(self):
-        # Even if rounded target is still current (e.g. 4.20 -> 4),
-        # approved upward modulation should execute one 1A step.
-        assert quantize_target_int(4.20, 4, 16, "modulate_up") == 5
+    def test_balance_at_4_20_no_step(self):
+        # In v4.4.0 there is no forced +1 minimum step.
+        # 4.20A rounds to 4 = current_int=4 → idempotent (no command sent).
+        assert quantize_target_int(4.20, 4, 16, "modulate_up") == 4
 
-    def test_prefer_export_floors_on_modulate_up(self):
-        # 4.9A → floor=4, max(current+1=5, 4)=5
-        assert quantize_target_int(4.9, 4, 16, "modulate_up", "zero_prefer_export") == 5
+    def test_balance_5_27_from_5_no_step(self):
+        # The key regression test: 5.27A from committed 5A in balanced mode.
+        # round(5.27) = 5 = current_int → no spurious jump to 6A.
+        assert quantize_target_int(5.27, 5, 16, "modulate_up") == 5
+
+    def test_balance_5_5_from_5_steps_to_6(self):
+        # 5.5A → round = 6 > current=5 → step to 6A.
+        assert quantize_target_int(5.5, 5, 16, "modulate_up") == 6
+
+    def test_prefer_export_below_next_integer_no_step(self):
+        # 4.9A → floor=4 = current=4 → no step (needs 5.0A to step)
+        assert quantize_target_int(4.9, 4, 16, "modulate_up", "zero_prefer_export") == 4
+
+    def test_prefer_export_at_full_integer_steps(self):
+        # 5.0A → floor=5 > current=4 → step to 5A
+        assert quantize_target_int(5.0, 4, 16, "modulate_up", "zero_prefer_export") == 5
 
     def test_prefer_export_larger_jump(self):
-        # 6.3A from 3A → floor=6, max(4, 6)=6
+        # 6.3A from 3A → floor=6 → step to 6A
         assert quantize_target_int(6.3, 3, 16, "modulate_up", "zero_prefer_export") == 6
 
     def test_prefer_import_ceils_on_modulate_up(self):
-        # 4.1A → ceil=5, max(current+1=5, 5)=5
+        # 4.1A → ceil=5 → step to 5A
         assert quantize_target_int(4.1, 4, 16, "modulate_up", "zero_prefer_import") == 5
 
     def test_prefer_import_larger_jump(self):
-        # 6.1A from 3A → ceil=7, max(4, 7)=7
+        # 6.1A from 3A → ceil=7 → step to 7A
         assert quantize_target_int(6.1, 3, 16, "modulate_up", "zero_prefer_import") == 7
 
     def test_modulate_down_floors_conservatively(self):
@@ -6643,3 +6664,468 @@ class TestSettlingWindowStartTime:
 
         alignment.check_settling(1016.0)   # exactly at boundary (1006 + 10)
         assert alignment.settling is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: External current override detection / Tessie resync (v4.4.0)
+# ---------------------------------------------------------------------------
+
+def _simulate_resync(
+    committed_int: int,
+    ema_current_a: float,
+    settling: bool,
+    alignment_active: bool,
+    charging_on: bool,
+    ticks_needed: int = 3,
+    in_post_commit_window: bool = True,
+) -> tuple[bool, int]:
+    """Mirror of coordinator._detect_external_current_override two-tier logic.
+
+    Returns (resynced, new_committed_int).
+    """
+    import math
+
+    _RESYNC_THRESHOLD_A = 0.9
+    _RESYNC_MIN_STABLE_TICKS = 3   # within post-commit window
+    _RESYNC_EXTENDED_TICKS = 6     # outside post-commit window
+
+    if not charging_on:
+        return False, committed_int
+    if committed_int is None:
+        return False, committed_int
+    if settling or alignment_active:
+        return False, committed_int
+
+    ema_int = int(math.floor(ema_current_a))
+    diff = abs(committed_int - ema_int)
+
+    if diff < _RESYNC_THRESHOLD_A:
+        return False, committed_int
+
+    required_ticks = _RESYNC_MIN_STABLE_TICKS if in_post_commit_window else _RESYNC_EXTENDED_TICKS
+
+    if ticks_needed >= required_ticks:
+        return True, ema_int
+    return False, committed_int
+
+
+class TestExternalCurrentResync:
+    """External current override (Tessie) must be detected and resynced."""
+
+    def test_no_resync_when_not_charging(self):
+        resynced, _ = _simulate_resync(6, 5.0, False, False, charging_on=False)
+        assert resynced is False
+
+    def test_no_resync_during_settling(self):
+        resynced, _ = _simulate_resync(6, 5.0, settling=True, alignment_active=False, charging_on=True)
+        assert resynced is False
+
+    def test_no_resync_during_alignment(self):
+        resynced, _ = _simulate_resync(6, 5.0, settling=False, alignment_active=True, charging_on=True)
+        assert resynced is False
+
+    def test_no_resync_when_ema_matches_committed(self):
+        """When EMA implies the same integer as committed — no resync needed."""
+        # committed=6A, ema=6.4A → floor(6.4)=6 = committed → diff=0 → no resync
+        resynced, _ = _simulate_resync(
+            committed_int=6, ema_current_a=6.4,
+            settling=False, alignment_active=False, charging_on=True
+        )
+        assert resynced is False
+
+    def test_resync_after_stable_ticks_in_window(self):
+        """1A offset for 3 ticks within post-commit window → resync."""
+        resynced, new_int = _simulate_resync(
+            committed_int=6, ema_current_a=5.0,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=3, in_post_commit_window=True,
+        )
+        assert resynced is True
+        assert new_int == 5
+
+    def test_resync_not_triggered_outside_window_with_only_3_ticks(self):
+        """Outside post-commit window, 3 ticks is not enough — need 6."""
+        resynced, _ = _simulate_resync(
+            committed_int=6, ema_current_a=5.0,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=3, in_post_commit_window=False,
+        )
+        assert resynced is False
+
+    def test_resync_after_extended_ticks_outside_window(self):
+        """Outside post-commit window, 6 ticks triggers resync."""
+        resynced, new_int = _simulate_resync(
+            committed_int=6, ema_current_a=5.0,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=6, in_post_commit_window=False,
+        )
+        assert resynced is True
+        assert new_int == 5
+
+    def test_resync_target_is_floor_of_ema(self):
+        """Resync uses floor(ema) for conservative estimate."""
+        import math
+        ema = 4.8
+        ema_int = int(math.floor(ema))
+        resynced, new_int = _simulate_resync(
+            committed_int=6, ema_current_a=ema,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=3, in_post_commit_window=True,
+        )
+        assert resynced is True
+        assert new_int == ema_int  # floor(4.8) = 4
+
+
+class TestExternalResyncScenario:
+    """Scenario tests: end-to-end flow of external override → resync → no lasting offset.
+
+    These tests simulate a sequence of ticks where an external app (Tessie)
+    overrides the charge current and verify that the integration resyncs,
+    then resumes correct modulation from the resynced baseline.
+    """
+
+    def _run_resync_flow(
+        self,
+        committed_int: int,
+        ema_values: list[float],
+        settling: bool = False,
+        alignment_active: bool = False,
+        in_post_commit_window: bool = True,
+    ) -> list[int]:
+        """Simulate multiple ticks of the resync detection logic.
+
+        Returns the committed_int value after each tick.
+        """
+        import math
+        _RESYNC_THRESHOLD_A = 0.9
+        _RESYNC_MIN_STABLE_TICKS = 3
+        _RESYNC_EXTENDED_TICKS = 6
+        required = _RESYNC_MIN_STABLE_TICKS if in_post_commit_window else _RESYNC_EXTENDED_TICKS
+
+        current = committed_int
+        stable_ticks = 0
+        results = []
+
+        for ema in ema_values:
+            if settling or alignment_active:
+                stable_ticks = 0
+                results.append(current)
+                continue
+
+            ema_int = int(math.floor(ema))
+            diff = abs(current - ema_int)
+            if diff >= _RESYNC_THRESHOLD_A:
+                stable_ticks += 1
+                if stable_ticks >= required:
+                    current = ema_int
+                    stable_ticks = 0
+            else:
+                stable_ticks = 0
+
+            results.append(current)
+
+        return results
+
+    def test_tessie_override_corrected_after_3_ticks(self):
+        """Scenario: we commit 6A, Tessie overrides to 5A within seconds.
+        EMA settles at ~5.0A.  After 3 ticks the integration resyncs to 5A
+        and all subsequent modulation uses 5A as the baseline.
+        """
+        # EMA stays at 5.0 (Tessie held it there after override)
+        ema_sequence = [5.0] * 8  # 8 ticks
+        committed_after_ticks = self._run_resync_flow(
+            committed_int=6,
+            ema_values=ema_sequence,
+            in_post_commit_window=True,
+        )
+        # After tick 3 the committed should be resynced to 5
+        assert committed_after_ticks[0] == 6   # tick 1: still 6A
+        assert committed_after_ticks[1] == 6   # tick 2: still 6A
+        assert committed_after_ticks[2] == 5   # tick 3: resynced!
+        assert all(v == 5 for v in committed_after_ticks[2:])  # stays at 5A
+
+    def test_no_resync_during_settling_then_corrects_after(self):
+        """Scenario: settling is active for first 3 ticks (EV ramp-up).
+        The external override happens but resync is suppressed during settling.
+        After settling ends, resync triggers after 3 more stable ticks.
+        """
+        # First 3 ticks: settling active → no resync
+        # Next 3 ticks: settling done → resync after 3 ticks
+        import math
+
+        _RESYNC_THRESHOLD_A = 0.9
+        _RESYNC_MIN_STABLE_TICKS = 3
+        current = 6
+        stable_ticks = 0
+        results = []
+        settling_phase = [True, True, True, False, False, False, False, False]
+        ema_sequence = [5.0] * 8
+
+        for settling_now, ema in zip(settling_phase, ema_sequence):
+            if settling_now:
+                stable_ticks = 0
+                results.append(current)
+                continue
+            ema_int = int(math.floor(ema))
+            diff = abs(current - ema_int)
+            if diff >= _RESYNC_THRESHOLD_A:
+                stable_ticks += 1
+                if stable_ticks >= _RESYNC_MIN_STABLE_TICKS:
+                    current = ema_int
+                    stable_ticks = 0
+            else:
+                stable_ticks = 0
+            results.append(current)
+
+        # Ticks 1-3: settling, still at 6A
+        assert results[:3] == [6, 6, 6]
+        # Tick 6 (index 5): 3rd non-settling tick with mismatch → resynced
+        assert results[5] == 5
+        assert results[6] == 5
+        assert results[7] == 5
+
+    def test_no_false_positive_when_ema_matches(self):
+        """Scenario: EMA matches committed throughout — no resync should occur."""
+        # EMA hovers around 6.2A (floor=6 = committed=6 → diff=0)
+        ema_sequence = [6.2, 6.1, 6.3, 6.0, 5.9, 6.1, 6.2, 6.4]
+        committed_after_ticks = self._run_resync_flow(
+            committed_int=6,
+            ema_values=ema_sequence,
+            in_post_commit_window=True,
+        )
+        # committed should remain at 6 throughout
+        assert all(v == 6 for v in committed_after_ticks)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Tests: Forecast-to-EV Capture Factor computation (v4.4.0)
+# ---------------------------------------------------------------------------
+
+def _compute_forecast_capture_factor_coord(solar_wh: float, opportunity_wh: float) -> float:
+    """Mirror of coordinator._compute_forecast_capture_factor."""
+    if opportunity_wh <= 0:
+        return 0.0
+    return round(min(1.0, max(0.0, solar_wh / opportunity_wh)), 4)
+
+
+class TestForecastCaptureFactorCoordinator:
+    """Forecast-to-EV Capture Factor semantics."""
+
+    def test_no_opportunity_returns_zero(self):
+        assert _compute_forecast_capture_factor_coord(0.0, 0.0) == 0.0
+
+    def test_zero_capture_returns_zero(self):
+        assert _compute_forecast_capture_factor_coord(0.0, 1000.0) == 0.0
+
+    def test_full_capture_returns_one(self):
+        assert _compute_forecast_capture_factor_coord(1000.0, 1000.0) == 1.0
+
+    def test_half_capture(self):
+        assert _compute_forecast_capture_factor_coord(500.0, 1000.0) == 0.5
+
+    def test_clamped_to_one(self):
+        assert _compute_forecast_capture_factor_coord(1200.0, 1000.0) == 1.0
+
+    def test_independent_from_solar_to_ev_ratio(self):
+        """Different inputs can give a different result — they are not aliases."""
+        # Solar-to-EV ratio: ev_solar / total_solar (includes all periods)
+        # Forecast factor: ev_solar / ev_relevant_opportunity (only EV-available periods)
+        # With 40% solar-to-EV but high EV-relevant capture, factor > ratio is normal
+        solar_to_ev = 1000.0 / 5000.0  # 20%
+        capture_factor = _compute_forecast_capture_factor_coord(1000.0, 1500.0)  # 66.7%
+        assert abs(capture_factor - 1000.0 / 1500.0) < 0.001
+        assert capture_factor != solar_to_ev  # semantically different
+
+
+class TestForecastCaptureAccumulationScenario:
+    """Scenario test: forecast capture factor accumulation with EV-relevant gating.
+
+    Simulates the tick-by-tick accumulation logic from coordinator._accumulate_energy.
+    Verifies that:
+    - Opportunity only accumulates under EV-relevant conditions
+    - Solar capture only accumulates when the EV is actually charging
+    - The resulting factor is computed correctly from accumulated totals
+    """
+
+    def _accumulate_tick(
+        self,
+        state: dict,
+        ev_w: float,
+        surplus_w: float,
+        computed_net_w: float,
+        dt_h: float,
+        charging_on: bool,
+        vehicle_present: bool,
+        cable_connected: bool | None,
+        has_cable_sensor: bool,
+        battery_pct: float | None,
+        priority: str = "balance",
+    ) -> None:
+        """Mirror of coordinator._accumulate_energy forecast capture logic."""
+        PRIORITY_EXPORT = "export_priority"
+        _SOLAR_RATIO_MIN_POWER_W = 50.0
+
+        # --- EV solar capture (numerator) ---
+        if charging_on and ev_w > 0:
+            if computed_net_w > 0:
+                solar_portion_w = max(ev_w - computed_net_w, 0.0)
+            else:
+                solar_portion_w = ev_w
+            solar_wh = solar_portion_w * dt_h
+            if solar_wh > 0:
+                state["forecast_capture_solar_wh"] += solar_wh
+
+        # --- EV-relevant opportunity (denominator) ---
+        cable_ok = (not has_cable_sensor) or (cable_connected is True)
+        battery_ok = (battery_pct is None) or (battery_pct < 90.0)
+        priority_ok = priority != PRIORITY_EXPORT
+
+        if vehicle_present and cable_ok and battery_ok and priority_ok:
+            opportunity_w = max(0.0, surplus_w)
+            if opportunity_w > _SOLAR_RATIO_MIN_POWER_W:
+                state["forecast_capture_opportunity_wh"] += opportunity_w * dt_h
+
+    def test_opportunity_accumulates_when_ev_relevant_conditions_met(self):
+        """Opportunity accumulates when vehicle present, battery < 90%, cable connected."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        # 1 hour of 1000W solar surplus, EV not actively charging
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 1000.0
+        assert state["forecast_capture_solar_wh"] == 0.0  # EV not charging
+
+    def test_opportunity_blocked_when_vehicle_absent(self):
+        """No opportunity accumulation when vehicle is away."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=False, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_opportunity_blocked_when_battery_full(self):
+        """No opportunity accumulation when battery ≥ 90%."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=92.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_opportunity_blocked_when_cable_disconnected_and_sensor_configured(self):
+        """No opportunity when cable sensor configured but reports disconnected."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=False,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_opportunity_allowed_when_no_cable_sensor(self):
+        """When no cable sensor is configured, cable check is skipped."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=None,
+            has_cable_sensor=False, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 1000.0
+
+    def test_opportunity_blocked_in_export_priority_mode(self):
+        """In export_priority mode, EV solar capture is not relevant — no opportunity."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0, priority="export_priority",
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_solar_capture_accumulates_during_charging(self):
+        """When EV is charging with solar surplus, solar portion is captured."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        # EV draws 1150W, net=-100W (exporting) → all EV power is solar
+        self._accumulate_tick(
+            state, ev_w=1150.0, surplus_w=1250.0, computed_net_w=-100.0, dt_h=1.0,
+            charging_on=True, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=60.0,
+        )
+        assert state["forecast_capture_solar_wh"] == 1150.0  # full EV draw = solar
+        assert state["forecast_capture_opportunity_wh"] == 1250.0
+
+    def test_full_scenario_multiple_ticks_produces_correct_factor(self):
+        """Multi-tick scenario: opportunity and capture accumulate correctly.
+
+        Tick 1: EV absent → 0 opportunity, 0 capture
+        Tick 2: EV present, cable connected, solar 800W, not charging → 800 opportunity
+        Tick 3: EV present, cable connected, charging 800W (all solar) → 800 capture + 0 opportunity (EV is charging, surplus is roughly 0 after EV)
+        Tick 4: EV present, battery = 91% → 0 opportunity (battery full)
+        """
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        dt_h = 1.0 / 60.0  # 1 minute interval
+
+        # Tick 1: vehicle absent
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=800.0, computed_net_w=-800.0, dt_h=dt_h,
+            charging_on=False, vehicle_present=False, cable_connected=False,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        opp_after_t1 = state["forecast_capture_opportunity_wh"]
+        sol_after_t1 = state["forecast_capture_solar_wh"]
+
+        # Tick 2: vehicle present, cable connected, solar surplus, not charging
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=800.0, computed_net_w=-800.0, dt_h=dt_h,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        opp_after_t2 = state["forecast_capture_opportunity_wh"]
+        sol_after_t2 = state["forecast_capture_solar_wh"]
+
+        # Tick 3: vehicle present, cable connected, charging 800W all solar
+        self._accumulate_tick(
+            state, ev_w=800.0, surplus_w=800.0, computed_net_w=-200.0, dt_h=dt_h,
+            charging_on=True, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        opp_after_t3 = state["forecast_capture_opportunity_wh"]
+        sol_after_t3 = state["forecast_capture_solar_wh"]
+
+        # Tick 4: battery 91% → opportunity blocked
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=800.0, computed_net_w=-800.0, dt_h=dt_h,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=91.0,
+        )
+
+        # Tick 1: vehicle absent — no accumulation
+        assert opp_after_t1 == 0.0
+        assert sol_after_t1 == 0.0
+
+        # Tick 2: opportunity accumulated, no capture
+        expected_opportunity = 800.0 * dt_h
+        assert abs(opp_after_t2 - expected_opportunity) < 1e-9
+        assert sol_after_t2 == 0.0
+
+        # Tick 3: both capture and additional opportunity accumulated
+        expected_capture = 800.0 * dt_h
+        assert abs(sol_after_t3 - expected_capture) < 1e-9
+        assert opp_after_t3 > opp_after_t2  # opportunity grew
+
+        # Final factor: capture / opportunity — both from ticks 2 & 3
+        total_opp = state["forecast_capture_opportunity_wh"]
+        total_cap = state["forecast_capture_solar_wh"]
+        assert total_opp > 0
+        factor = _compute_forecast_capture_factor_coord(total_cap, total_opp)
+        assert 0.0 < factor <= 1.0
+        # capture == opportunity in this case (all EV power was solar)
+        # so factor should be ~1 (or close, since both ticks contribute to opp)
+        assert factor == round(min(1.0, total_cap / total_opp), 4)

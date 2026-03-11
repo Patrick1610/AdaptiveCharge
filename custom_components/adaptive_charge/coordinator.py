@@ -351,6 +351,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._import_guard_zero_since: float | None = None  # when we first held at 0A
         self._import_guard_stop_time: float | None = None  # when last escalate_stop triggered
         self._ev_zero_since: float | None = None  # when EV power first read 0 while _charging_on
+        self._resync_stable_ticks: int = 0  # consecutive ticks where EMA-implied integer differs from committed by ≥ threshold
 
         # Previous values for step detection
         self._prev_ev_w: float | None = None
@@ -464,6 +465,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         stored_capture = self._store.get("solar_capture_factor")
         if stored_capture > 0:
             self._solar_capture_factor = stored_capture
+        # Restore desired range so the first tick uses the user's persisted value
+        # rather than the config default (100 km) — prevents a momentary 100 km
+        # reading on reload before the number entity's RestoreEntity hook fires.
+        stored_range = self._store.get("desired_range_km")
+        if stored_range > 0:
+            self._desired_range = stored_range
         await self._async_tick(None)
         self._unsub_interval = async_track_time_interval(
             self.hass,
@@ -597,6 +604,17 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # --- Phase 7c: Stale charge detection ---
         self._detect_stale_charge(sensor_data["ev_w"], mono_now)
 
+        # --- Phase 7d: External current override detection (Tessie resync) ---
+        # If an external source (e.g. Tessie app) has stepped the charger current
+        # back by ~1A within ~10s of a new setting, the integration's committed
+        # current no longer matches reality and subsequent modulation decisions will
+        # be offset.  Detect this by comparing the EMA-derived current against the
+        # last committed integer when neither settling nor alignment is active and
+        # the EV has been drawing stable power.  If they differ by ≥ 1A, resync
+        # the internal committed state to the EMA-implied value so that subsequent
+        # modulation steps are calculated from the correct baseline.
+        self._detect_external_current_override(analysis["ema_current_a"], mono_now)
+
         # --- Phase 8: Control logic ---
         if self._controller_enabled:
             await self._run_control_logic(
@@ -656,7 +674,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
         ev_battery_energy_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
-        ev_energy_added_kwh = _get_float_state(self.hass, self._ev_energy_added_sensor)
+        # ev_energy_added_sensor: still present in config entries created before v4.4.0.
+        # The value is intentionally NOT read or forwarded — it has no role in the
+        # wall-vs-battery overhead model and is not passed to the data dict or any sensor.
 
         # Sum all remaining-forecast sensor values (kWh remaining today)
         forecast_kwh: float | None = None
@@ -707,7 +727,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "charge_limit_pct": charge_limit_pct,
             "forecast_kwh": forecast_kwh,
             "ev_battery_energy_kwh": ev_battery_energy_kwh,
-            "ev_energy_added_kwh": ev_energy_added_kwh,
         }
 
     # ------------------------------------------------------------------
@@ -1090,6 +1109,39 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._energy_session_import_wh += import_wh
             # Persist energy charged
             self._store.add_energy_charged(energy_wh, solar_wh, import_wh)
+            # Accumulate actual EV solar capture for Forecast-to-EV Capture Factor
+            if solar_wh > 0:
+                self._store.add_forecast_capture(solar_wh=solar_wh, opportunity_wh=0.0)
+
+        # --- Forecast-to-EV opportunity accumulation ---
+        # Accumulate EV-relevant solar opportunity energy regardless of whether
+        # the EV is currently charging.  Conditions:
+        #   - Vehicle present/home
+        #   - Battery level < 90% (if configured) — EV still has room to charge
+        #   - Cable connected (if configured) — EV can accept a charge
+        #   - Charging priority is not export_priority (which blocks EV solar use)
+        #   - Positive solar surplus (opportunity energy ≥ 0, never negative)
+        presence = sensor_data.get("presence")
+        cable_connected = sensor_data.get("cable_connected")
+        battery_pct = sensor_data.get("battery_pct")
+        has_cable_sensor = bool(self._cable_sensor)
+
+        vehicle_present = presence is True
+        cable_ok = (not has_cable_sensor) or (cable_connected is True)
+        battery_ok = (battery_pct is None) or (battery_pct < 90.0)
+        priority_ok = self._charging_priority != PRIORITY_EXPORT
+
+        if vehicle_present and cable_ok and battery_ok and priority_ok:
+            # Use surplus (solar available to EV) as the opportunity source.
+            # surplus_w = solar_w − home_load_w.  Clamp to [0, ∞).
+            surplus_w_raw = sensor_data.get("surplus_w")
+            if surplus_w_raw is None:
+                # Fallback: use raw solar generation if surplus is unavailable
+                surplus_w_raw = sensor_data.get("solar_w") or 0.0
+            opportunity_w = max(0.0, surplus_w_raw)
+            if opportunity_w > _SOLAR_RATIO_MIN_POWER_W:
+                opportunity_wh = opportunity_w * dt_h
+                self._store.add_forecast_capture(solar_wh=0.0, opportunity_wh=opportunity_wh)
 
     def _compute_energy_needed_full_kwh(
         self,
@@ -1231,6 +1283,28 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
         return None
 
+    def _compute_forecast_capture_factor(self) -> float:
+        """Return the Forecast-to-EV Capture Factor (0.0–1.0).
+
+        This is a dedicated forecasting sensor that answers:
+        "What fraction of EV-relevant solar opportunity has historically been
+        captured by the EV?"
+
+        It is semantically independent from the existing Solar-to-EV Ratio:
+          Solar-to-EV Ratio = EV solar energy / total solar production  (broad KPI)
+          Forecast Capture  = EV solar captured / EV-relevant opportunity (forecast-oriented)
+
+        The denominator accumulates only when EV-relevant conditions are met
+        (vehicle present, battery < 90%, cable connected if configured, non-export
+        priority).  This excludes periods when the EV is away, full, or the user
+        intentionally suppresses solar charging.
+        """
+        capture = self._store.get("forecast_capture_solar_wh")
+        opportunity = self._store.get("forecast_capture_opportunity_wh")
+        if opportunity <= 0:
+            return 0.0
+        return round(min(1.0, max(0.0, capture / opportunity)), 4)
+
     # ------------------------------------------------------------------
     # Phase 6: Cable plug-in detection
     # ------------------------------------------------------------------
@@ -1310,11 +1384,114 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             self._finalize_session_if_needed("stale_charge_reset")
 
     # ------------------------------------------------------------------
-    # Session finalizer
+    # External current override detection (Tessie / third-party app resync)
     # ------------------------------------------------------------------
 
-    # EMA weight for the solar capture factor (same as capacity EMA).
-    _CAPTURE_FACTOR_EMA_ALPHA: float = 0.3
+    # Minimum number of stable EMA samples required before a resync is
+    # triggered, to avoid resyncing on transient startup readings.
+    # Within the post-commit window (shortly after we set the current) fewer
+    # ticks are required — this is the typical Tessie scenario where an
+    # external app steps the current back within ~10 s of our command.
+    # Outside the post-commit window we require stronger evidence to avoid
+    # false positives from measurement noise.
+    _RESYNC_MIN_STABLE_TICKS: int = 3       # within post-commit window
+    _RESYNC_EXTENDED_TICKS: int = 6         # outside post-commit window
+    # How long after our own _set_charge_current() call we stay in the
+    # sensitive post-commit window.
+    _RESYNC_POST_COMMIT_WINDOW_S: float = 120.0
+    # Minimum amp difference between committed integer and EMA-implied integer
+    # to qualify as an external override that warrants a resync.
+    _RESYNC_THRESHOLD_A: float = 0.9
+
+    def _detect_external_current_override(
+        self, ema_current_a: float, mono_now: float
+    ) -> None:
+        """Detect and correct external current overrides (e.g. Tessie app).
+
+        Sometimes a third-party app (Tessie, Tesla app) steps the charger current
+        by −1 A within seconds of a new setting from this integration.  Because
+        AdaptiveCharge does not observe the charger's actual current register
+        directly, its committed_current stays at the higher value and all
+        subsequent modulation decisions are offset by 1 A.
+
+        Detection logic (two-tier):
+        - Post-commit window (within _RESYNC_POST_COMMIT_WINDOW_S of last current
+          set call): requires _RESYNC_MIN_STABLE_TICKS consecutive ticks with a
+          mismatch ≥ threshold.  Covers the typical Tessie scenario where the
+          external app overrides within seconds of our command.
+        - Outside window: requires _RESYNC_EXTENDED_TICKS consecutive ticks.
+          This reduces false positives from EMA measurement noise when the
+          committed setpoint is correct and the EV is just drawing slightly less
+          than commanded (normal at low solar periods).
+
+        In both cases the following guards are applied:
+        - Not settling (settling window covers EV startup ramp-up transient)
+        - Not in alignment (alignment active means sensor skew is too large)
+        - Actively charging (_charging_on is True)
+        """
+        def _reset(reason: str) -> None:
+            if self._resync_stable_ticks:
+                _LOGGER.debug("AdaptiveCharge resync: reset — %s", reason)
+            self._resync_stable_ticks = 0
+
+        if not self._charging_on:
+            _reset("charging_on is False")
+            return
+        if self._last_committed_int is None:
+            self._resync_stable_ticks = 0
+            return
+        # Suppress during active settling or alignment windows.
+        if self._alignment.settling or self._alignment.active:
+            _reset(
+                f"settling={self._alignment.settling} alignment={self._alignment.active}"
+            )
+            return
+
+        # EMA-implied integer (floor — conservative: EV likely draws ≤ commanded A)
+        ema_int = int(math.floor(ema_current_a))
+        diff = abs(self._last_committed_int - ema_int)
+
+        if diff < self._RESYNC_THRESHOLD_A:
+            _reset(
+                f"diff={diff:.2f}A below threshold={self._RESYNC_THRESHOLD_A:.1f}A "
+                f"(committed={self._last_committed_int}A, ema_int={ema_int}A)"
+            )
+            return
+
+        # Determine required stable ticks based on post-commit window
+        in_post_commit_window = (
+            self._last_current_set_ts is not None
+            and (mono_now - self._last_current_set_ts) <= self._RESYNC_POST_COMMIT_WINDOW_S
+        )
+        required_ticks = (
+            self._RESYNC_MIN_STABLE_TICKS if in_post_commit_window
+            else self._RESYNC_EXTENDED_TICKS
+        )
+
+        self._resync_stable_ticks += 1
+        _LOGGER.debug(
+            "AdaptiveCharge resync: mismatch tick %d/%d — "
+            "committed=%dA ema_int=%dA diff=%.2fA post_commit_window=%s",
+            self._resync_stable_ticks, required_ticks,
+            self._last_committed_int, ema_int, diff, in_post_commit_window,
+        )
+
+        if self._resync_stable_ticks >= required_ticks:
+            _LOGGER.info(
+                "AdaptiveCharge: external current override detected — "
+                "committed=%dA, EMA-implied=%dA (diff=%.2fA, ticks=%d, "
+                "post_commit_window=%s) — resyncing to %dA",
+                self._last_committed_int, ema_int, diff,
+                self._resync_stable_ticks, in_post_commit_window, ema_int,
+            )
+            self._committed_current = float(ema_int)
+            self._last_committed_int = ema_int
+            self._last_commit_reason = "external_resync"
+            self._resync_stable_ticks = 0
+
+    # ------------------------------------------------------------------
+    # Session finalizer
+    # ------------------------------------------------------------------
 
     def _finalize_session_if_needed(self, trigger: str) -> None:
         """Central session finalization: capacity estimate, overhead, capture factor.
@@ -1532,9 +1709,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 round(self._solar_capture_factor, 4)
                 if self._solar_capture_factor > 0 else None
             ),
+            # --- Forecast-to-EV Capture Factor (dedicated forecasting sensor) ---
+            "forecast_capture_solar_kwh": round(
+                self._store.get("forecast_capture_solar_wh") / 1000.0, 3
+            ),
+            "forecast_capture_opportunity_kwh": round(
+                self._store.get("forecast_capture_opportunity_wh") / 1000.0, 3
+            ),
+            "forecast_to_ev_capture_factor": self._compute_forecast_capture_factor(),
             # --- EV battery-side metrics ---
             "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
-            "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
             "session_battery_delta_kwh": session_battery_delta,
             "charging_overhead_pct": charging_overhead_pct,
             "energy_needed_full_kwh": energy_needed_full_kwh,
@@ -1899,16 +2083,22 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # Quantize float target to EVSE integer amps.
         #
         # Upward modulation quantization depends on the charging priority:
-        #   balance             — round (half-up): step when surplus ≥ 0.5 A above
-        #                         current setpoint.  Symmetric around the halfway
-        #                         point, matching pure surplus behaviour.
-        #   zero_prefer_export  — floor: requires the surplus EMA to be at least 1 A
-        #                         above the current setpoint before stepping up.
-        #                         Naturally biases toward exporting rather than
-        #                         consuming, without any configurable W offset.
-        #   zero_prefer_import  — ceil: any positive surplus (even 0.01 A above the
-        #                         setpoint) triggers a step up.  Biases toward
-        #                         charging while staying close to zero import.
+        #   balance             — round (half-up): step only when EMA rounds to a
+        #                         higher integer than the current setpoint (i.e. EMA
+        #                         is at least 0.5 A above the next integer boundary).
+        #                         e.g. current=5A, EMA=5.27A → round(5.27)=5 → no step.
+        #                              current=5A, EMA=5.5A  → round(5.5)=6  → step to 6A.
+        #   zero_prefer_export  — floor: requires EMA ≥ (current_int + 1) before stepping
+        #                         up.  Biases toward exporting rather than consuming.
+        #   zero_prefer_import  — ceil: any positive surplus above the current integer
+        #                         triggers a step up.  Biases toward charging.
+        #
+        # NOTE: There is intentionally NO forced minimum +1A step guarantee.
+        # If the quantized result equals the current committed integer, the
+        # idempotency check below will suppress the command — this is correct
+        # behaviour and avoids spurious upward steps when the surplus EMA is
+        # only fractionally above the setpoint (fixes 5A→6A jump in balance mode
+        # when available current decision is structurally below 5.5A).
         #
         # Downward modulation: always floor (conservative — avoids over-reducing).
         # Other paths (start / force / import-guard): direct integer truncation.
@@ -1920,7 +2110,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                 quantized = int(math.ceil(target))
             else:  # balance (default) and any unknown mode
                 quantized = int(math.floor(target + 0.5))
-            target_int = max(current_int + 1, quantized)
+            target_int = quantized
         elif reason == "modulate_down":
             target_int = int(math.floor(target))
         else:
@@ -2310,6 +2500,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     async def async_service_set_desired_range(self, range_km: float) -> None:
         """Service: set desired range."""
         self._desired_range = range_km
+        self._store.set_desired_range(range_km)
 
     async def async_service_enable_tonight(self) -> None:
         """Service: enable charge tonight."""
@@ -2341,6 +2532,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
     def set_desired_range(self, value: float) -> None:
         """Set the desired range in km."""
         self._desired_range = value
+        self._store.set_desired_range(value)
 
     def set_max_current_limit(self, value: float) -> None:
         """Set the max current limit in A."""

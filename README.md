@@ -584,7 +584,34 @@ Every sensor exposes the following extra attributes:
 
 ## Changelog
 
-### v4.3.6
+### v4.4.0
+
+**Behavior notes (breaking / behavior changes):**
+- **Balanced mode rounding**: `balance` priority no longer forces a minimum +1A step on upward modulation. The previous `max(current+1, round(EMA))` could cause spurious jumps (e.g. 5A → 6A when EMA was 5.27A). Now uses pure `round(EMA)`: a step only occurs when the EMA actually rounds to a higher integer (EMA ≥ 5.5A to step from 5A → 6A). Same clean-up applied to `zero_prefer_export` (floor) and `zero_prefer_import` (ceil).
+- **Desired range persistence**: `desired_range` is no longer reset to the setup default on reload/restart. The value is now persisted in `.storage/adaptive_charge` and restored before the first tick, eliminating the momentary 100 km glitch when the number entity's `RestoreEntity` hook hadn't fired yet.
+- **EV Charge Energy Added Sensor**: removed from setup/reconfigure flow. It is no longer selectable in the integration options. Existing config entries that still have it configured will continue to read it as a diagnostic-only passthrough (visible in battery delta sensor attributes), but it has no effect on any control logic or calculation.
+
+**New feature: Forecast to EV Capture Factor** (`forecast_to_ev_capture_factor`):
+- New sensor answering: *"What fraction of remaining solar forecast is historically usable for EV charging?"*
+- Semantically independent from the existing Solar-to-EV Ratio.
+- Factor = actual EV solar capture ÷ EV-relevant solar opportunity (0.0–1.0, clamped).
+- Denominator only accumulates while: vehicle present, battery < 90%, cable connected (if configured), priority ≠ `export_priority`.
+- Opportunity source: internal `surplus_w` (solar available to EV, clamped ≥ 0), falls back to `solar_w`.
+- Intended use: `remaining_forecast_today_kwh × forecast_to_ev_capture_factor`.
+- Returns 0.0 until sufficient history exists (denominator = 0).
+
+**Bugfix: Tessie / external current override resync**:
+- Added `_detect_external_current_override()` to detect when a third-party app (Tessie, Tesla app) steps the charger current back after a new setting from AdaptiveCharge.
+- Two-tier detection: 3-tick threshold within 120 s of last current set; 6-tick threshold after (reduces false positives from EMA noise).
+- Resyncs `committed_current` to the EMA-implied value, correcting the persistent offset.
+
+**Migration notes:**
+- No manual migration required. Upgrade and restart.
+- `desired_range_km`, `forecast_capture_solar_wh`, and `forecast_capture_opportunity_wh` are new storage keys (default 0.0 — merged on load from older stores).
+- `forecast_to_ev_capture_factor` sensor will show 0.0 until one full charging session completes.
+- If you had `EV Charge Energy Added Sensor` configured: the field remains in storage but is treated as diagnostic only. Remove it from your config (via options flow) when convenient; it has no operational effect.
+
+
 
 **Charging Priority redesign (simpler, no configuration needed):**
 - `zero_prefer_export` and `zero_prefer_import` now use **floor** and **ceil** quantization respectively, instead of a configurable W-bias offset. This makes the distinction intuitive:
