@@ -674,9 +674,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
         ev_battery_energy_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
-        # ev_energy_added_kwh is read for backward compatibility with existing config entries
-        # but has NO influence on any control logic or calculation (diagnostic-only passthrough).
-        ev_energy_added_kwh = _get_float_state(self.hass, self._ev_energy_added_sensor)
+        # ev_energy_added_sensor: still present in config entries created before v4.4.0.
+        # The value is intentionally NOT read or forwarded — it has no role in the
+        # wall-vs-battery overhead model and is not passed to the data dict or any sensor.
 
         # Sum all remaining-forecast sensor values (kWh remaining today)
         forecast_kwh: float | None = None
@@ -727,7 +727,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "charge_limit_pct": charge_limit_pct,
             "forecast_kwh": forecast_kwh,
             "ev_battery_energy_kwh": ev_battery_energy_kwh,
-            "ev_energy_added_kwh": ev_energy_added_kwh,
         }
 
     # ------------------------------------------------------------------
@@ -1720,13 +1719,6 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "forecast_to_ev_capture_factor": self._compute_forecast_capture_factor(),
             # --- EV battery-side metrics ---
             "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
-            # ev_energy_added_kwh: DIAGNOSTIC ONLY — legacy passthrough for existing configs.
-            # This value has NO effect on any control logic, overhead calculation,
-            # or energy accounting.  The primary overhead/charged-energy model uses
-            # wall energy (EV Power Sensor) and battery delta (EV Battery Energy Sensor).
-            # The field is read for backward compatibility with config entries that still
-            # have the sensor configured, and is exposed only in diagnostic sensor attributes.
-            "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
             "session_battery_delta_kwh": session_battery_delta,
             "charging_overhead_pct": charging_overhead_pct,
             "energy_needed_full_kwh": energy_needed_full_kwh,

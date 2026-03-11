@@ -5402,10 +5402,13 @@ class TestBuildDataDictBatteryFields:
     """Test that data dict includes battery-side energy keys."""
 
     def test_battery_fields_present_in_data_dict(self):
-        """Data dict should include EV battery energy and overhead keys."""
+        """Data dict should include EV battery energy and overhead keys.
+
+        ev_energy_added_kwh was removed in v4.4.0 — it is no longer passed
+        through the data dict or exposed in any sensor attributes.
+        """
         expected_keys = {
             "ev_battery_energy_kwh",
-            "ev_energy_added_kwh",
             "session_battery_delta_kwh",
             "charging_overhead_pct",
         }

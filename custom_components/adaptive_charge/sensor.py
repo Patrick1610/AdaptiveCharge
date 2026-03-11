@@ -797,6 +797,4 @@ class BatteryEnergyDeltaSensor(_BaseAdaptiveChargeSensor):
             "energy_session_kwh": data.get("energy_session_kwh", 0.0),
             "charging_overhead_pct": data.get("charging_overhead_pct"),
             "ev_battery_energy_kwh": data.get("ev_battery_energy_kwh"),
-            # ev_energy_added_kwh: diagnostic only — legacy passthrough, no control influence
-            "ev_energy_added_kwh": data.get("ev_energy_added_kwh"),
         }
