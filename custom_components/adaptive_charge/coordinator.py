@@ -674,6 +674,8 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         battery_pct = _get_float_state(self.hass, self._battery_sensor)
         charge_limit_pct = _get_float_state(self.hass, self._charge_limit_sensor)
         ev_battery_energy_kwh = _get_float_state(self.hass, self._ev_battery_energy_sensor)
+        # ev_energy_added_kwh is read for backward compatibility with existing config entries
+        # but has NO influence on any control logic or calculation (diagnostic-only passthrough).
         ev_energy_added_kwh = _get_float_state(self.hass, self._ev_energy_added_sensor)
 
         # Sum all remaining-forecast sensor values (kWh remaining today)
@@ -1388,7 +1390,16 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
 
     # Minimum number of stable EMA samples required before a resync is
     # triggered, to avoid resyncing on transient startup readings.
-    _RESYNC_MIN_STABLE_TICKS: int = 3
+    # Within the post-commit window (shortly after we set the current) fewer
+    # ticks are required — this is the typical Tessie scenario where an
+    # external app steps the current back within ~10 s of our command.
+    # Outside the post-commit window we require stronger evidence to avoid
+    # false positives from measurement noise.
+    _RESYNC_MIN_STABLE_TICKS: int = 3       # within post-commit window
+    _RESYNC_EXTENDED_TICKS: int = 6         # outside post-commit window
+    # How long after our own _set_charge_current() call we stay in the
+    # sensitive post-commit window.
+    _RESYNC_POST_COMMIT_WINDOW_S: float = 120.0
     # Minimum amp difference between committed integer and EMA-implied integer
     # to qualify as an external override that warrants a resync.
     _RESYNC_THRESHOLD_A: float = 0.9
@@ -1404,42 +1415,75 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         directly, its committed_current stays at the higher value and all
         subsequent modulation decisions are offset by 1 A.
 
-        Detection heuristic:
-        - Not settling (settling window suppresses observation noise)
-        - Not in alignment (alignment active means EV is still transitioning)
-        - Actively charging (_charging_on is True)
-        - EMA-implied integer differs from last committed integer by ≥ threshold
-          for at least _RESYNC_MIN_STABLE_TICKS consecutive ticks
+        Detection logic (two-tier):
+        - Post-commit window (within _RESYNC_POST_COMMIT_WINDOW_S of last current
+          set call): requires _RESYNC_MIN_STABLE_TICKS consecutive ticks with a
+          mismatch ≥ threshold.  Covers the typical Tessie scenario where the
+          external app overrides within seconds of our command.
+        - Outside window: requires _RESYNC_EXTENDED_TICKS consecutive ticks.
+          This reduces false positives from EMA measurement noise when the
+          committed setpoint is correct and the EV is just drawing slightly less
+          than commanded (normal at low solar periods).
 
-        When detected the internal committed_current is updated to the EMA-implied
-        value so that further modulation computes deltas from the correct baseline.
+        In both cases the following guards are applied:
+        - Not settling (settling window covers EV startup ramp-up transient)
+        - Not in alignment (alignment active means sensor skew is too large)
+        - Actively charging (_charging_on is True)
         """
-        if not self._charging_on:
+        def _reset(reason: str) -> None:
+            if self._resync_stable_ticks:
+                _LOGGER.debug("AdaptiveCharge resync: reset — %s", reason)
             self._resync_stable_ticks = 0
+
+        if not self._charging_on:
+            _reset("charging_on is False")
             return
         if self._last_committed_int is None:
             self._resync_stable_ticks = 0
             return
         # Suppress during active settling or alignment windows.
         if self._alignment.settling or self._alignment.active:
-            self._resync_stable_ticks = 0
+            _reset(
+                f"settling={self._alignment.settling} alignment={self._alignment.active}"
+            )
             return
 
         # EMA-implied integer (floor — conservative: EV likely draws ≤ commanded A)
         ema_int = int(math.floor(ema_current_a))
         diff = abs(self._last_committed_int - ema_int)
 
-        if diff >= self._RESYNC_THRESHOLD_A:
-            self._resync_stable_ticks += 1
-        else:
-            self._resync_stable_ticks = 0
+        if diff < self._RESYNC_THRESHOLD_A:
+            _reset(
+                f"diff={diff:.2f}A below threshold={self._RESYNC_THRESHOLD_A:.1f}A "
+                f"(committed={self._last_committed_int}A, ema_int={ema_int}A)"
+            )
             return
 
-        if self._resync_stable_ticks >= self._RESYNC_MIN_STABLE_TICKS:
+        # Determine required stable ticks based on post-commit window
+        in_post_commit_window = (
+            self._last_current_set_ts is not None
+            and (mono_now - self._last_current_set_ts) <= self._RESYNC_POST_COMMIT_WINDOW_S
+        )
+        required_ticks = (
+            self._RESYNC_MIN_STABLE_TICKS if in_post_commit_window
+            else self._RESYNC_EXTENDED_TICKS
+        )
+
+        self._resync_stable_ticks += 1
+        _LOGGER.debug(
+            "AdaptiveCharge resync: mismatch tick %d/%d — "
+            "committed=%dA ema_int=%dA diff=%.2fA post_commit_window=%s",
+            self._resync_stable_ticks, required_ticks,
+            self._last_committed_int, ema_int, diff, in_post_commit_window,
+        )
+
+        if self._resync_stable_ticks >= required_ticks:
             _LOGGER.info(
                 "AdaptiveCharge: external current override detected — "
-                "committed=%dA, EMA-implied=%dA (diff=%.2fA) — resyncing to %dA",
-                self._last_committed_int, ema_int, diff, ema_int,
+                "committed=%dA, EMA-implied=%dA (diff=%.2fA, ticks=%d, "
+                "post_commit_window=%s) — resyncing to %dA",
+                self._last_committed_int, ema_int, diff,
+                self._resync_stable_ticks, in_post_commit_window, ema_int,
             )
             self._committed_current = float(ema_int)
             self._last_committed_int = ema_int
@@ -1676,6 +1720,12 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "forecast_to_ev_capture_factor": self._compute_forecast_capture_factor(),
             # --- EV battery-side metrics ---
             "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
+            # ev_energy_added_kwh: DIAGNOSTIC ONLY — legacy passthrough for existing configs.
+            # This value has NO effect on any control logic, overhead calculation,
+            # or energy accounting.  The primary overhead/charged-energy model uses
+            # wall energy (EV Power Sensor) and battery delta (EV Battery Energy Sensor).
+            # The field is read for backward compatibility with config entries that still
+            # have the sensor configured, and is exposed only in diagnostic sensor attributes.
             "ev_energy_added_kwh": sensor_data.get("ev_energy_added_kwh"),
             "session_battery_delta_kwh": session_battery_delta,
             "charging_overhead_pct": charging_overhead_pct,

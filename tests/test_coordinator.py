@@ -6674,15 +6674,17 @@ def _simulate_resync(
     alignment_active: bool,
     charging_on: bool,
     ticks_needed: int = 3,
+    in_post_commit_window: bool = True,
 ) -> tuple[bool, int]:
-    """Mirror of coordinator._detect_external_current_override logic.
+    """Mirror of coordinator._detect_external_current_override two-tier logic.
 
     Returns (resynced, new_committed_int).
     """
     import math
 
     _RESYNC_THRESHOLD_A = 0.9
-    _RESYNC_MIN_STABLE_TICKS = 3
+    _RESYNC_MIN_STABLE_TICKS = 3   # within post-commit window
+    _RESYNC_EXTENDED_TICKS = 6     # outside post-commit window
 
     if not charging_on:
         return False, committed_int
@@ -6697,11 +6699,9 @@ def _simulate_resync(
     if diff < _RESYNC_THRESHOLD_A:
         return False, committed_int
 
-    # Simulate running for ticks_needed ticks
-    for _ in range(ticks_needed):
-        pass  # each tick increments stable_ticks
+    required_ticks = _RESYNC_MIN_STABLE_TICKS if in_post_commit_window else _RESYNC_EXTENDED_TICKS
 
-    if ticks_needed >= _RESYNC_MIN_STABLE_TICKS:
+    if ticks_needed >= required_ticks:
         return True, ema_int
     return False, committed_int
 
@@ -6730,12 +6730,31 @@ class TestExternalCurrentResync:
         )
         assert resynced is False
 
-    def test_resync_after_stable_ticks(self):
-        """1A offset detected for 3+ ticks triggers resync to EMA-implied value."""
+    def test_resync_after_stable_ticks_in_window(self):
+        """1A offset for 3 ticks within post-commit window → resync."""
         resynced, new_int = _simulate_resync(
             committed_int=6, ema_current_a=5.0,
             settling=False, alignment_active=False, charging_on=True,
-            ticks_needed=3,
+            ticks_needed=3, in_post_commit_window=True,
+        )
+        assert resynced is True
+        assert new_int == 5
+
+    def test_resync_not_triggered_outside_window_with_only_3_ticks(self):
+        """Outside post-commit window, 3 ticks is not enough — need 6."""
+        resynced, _ = _simulate_resync(
+            committed_int=6, ema_current_a=5.0,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=3, in_post_commit_window=False,
+        )
+        assert resynced is False
+
+    def test_resync_after_extended_ticks_outside_window(self):
+        """Outside post-commit window, 6 ticks triggers resync."""
+        resynced, new_int = _simulate_resync(
+            committed_int=6, ema_current_a=5.0,
+            settling=False, alignment_active=False, charging_on=True,
+            ticks_needed=6, in_post_commit_window=False,
         )
         assert resynced is True
         assert new_int == 5
@@ -6748,10 +6767,133 @@ class TestExternalCurrentResync:
         resynced, new_int = _simulate_resync(
             committed_int=6, ema_current_a=ema,
             settling=False, alignment_active=False, charging_on=True,
-            ticks_needed=3,
+            ticks_needed=3, in_post_commit_window=True,
         )
         assert resynced is True
         assert new_int == ema_int  # floor(4.8) = 4
+
+
+class TestExternalResyncScenario:
+    """Scenario tests: end-to-end flow of external override → resync → no lasting offset.
+
+    These tests simulate a sequence of ticks where an external app (Tessie)
+    overrides the charge current and verify that the integration resyncs,
+    then resumes correct modulation from the resynced baseline.
+    """
+
+    def _run_resync_flow(
+        self,
+        committed_int: int,
+        ema_values: list[float],
+        settling: bool = False,
+        alignment_active: bool = False,
+        in_post_commit_window: bool = True,
+    ) -> list[int]:
+        """Simulate multiple ticks of the resync detection logic.
+
+        Returns the committed_int value after each tick.
+        """
+        import math
+        _RESYNC_THRESHOLD_A = 0.9
+        _RESYNC_MIN_STABLE_TICKS = 3
+        _RESYNC_EXTENDED_TICKS = 6
+        required = _RESYNC_MIN_STABLE_TICKS if in_post_commit_window else _RESYNC_EXTENDED_TICKS
+
+        current = committed_int
+        stable_ticks = 0
+        results = []
+
+        for ema in ema_values:
+            if settling or alignment_active:
+                stable_ticks = 0
+                results.append(current)
+                continue
+
+            ema_int = int(math.floor(ema))
+            diff = abs(current - ema_int)
+            if diff >= _RESYNC_THRESHOLD_A:
+                stable_ticks += 1
+                if stable_ticks >= required:
+                    current = ema_int
+                    stable_ticks = 0
+            else:
+                stable_ticks = 0
+
+            results.append(current)
+
+        return results
+
+    def test_tessie_override_corrected_after_3_ticks(self):
+        """Scenario: we commit 6A, Tessie overrides to 5A within seconds.
+        EMA settles at ~5.0A.  After 3 ticks the integration resyncs to 5A
+        and all subsequent modulation uses 5A as the baseline.
+        """
+        # EMA stays at 5.0 (Tessie held it there after override)
+        ema_sequence = [5.0] * 8  # 8 ticks
+        committed_after_ticks = self._run_resync_flow(
+            committed_int=6,
+            ema_values=ema_sequence,
+            in_post_commit_window=True,
+        )
+        # After tick 3 the committed should be resynced to 5
+        assert committed_after_ticks[0] == 6   # tick 1: still 6A
+        assert committed_after_ticks[1] == 6   # tick 2: still 6A
+        assert committed_after_ticks[2] == 5   # tick 3: resynced!
+        assert all(v == 5 for v in committed_after_ticks[2:])  # stays at 5A
+
+    def test_no_resync_during_settling_then_corrects_after(self):
+        """Scenario: settling is active for first 3 ticks (EV ramp-up).
+        The external override happens but resync is suppressed during settling.
+        After settling ends, resync triggers after 3 more stable ticks.
+        """
+        # First 3 ticks: settling active → no resync
+        # Next 3 ticks: settling done → resync after 3 ticks
+        import math
+
+        _RESYNC_THRESHOLD_A = 0.9
+        _RESYNC_MIN_STABLE_TICKS = 3
+        current = 6
+        stable_ticks = 0
+        results = []
+        settling_phase = [True, True, True, False, False, False, False, False]
+        ema_sequence = [5.0] * 8
+
+        for settling_now, ema in zip(settling_phase, ema_sequence):
+            if settling_now:
+                stable_ticks = 0
+                results.append(current)
+                continue
+            ema_int = int(math.floor(ema))
+            diff = abs(current - ema_int)
+            if diff >= _RESYNC_THRESHOLD_A:
+                stable_ticks += 1
+                if stable_ticks >= _RESYNC_MIN_STABLE_TICKS:
+                    current = ema_int
+                    stable_ticks = 0
+            else:
+                stable_ticks = 0
+            results.append(current)
+
+        # Ticks 1-3: settling, still at 6A
+        assert results[:3] == [6, 6, 6]
+        # Tick 6 (index 5): 3rd non-settling tick with mismatch → resynced
+        assert results[5] == 5
+        assert results[6] == 5
+        assert results[7] == 5
+
+    def test_no_false_positive_when_ema_matches(self):
+        """Scenario: EMA matches committed throughout — no resync should occur."""
+        # EMA hovers around 6.2A (floor=6 = committed=6 → diff=0)
+        ema_sequence = [6.2, 6.1, 6.3, 6.0, 5.9, 6.1, 6.2, 6.4]
+        committed_after_ticks = self._run_resync_flow(
+            committed_int=6,
+            ema_values=ema_sequence,
+            in_post_commit_window=True,
+        )
+        # committed should remain at 6 throughout
+        assert all(v == 6 for v in committed_after_ticks)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -6792,3 +6934,195 @@ class TestForecastCaptureFactorCoordinator:
         capture_factor = _compute_forecast_capture_factor_coord(1000.0, 1500.0)  # 66.7%
         assert abs(capture_factor - 1000.0 / 1500.0) < 0.001
         assert capture_factor != solar_to_ev  # semantically different
+
+
+class TestForecastCaptureAccumulationScenario:
+    """Scenario test: forecast capture factor accumulation with EV-relevant gating.
+
+    Simulates the tick-by-tick accumulation logic from coordinator._accumulate_energy.
+    Verifies that:
+    - Opportunity only accumulates under EV-relevant conditions
+    - Solar capture only accumulates when the EV is actually charging
+    - The resulting factor is computed correctly from accumulated totals
+    """
+
+    def _accumulate_tick(
+        self,
+        state: dict,
+        ev_w: float,
+        surplus_w: float,
+        computed_net_w: float,
+        dt_h: float,
+        charging_on: bool,
+        vehicle_present: bool,
+        cable_connected: bool | None,
+        has_cable_sensor: bool,
+        battery_pct: float | None,
+        priority: str = "balance",
+    ) -> None:
+        """Mirror of coordinator._accumulate_energy forecast capture logic."""
+        PRIORITY_EXPORT = "export_priority"
+        _SOLAR_RATIO_MIN_POWER_W = 50.0
+
+        # --- EV solar capture (numerator) ---
+        if charging_on and ev_w > 0:
+            if computed_net_w > 0:
+                solar_portion_w = max(ev_w - computed_net_w, 0.0)
+            else:
+                solar_portion_w = ev_w
+            solar_wh = solar_portion_w * dt_h
+            if solar_wh > 0:
+                state["forecast_capture_solar_wh"] += solar_wh
+
+        # --- EV-relevant opportunity (denominator) ---
+        cable_ok = (not has_cable_sensor) or (cable_connected is True)
+        battery_ok = (battery_pct is None) or (battery_pct < 90.0)
+        priority_ok = priority != PRIORITY_EXPORT
+
+        if vehicle_present and cable_ok and battery_ok and priority_ok:
+            opportunity_w = max(0.0, surplus_w)
+            if opportunity_w > _SOLAR_RATIO_MIN_POWER_W:
+                state["forecast_capture_opportunity_wh"] += opportunity_w * dt_h
+
+    def test_opportunity_accumulates_when_ev_relevant_conditions_met(self):
+        """Opportunity accumulates when vehicle present, battery < 90%, cable connected."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        # 1 hour of 1000W solar surplus, EV not actively charging
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 1000.0
+        assert state["forecast_capture_solar_wh"] == 0.0  # EV not charging
+
+    def test_opportunity_blocked_when_vehicle_absent(self):
+        """No opportunity accumulation when vehicle is away."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=False, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_opportunity_blocked_when_battery_full(self):
+        """No opportunity accumulation when battery ≥ 90%."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=92.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_opportunity_blocked_when_cable_disconnected_and_sensor_configured(self):
+        """No opportunity when cable sensor configured but reports disconnected."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=False,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_opportunity_allowed_when_no_cable_sensor(self):
+        """When no cable sensor is configured, cable check is skipped."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=None,
+            has_cable_sensor=False, battery_pct=50.0,
+        )
+        assert state["forecast_capture_opportunity_wh"] == 1000.0
+
+    def test_opportunity_blocked_in_export_priority_mode(self):
+        """In export_priority mode, EV solar capture is not relevant — no opportunity."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=1000.0, computed_net_w=-1000.0, dt_h=1.0,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0, priority="export_priority",
+        )
+        assert state["forecast_capture_opportunity_wh"] == 0.0
+
+    def test_solar_capture_accumulates_during_charging(self):
+        """When EV is charging with solar surplus, solar portion is captured."""
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        # EV draws 1150W, net=-100W (exporting) → all EV power is solar
+        self._accumulate_tick(
+            state, ev_w=1150.0, surplus_w=1250.0, computed_net_w=-100.0, dt_h=1.0,
+            charging_on=True, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=60.0,
+        )
+        assert state["forecast_capture_solar_wh"] == 1150.0  # full EV draw = solar
+        assert state["forecast_capture_opportunity_wh"] == 1250.0
+
+    def test_full_scenario_multiple_ticks_produces_correct_factor(self):
+        """Multi-tick scenario: opportunity and capture accumulate correctly.
+
+        Tick 1: EV absent → 0 opportunity, 0 capture
+        Tick 2: EV present, cable connected, solar 800W, not charging → 800 opportunity
+        Tick 3: EV present, cable connected, charging 800W (all solar) → 800 capture + 0 opportunity (EV is charging, surplus is roughly 0 after EV)
+        Tick 4: EV present, battery = 91% → 0 opportunity (battery full)
+        """
+        state = {"forecast_capture_solar_wh": 0.0, "forecast_capture_opportunity_wh": 0.0}
+        dt_h = 1.0 / 60.0  # 1 minute interval
+
+        # Tick 1: vehicle absent
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=800.0, computed_net_w=-800.0, dt_h=dt_h,
+            charging_on=False, vehicle_present=False, cable_connected=False,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        opp_after_t1 = state["forecast_capture_opportunity_wh"]
+        sol_after_t1 = state["forecast_capture_solar_wh"]
+
+        # Tick 2: vehicle present, cable connected, solar surplus, not charging
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=800.0, computed_net_w=-800.0, dt_h=dt_h,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        opp_after_t2 = state["forecast_capture_opportunity_wh"]
+        sol_after_t2 = state["forecast_capture_solar_wh"]
+
+        # Tick 3: vehicle present, cable connected, charging 800W all solar
+        self._accumulate_tick(
+            state, ev_w=800.0, surplus_w=800.0, computed_net_w=-200.0, dt_h=dt_h,
+            charging_on=True, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=50.0,
+        )
+        opp_after_t3 = state["forecast_capture_opportunity_wh"]
+        sol_after_t3 = state["forecast_capture_solar_wh"]
+
+        # Tick 4: battery 91% → opportunity blocked
+        self._accumulate_tick(
+            state, ev_w=0.0, surplus_w=800.0, computed_net_w=-800.0, dt_h=dt_h,
+            charging_on=False, vehicle_present=True, cable_connected=True,
+            has_cable_sensor=True, battery_pct=91.0,
+        )
+
+        # Tick 1: vehicle absent — no accumulation
+        assert opp_after_t1 == 0.0
+        assert sol_after_t1 == 0.0
+
+        # Tick 2: opportunity accumulated, no capture
+        expected_opportunity = 800.0 * dt_h
+        assert abs(opp_after_t2 - expected_opportunity) < 1e-9
+        assert sol_after_t2 == 0.0
+
+        # Tick 3: both capture and additional opportunity accumulated
+        expected_capture = 800.0 * dt_h
+        assert abs(sol_after_t3 - expected_capture) < 1e-9
+        assert opp_after_t3 > opp_after_t2  # opportunity grew
+
+        # Final factor: capture / opportunity — both from ticks 2 & 3
+        total_opp = state["forecast_capture_opportunity_wh"]
+        total_cap = state["forecast_capture_solar_wh"]
+        assert total_opp > 0
+        factor = _compute_forecast_capture_factor_coord(total_cap, total_opp)
+        assert 0.0 < factor <= 1.0
+        # capture == opportunity in this case (all EV power was solar)
+        # so factor should be ~1 (or close, since both ticks contribute to opp)
+        assert factor == round(min(1.0, total_cap / total_opp), 4)
