@@ -920,10 +920,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
           force_charge    = expected_ev_kwh < energy_needed
 
         Capacity evaluation uses the best available source in priority order:
-          1. Manually configured ``_battery_capacity_kwh`` (config flow, > 0)
-          2. Auto-detected ``_estimated_battery_capacity_kwh`` (derived from
-             wall-measured energy ÷ SoC delta, so it already includes AC→battery
-             charging losses — no separate efficiency factor needed)
+          1. Manually configured ``_battery_capacity_kwh`` (config flow, > 0): always
+             battery-side, so the lifetime average overhead is applied to convert to
+             wall kWh for a fair comparison with the solar forecast.
+          2. Auto-detected ``_estimated_battery_capacity_kwh``: may be wall-side (SoC
+             method, already includes losses) or battery-side (battery delta method).
+             No overhead is applied to avoid double-counting when the estimate is
+             already wall-side.
 
         When no capacity or ratio is available, the optional
         ``_low_power_forecast_threshold_kwh`` serves as a **backup**: if > 0,
@@ -1010,12 +1013,19 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
                     effective_capacity > 0
                     and control_factor > 0
                 ):
-                    # Precise mode: wall-energy-based capacity already includes
-                    # charging losses, so energy_needed is pre-overhead.
                     energy_needed_kwh = max(
                         0.0,
                         (self._low_power_threshold - battery_pct) / 100.0 * effective_capacity,
                     )
+                    # When using manually configured (battery-side) capacity, inflate
+                    # to wall kWh so the comparison with expected_ev_kwh (solar wall
+                    # energy) is on equal terms.  Estimated capacity is skipped here
+                    # to avoid double-counting when it was derived from wall energy.
+                    if self._battery_capacity_kwh > 0:
+                        overhead_avg_pct = self._compute_overhead_avg_pct()
+                        if overhead_avg_pct is not None:
+                            efficiency = max(0.05, 1.0 - (overhead_avg_pct / 100.0))
+                            energy_needed_kwh = energy_needed_kwh / efficiency
                     expected_ev_kwh = forecast_kwh * control_factor
                     low_power_active = expected_ev_kwh < energy_needed_kwh
                 else:
@@ -1232,53 +1242,54 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         return round(max(delta, 0.0), 2)
 
     def _compute_overhead_pct(self, session_battery_delta: float | None = None) -> float | None:
-        """Return the rolling charging overhead percentage.
+        """Return the current-session charging overhead as a percentage.
 
         overhead% = (1 − battery_received / wall_energy) × 100
 
-        Uses lifetime totals from the persistent store.  When the cable is
-        currently connected and at least CAPACITY_MIN_ENERGY_KWH has been
-        charged in the current session, the in-progress session data is blended
-        in so the metric updates live during charging rather than only at
-        session end.  The current session is excluded once the cable
-        disconnects (``_cable_prev`` becomes False) to prevent double-counting
-        when the same session data is later committed to the store.
+        Uses only the current session's data: the wall energy snapshot (captured
+        at the last battery sensor reading) and the session battery delta.  This
+        gives a direct read of AC→DC conversion losses for the ongoing session.
 
-        The live blend uses _session_battery_wall_snapshot_wh (the wall energy
-        captured at the last battery sensor change) rather than the live
-        _energy_session_wh accumulator.  This prevents a ~2 pp sawtooth that
-        would otherwise appear every time the car API delivers a new battery
-        reading: between API polls (typically ~3 min) the wall total grows
-        every 10 s while the battery value is frozen, driving the ratio higher
-        until the next battery update snaps it back down.  By using the wall
-        snapshot taken at the same instant as the battery reading, both sides
-        of the ratio advance together and the displayed value stays stable.
+        The snapshot (``_session_battery_wall_snapshot_wh``) is updated every
+        time the battery sensor reports a new value, so both sides of the ratio
+        always advance together.  This prevents the ~2 pp sawtooth that would
+        otherwise appear between car API polls while the wall accumulator keeps
+        growing but the battery value is frozen.
 
         Args:
             session_battery_delta: Pre-computed battery delta for the current
                 session (kWh).  When provided, avoids a redundant sensor read
                 in _compute_session_battery_delta.
 
-        Returns None when insufficient data.
+        Returns None when the cable is not connected or session data is
+        insufficient (battery sensor unavailable, or below minimum threshold).
+        """
+        if not self._cable_prev:
+            return None
+        session_wall_wh = self._session_battery_wall_snapshot_wh
+        if (
+            session_battery_delta is None
+            or session_wall_wh <= 0
+            or session_wall_wh / 1000.0 < self._CAPACITY_MIN_ENERGY_KWH
+            or session_battery_delta < self._CAPACITY_MIN_ENERGY_KWH
+        ):
+            return None
+        battery_wh = session_battery_delta * 1000.0
+        return round(max(0.0, (1.0 - battery_wh / session_wall_wh)) * 100.0, 1)
+
+    def _compute_overhead_avg_pct(self) -> float | None:
+        """Return the lifetime rolling average charging overhead as a percentage.
+
+        overhead% = (1 − total_battery_received / total_wall_energy) × 100
+
+        Uses the accumulated totals from the persistent store, updated once at
+        the end of each session (cable disconnect or shutdown).  This provides a
+        stable, long-run efficiency estimate across all completed sessions.
+
+        Returns None when no completed session data has been stored yet.
         """
         wall = self._store.get("overhead_wall_wh")
         battery = self._store.get("overhead_battery_wh")
-
-        # Live blend: add current session's partial data while charging.
-        # _cable_prev holds the most recently observed cable state — updated
-        # by _detect_cable_plugin (Phase 6) before _build_data_dict calls this.
-        if self._cable_prev:
-            # Use the wall snapshot from the last battery sensor change rather
-            # than the live accumulator (see docstring above).
-            session_wall_wh = self._session_battery_wall_snapshot_wh
-            if (
-                session_battery_delta is not None
-                and session_wall_wh / 1000.0 >= self._CAPACITY_MIN_ENERGY_KWH
-                and session_battery_delta >= self._CAPACITY_MIN_ENERGY_KWH
-            ):
-                wall += session_wall_wh
-                battery += session_battery_delta * 1000.0
-
         if wall > 0 and battery > 0:
             return round(max(0.0, (1.0 - battery / wall)) * 100.0, 1)
         return None
@@ -1556,9 +1567,13 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # with side-effects (snapshot capture).
         session_battery_delta = self._compute_session_battery_delta()
         charging_overhead_pct = self._compute_overhead_pct(session_battery_delta)
+        charging_overhead_avg_pct = self._compute_overhead_avg_pct()
+        # Always use the lifetime average overhead for energy estimation: it is
+        # stable across sessions and available even before the current session
+        # has enough data for a reliable reading.
         energy_needed_full_kwh = self._compute_energy_needed_full_kwh(
             sensor_data.get("battery_pct"),
-            charging_overhead_pct,
+            charging_overhead_avg_pct,
         )
         return {
             "net_w": computed_net_w,
@@ -1721,6 +1736,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "ev_battery_energy_kwh": sensor_data.get("ev_battery_energy_kwh"),
             "session_battery_delta_kwh": session_battery_delta,
             "charging_overhead_pct": charging_overhead_pct,
+            "charging_overhead_avg_pct": charging_overhead_avg_pct,
             "energy_needed_full_kwh": energy_needed_full_kwh,
             # --- Charging priority ---
             "charging_priority": self._charging_priority,
@@ -2313,11 +2329,14 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         accumulated for the rolling overhead percentage.
 
         Fallback: if the battery energy sensor is unavailable, the legacy
-        SoC-based method is used (wall energy / SoC delta × 100).
+        SoC-based method is used (wall energy / SoC delta × 100), which
+        yields a wall-side capacity estimate that already includes losses.
 
-        The wall-energy-based estimate already includes AC→battery charging
-        losses, so ``energy_needed`` in the low-power check is automatically
-        pre-overhead — no separate efficiency factor is required.
+        When using a manually configured battery capacity (battery-side), the
+        low-power check applies the lifetime average overhead to convert battery
+        kWh to wall kWh before comparing with the solar forecast.  The
+        auto-detected estimate may already be wall-side, so no factor is applied
+        there to avoid double-counting.
 
         Only updates when at least 0.5 kWh was added in the session and either
         the SoC increased by ≥5% or the battery-side kWh delta is ≥0.5 kWh.
