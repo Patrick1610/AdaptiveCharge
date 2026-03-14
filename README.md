@@ -21,7 +21,7 @@ A Home Assistant custom integration that intelligently controls EV charging base
 - **Solar Done detection**: detects when solar generation has finished for the day
 - **Enhanced import guard**: multi-stage protection (debounce → reduce → stop) with hysteresis
 - **Dynamic measurement alignment**: adaptive skew detection and coherence scoring
-- **Low-power protection**: force-charges if battery SoC drops below threshold, with solar forecast awareness
+- **Low-power protection**: force-charges if battery SoC drops below threshold, with hysteresis to prevent flapping and solar forecast awareness
 - **Persistent storage**: energy counters survive restarts, reloads, and reboots without ever briefly dropping to zero
 - **Utility meters**: optional daily/monthly/yearly energy tracking sensors (standard HA helper, opt-in)
 - **Mode tracking**: reason, source, timestamps, and transition history on every mode change
@@ -87,9 +87,11 @@ The integration computes `net = consumption − production`.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Charge Buffer | 0 % | Extra buffer above desired range |
-| Range Hysteresis | 3.0 % | Dead zone to prevent start/stop oscillation near target |
+| Charge Buffer | 0 % | Extra buffer above desired range **and** above the low-power threshold |
+| Range Hysteresis | 3.0 % | Dead zone applied to both charge-to-range and low-power re-entry to prevent oscillation |
 | Default Charge Limit | 80 % | Vehicle charge limit % to reset to when cable is disconnected |
+
+> **Note (v4.4.1):** Charge Buffer and Range Hysteresis now apply to low-power charging as well as charge-to-range. See §12c below for details.
 
 ### Step 6 – Surplus Thresholds & Current Limits
 
@@ -270,6 +272,47 @@ Battery capacity estimation, overhead calculation, and solar capture factor are 
 3. HA shutdown/unload (best-effort)
 
 This ensures session data is persisted even when the cable remains connected (e.g. car reaches its own charge limit).
+
+### 12c. Low-Power Charging Hysteresis (v4.4.1)
+
+Low-power protection now uses the same two-state hysteresis model as charge-to-range, preventing re-triggering every time SoC fluctuates near the threshold.
+
+**How it works:**
+
+```
+lp_charge_until_soc = low_power_threshold × (1 + charge_buffer / 100)
+lp_hysteresis_soc   = low_power_threshold × (range_hysteresis_pct / 100)
+lp_resume_below_soc = low_power_threshold − lp_hysteresis_soc
+```
+
+| State | Transition |
+|-------|-----------|
+| **Inactive** | Activates when `battery_pct < lp_resume_below_soc` |
+| **Active** | Deactivates when `battery_pct ≥ lp_charge_until_soc` |
+
+**Practical example** (threshold = 20 %, buffer = 10 %, hysteresis = 5 %):
+
+- `lp_charge_until_soc` = 20 × 1.10 = **22 %** — charging stops here
+- `lp_hysteresis_soc`   = 20 × 0.05 = 1.0 % — dead-band width
+- `lp_resume_below_soc` = 20 − 1.0 = **19 %** — low-power charging only restarts when SoC drops below this
+
+The battery charges from 15 % → 22 %, then stops. It will not re-trigger until SoC drops below 19 %, eliminating the flapping that previously occurred whenever the SoC hovered near the threshold.
+
+**Default settings** (buffer = 0 %, hysteresis = 3 %, threshold = 20 %):
+
+- `lp_charge_until_soc` = 20 % — charges to exactly threshold
+- `lp_resume_below_soc` = 19.4 % — tiny dead zone prevents immediate re-trigger
+
+**Diagnostic attributes** (exposed on `binary_sensor.adaptivecharge_low_power_active`):
+
+| Attribute | Description |
+|-----------|-------------|
+| `low_power_threshold_pct` | Configured threshold (%) |
+| `low_power_buffer_used` | Charge buffer setting (%) |
+| `low_power_hysteresis` | Range hysteresis setting (%) |
+| `low_power_charge_until_soc` | SoC at which charging stops (%) |
+| `low_power_resume_below_soc` | SoC below which charging re-activates (%) |
+| `low_power_hysteresis_soc` | Dead-band width in SoC percentage points |
 
 ### 13. Battery Energy Tracking _(optional)_
 
@@ -583,6 +626,25 @@ Every sensor exposes the following extra attributes:
 ---
 
 ## Changelog
+
+### v4.4.1
+
+**Low-power charging now uses charge-to-range-style hysteresis:**
+- Charging starts when `battery_pct < low_power_threshold − hysteresis_band` and stops at `low_power_threshold × (1 + buffer / 100)`, preventing flapping around the threshold.
+- The same **Charge Buffer** and **Range Hysteresis** settings used for charge-to-range are reused — no new parameters.
+- Example (threshold = 20 %, buffer = 10 %, hysteresis = 5 %): charges to 22 %, re-activates only below 19 %.
+- With default settings (buffer = 0 %, hysteresis = 3 %, threshold = 20 %): charges to 20 %, re-activates below 19.4 %.
+
+**Improved diagnostics for low-power charging:**
+- `binary_sensor.adaptivecharge_low_power_active` now exposes `low_power_charge_until_soc`, `low_power_resume_below_soc`, `low_power_hysteresis_soc`, `low_power_buffer_used`, and `low_power_hysteresis` as attributes.
+
+**Precise mode energy target updated:**
+- When battery capacity and solar ratio are available, the forecast check now calculates energy needed to reach `lp_charge_until_soc` (threshold + buffer) rather than just the threshold. This correctly accounts for the buffer in the solar sufficiency decision.
+
+**Migration notes:**
+- No manual migration required. Upgrade and restart.
+- The new `_low_power_charging_active` state is in-memory only (not persisted). On HA restart, the state is reconstructed from the current SoC: if `battery_pct < lp_resume_below_soc`, low-power charging resumes immediately. This matches the existing behavior of `_need_active` in charge-to-range.
+- Existing users with default settings (buffer = 0 %, hysteresis = 3 %): the effective trigger point moves from < 20 % to < 19.4 %. Vehicles arriving with SoC between 19.4 % and 20 % will not trigger low-power charging on the first connect. Set hysteresis to 0 % to restore the original trigger point.
 
 ### v4.4.0
 

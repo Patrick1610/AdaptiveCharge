@@ -307,6 +307,7 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         self._force_charge_prev: bool = False
         self._force_source: str = ""
         self._need_active: bool = False
+        self._low_power_charging_active: bool = False
         self._tonight_reason: str = ""
         self._tonight_reentry: bool = False
         self._cable_prev: bool | None = None
@@ -980,51 +981,78 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
         # either (a) we are inside the charge-tonight window, or (b) the solar
         # forecast does not promise enough generation to handle it.
         # A threshold of 0 disables the feature entirely.
+        #
+        # Hysteresis (mirrors the charge-to-range _need_active pattern):
+        #   lp_charge_until_soc  = threshold × (1 + buffer/100)  — stop charging here
+        #   lp_hysteresis_soc    = threshold × (hysteresis_pct/100) — band width
+        #   lp_resume_below_soc  = threshold − lp_hysteresis_soc   — re-entry point
+        #
+        # Example (threshold=20 %, buffer=10 %, hysteresis=5 %):
+        #   charge_until = 22 %, resume_below = 19 %
+        lp_charge_until_soc: float = 0.0
+        lp_hysteresis_soc: float = 0.0
+        lp_resume_below_soc: float = 0.0
         low_power_active = False
-        if (
-            self._low_power_threshold > 0
-            and battery_pct is not None
-            and battery_pct < self._low_power_threshold
-            and bool(presence)
-            and bool(cable_connected)
-        ):
-            if after_start:
-                # Inside the tonight window → always force charge to protect
-                # the battery; solar is not expected during this period.
-                low_power_active = True
-            elif forecast_kwh is None:
-                # No forecast at all → force charge
-                low_power_active = True
-            else:
-                # Resolve effective capacity: manual config takes priority,
-                # then fall back to the auto-detected estimate.
-                effective_capacity = (
-                    self._battery_capacity_kwh
-                    if self._battery_capacity_kwh > 0
-                    else self._estimated_battery_capacity_kwh
-                )
-                # Keep forecast logic simple and explainable: use the
-                # lifetime solar-to-EV ratio directly.
-                control_factor = solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0
-                if (
-                    effective_capacity > 0
-                    and control_factor > 0
-                ):
-                    # Precise mode: wall-energy-based capacity already includes
-                    # charging losses, so energy_needed is pre-overhead.
-                    energy_needed_kwh = max(
-                        0.0,
-                        (self._low_power_threshold - battery_pct) / 100.0 * effective_capacity,
-                    )
-                    expected_ev_kwh = forecast_kwh * control_factor
-                    low_power_active = expected_ev_kwh < energy_needed_kwh
+        if self._low_power_threshold > 0:
+            lp_charge_until_soc = self._low_power_threshold * (
+                1.0 + self._charge_buffer / 100.0
+            )
+            lp_hysteresis_soc = self._low_power_threshold * (
+                self._range_hysteresis_pct / 100.0
+            )
+            lp_resume_below_soc = self._low_power_threshold - lp_hysteresis_soc
+
+            if battery_pct is not None:
+                # Two-state hysteresis (same pattern as _need_active for charge-to-range)
+                if self._low_power_charging_active:
+                    # Keep charging until SoC reaches lp_charge_until_soc
+                    self._low_power_charging_active = battery_pct < lp_charge_until_soc
                 else:
-                    # Fallback: use manual kWh threshold if configured, otherwise
-                    # conservative force charge to protect the battery.
-                    if self._low_power_forecast_threshold_kwh > 0:
-                        low_power_active = forecast_kwh < self._low_power_forecast_threshold_kwh
+                    # Start only when SoC drops below lp_resume_below_soc
+                    self._low_power_charging_active = battery_pct < lp_resume_below_soc
+            else:
+                self._low_power_charging_active = False
+
+            if (
+                self._low_power_charging_active
+                and bool(presence)
+                and bool(cable_connected)
+            ):
+                if after_start:
+                    # Inside the tonight window → always force charge to protect
+                    # the battery; solar is not expected during this period.
+                    low_power_active = True
+                elif forecast_kwh is None:
+                    # No forecast at all → force charge
+                    low_power_active = True
+                else:
+                    # Resolve effective capacity: manual config takes priority,
+                    # then fall back to the auto-detected estimate.
+                    effective_capacity = (
+                        self._battery_capacity_kwh
+                        if self._battery_capacity_kwh > 0
+                        else self._estimated_battery_capacity_kwh
+                    )
+                    # Keep forecast logic simple and explainable: use the
+                    # lifetime solar-to-EV ratio directly.
+                    control_factor = solar_to_ev_ratio if solar_to_ev_ratio is not None else 0.0
+                    if effective_capacity > 0 and control_factor > 0:
+                        # Precise mode: energy needed to reach lp_charge_until_soc
+                        # (includes buffer). Wall-energy-based capacity already
+                        # includes charging losses, so no separate overhead needed.
+                        energy_needed_kwh = max(
+                            0.0,
+                            (lp_charge_until_soc - battery_pct) / 100.0 * effective_capacity,
+                        )
+                        expected_ev_kwh = forecast_kwh * control_factor
+                        low_power_active = expected_ev_kwh < energy_needed_kwh
                     else:
-                        low_power_active = True
+                        # Fallback: use manual kWh threshold if configured, otherwise
+                        # conservative force charge to protect the battery.
+                        if self._low_power_forecast_threshold_kwh > 0:
+                            low_power_active = forecast_kwh < self._low_power_forecast_threshold_kwh
+                        else:
+                            low_power_active = True
 
         force_charge = self._charge_now or tonight_condition or low_power_active
         # import_priority acts like a permanent charge_now — force charge whenever
@@ -1051,6 +1079,9 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "tonight_condition": tonight_condition,
             "low_power_active": low_power_active,
             "force_charge": force_charge,
+            "lp_charge_until_soc": lp_charge_until_soc,
+            "lp_hysteresis_soc": lp_hysteresis_soc,
+            "lp_resume_below_soc": lp_resume_below_soc,
         }
 
     # ------------------------------------------------------------------
@@ -1576,6 +1607,11 @@ class AdaptiveChargeCoordinator(DataUpdateCoordinator):
             "low_power_active": force_data["low_power_active"],
             "low_power_threshold_pct": self._low_power_threshold,
             "low_power_forecast_threshold_kwh": self._low_power_forecast_threshold_kwh,
+            "low_power_charge_until_soc": round(force_data["lp_charge_until_soc"], 1),
+            "low_power_resume_below_soc": round(force_data["lp_resume_below_soc"], 1),
+            "low_power_hysteresis_soc": round(force_data["lp_hysteresis_soc"], 2),
+            "low_power_buffer_used": self._charge_buffer,
+            "low_power_hysteresis": self._range_hysteresis_pct,
             "presence": sensor_data["presence"],
             "cable_connected": sensor_data["cable_connected"],
             "current_range": sensor_data["current_range"],
