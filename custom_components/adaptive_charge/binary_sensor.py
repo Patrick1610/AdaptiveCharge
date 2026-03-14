@@ -133,6 +133,11 @@ class LowPowerActiveSensor(CoordinatorEntity, BinarySensorEntity):
         return {
             "battery_pct": data.get("battery_pct"),
             "low_power_threshold_pct": data.get("low_power_threshold_pct"),
+            "low_power_charge_until_soc": data.get("low_power_charge_until_soc"),
+            "low_power_resume_below_soc": data.get("low_power_resume_below_soc"),
+            "low_power_hysteresis_soc": data.get("low_power_hysteresis_soc"),
+            "low_power_buffer_used": data.get("low_power_buffer_used"),
+            "low_power_hysteresis": data.get("low_power_hysteresis"),
             "forecast_kwh": data.get("forecast_kwh"),
             "low_power_forecast_threshold_kwh": data.get("low_power_forecast_threshold_kwh"),
             "battery_capacity_kwh": data.get("battery_capacity_kwh"),

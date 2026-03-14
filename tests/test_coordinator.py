@@ -4258,13 +4258,18 @@ def _evaluate_low_power(
     solar_to_ev_ratio: float | None = None,
     solar_capture_factor: float = 0.0,
     in_tonight_window: bool = False,
+    charge_buffer_pct: float = 0.0,
 ) -> bool:
-    """Mirror of coordinator low_power_active evaluation logic.
+    """Mirror of coordinator low_power_active evaluation logic (inner forecast check).
+
+    This helper tests the forecast/capacity decision path given that the
+    hysteresis state machine has already determined we are in low-power mode.
 
     Priority:
       1. Inside tonight window → always force charge
       2. Precise mode (capacity + control_factor available) → energy-based check
          - control_factor = solar_capture_factor if > 0, else solar_to_ev_ratio
+         - energy_needed uses lp_charge_until_soc (threshold × (1 + buffer/100))
       3. Manual backup threshold (> 0) → forecast vs fixed kWh
       4. Conservative fallback (threshold == 0, no precise mode) → force charge
     """
@@ -4292,13 +4297,42 @@ def _evaluate_low_power(
         effective_capacity > 0
         and control_factor > 0
     ):
-        energy_needed = max(0.0, (low_power_threshold - battery_pct) / 100.0 * effective_capacity)
+        lp_charge_until_soc = low_power_threshold * (1.0 + charge_buffer_pct / 100.0)
+        energy_needed = max(0.0, (lp_charge_until_soc - battery_pct) / 100.0 * effective_capacity)
         expected_ev_kwh = forecast_kwh * control_factor
         return expected_ev_kwh < energy_needed
     # Fallback: manual threshold if configured, else conservative force
     if low_power_forecast_threshold_kwh > 0:
         return forecast_kwh < low_power_forecast_threshold_kwh
     return True
+
+
+def _evaluate_lp_hysteresis(
+    low_power_charging_active: bool,
+    battery_pct: float | None,
+    threshold: float,
+    buffer_pct: float = 0.0,
+    hysteresis_pct: float = 3.0,
+) -> bool:
+    """Mirror of coordinator _low_power_charging_active two-state hysteresis machine.
+
+    Mirrors the logic in _evaluate_force_charge:
+      lp_charge_until_soc = threshold × (1 + buffer_pct/100)
+      lp_hysteresis_soc   = threshold × (hysteresis_pct/100)
+      lp_resume_below_soc = threshold − lp_hysteresis_soc
+
+    When active: keep True while battery_pct < lp_charge_until_soc.
+    When inactive: become True only when battery_pct < lp_resume_below_soc.
+    """
+    if threshold <= 0 or battery_pct is None:
+        return False
+    lp_charge_until_soc = threshold * (1.0 + buffer_pct / 100.0)
+    lp_hysteresis_soc = threshold * (hysteresis_pct / 100.0)
+    lp_resume_below_soc = threshold - lp_hysteresis_soc
+    if low_power_charging_active:
+        return battery_pct < lp_charge_until_soc
+    else:
+        return battery_pct < lp_resume_below_soc
 
 
 class TestLowPowerProtection:
@@ -4519,10 +4553,194 @@ class TestLowPowerAutoDetectPrimary:
             effective_capacity=0.0,
         ) is False
 
+    def test_precise_mode_energy_uses_charge_until_soc_with_buffer(self):
+        """With buffer, energy target is lp_charge_until_soc (threshold × (1+buffer/100))."""
+        # threshold=20, buffer=10 → charge_until=22
+        # battery=10%, capacity=80 kWh → energy_needed=(22-10)/100×80=9.6 kWh
+        # forecast=20, ratio=0.5 → expected=10 > 9.6 → no force
+        assert _evaluate_low_power(
+            10.0, 20.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+            charge_buffer_pct=10.0,
+        ) is False
+        # now reduce forecast so expected < energy_needed: expected=9.0 < 9.6 → force
+        assert _evaluate_low_power(
+            10.0, 18.0, self.THRESHOLD, 0.0,
+            effective_capacity=self.CAPACITY, solar_to_ev_ratio=self.RATIO,
+            charge_buffer_pct=10.0,
+        ) is True
+
 
 # ---------------------------------------------------------------------------
-# Tests: total-day forecast → remaining conversion
+# Tests: low-power hysteresis state machine
 # ---------------------------------------------------------------------------
+
+
+class TestLowPowerHysteresis:
+    """Tests for the two-state hysteresis state machine controlling low-power charging.
+
+    Uses _evaluate_lp_hysteresis() which mirrors _low_power_charging_active in
+    the coordinator's _evaluate_force_charge().
+
+    Configuration for all tests (unless overridden):
+      threshold=20 %, buffer=10 %, hysteresis=5 %
+      → lp_charge_until_soc  = 22 %
+      → lp_hysteresis_soc    = 1.0 %
+      → lp_resume_below_soc  = 19 %
+    """
+
+    THRESHOLD = 20.0
+    BUFFER = 10.0
+    HYSTERESIS = 5.0
+
+    # Derived bounds for the default config above
+    CHARGE_UNTIL = 22.0   # threshold × 1.1
+    RESUME_BELOW = 19.0   # threshold − threshold×0.05
+
+    # ------------------------------------------------------------------
+    # Scenario 1: Vehicle arrives home below threshold → charging starts
+    # ------------------------------------------------------------------
+
+    def test_vehicle_arrives_below_threshold_starts_charging(self):
+        """Vehicle arrives at 15 % SoC (below resume_below=19 %) → active=True."""
+        assert _evaluate_lp_hysteresis(
+            False, 15.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    def test_vehicle_arrives_just_below_resume_below_starts_charging(self):
+        """SoC just below resume_below (18.9 %) → active=True."""
+        assert _evaluate_lp_hysteresis(
+            False, 18.9, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    def test_vehicle_arrives_at_resume_below_no_start(self):
+        """SoC exactly at resume_below (19.0 %) → active stays False (not strictly below)."""
+        assert _evaluate_lp_hysteresis(
+            False, 19.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    def test_vehicle_arrives_between_threshold_and_charge_until_no_start(self):
+        """SoC between resume_below and charge_until (20 %) → active stays False."""
+        assert _evaluate_lp_hysteresis(
+            False, 20.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    def test_vehicle_arrives_above_charge_until_no_start(self):
+        """SoC above charge_until (25 %) → no low-power charging needed."""
+        assert _evaluate_lp_hysteresis(
+            False, 25.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    # ------------------------------------------------------------------
+    # Scenario 2: Charging continues until charge_until_soc is reached
+    # ------------------------------------------------------------------
+
+    def test_charging_continues_below_charge_until(self):
+        """While active and SoC < charge_until (21 %) → stays active."""
+        assert _evaluate_lp_hysteresis(
+            True, 21.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    def test_charging_continues_well_below_charge_until(self):
+        """While active and SoC at 15 % → stays active."""
+        assert _evaluate_lp_hysteresis(
+            True, 15.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    def test_charging_stops_at_charge_until(self):
+        """SoC reaches charge_until (22 %) → active becomes False."""
+        assert _evaluate_lp_hysteresis(
+            True, 22.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    def test_charging_stops_above_charge_until(self):
+        """SoC exceeds charge_until (25 %) → active becomes False."""
+        assert _evaluate_lp_hysteresis(
+            True, 25.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    # ------------------------------------------------------------------
+    # Scenario 3: Charging does not restart while SoC is between
+    #             resume_below and charge_until
+    # ------------------------------------------------------------------
+
+    def test_no_restart_between_resume_below_and_charge_until(self):
+        """After a cycle, SoC at 21 % (above resume_below=19 %) → stays inactive."""
+        # Simulate: cycle complete, now inactive, SoC drifted to 21 %
+        assert _evaluate_lp_hysteresis(
+            False, 21.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    def test_no_restart_at_original_threshold(self):
+        """SoC at the original threshold (20 %) → still inactive after a cycle."""
+        assert _evaluate_lp_hysteresis(
+            False, 20.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    def test_no_restart_just_above_resume_below(self):
+        """SoC just above resume_below (19.1 %) → stays inactive."""
+        assert _evaluate_lp_hysteresis(
+            False, 19.1, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is False
+
+    # ------------------------------------------------------------------
+    # Scenario 4: Charging resumes only below resume_below_soc
+    # ------------------------------------------------------------------
+
+    def test_restart_just_below_resume_below(self):
+        """SoC drops just below resume_below (18.9 %) → low-power activates again."""
+        assert _evaluate_lp_hysteresis(
+            False, 18.9, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    def test_restart_well_below_resume_below(self):
+        """SoC drops well below resume_below (15 %) → activates."""
+        assert _evaluate_lp_hysteresis(
+            False, 15.0, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    # ------------------------------------------------------------------
+    # Scenario 5: Edge cases on boundary values
+    # ------------------------------------------------------------------
+
+    def test_edge_soc_just_below_charge_until_while_active(self):
+        """Active, SoC one tick below charge_until (21.9 %) → stays active."""
+        assert _evaluate_lp_hysteresis(
+            True, 21.9, self.THRESHOLD, self.BUFFER, self.HYSTERESIS
+        ) is True
+
+    def test_edge_threshold_zero_always_inactive(self):
+        """threshold=0 disables hysteresis entirely."""
+        assert _evaluate_lp_hysteresis(True, 5.0, 0.0, self.BUFFER, self.HYSTERESIS) is False
+        assert _evaluate_lp_hysteresis(False, 5.0, 0.0, self.BUFFER, self.HYSTERESIS) is False
+
+    def test_edge_battery_none_always_inactive(self):
+        """battery_pct=None (sensor unavailable) → always inactive."""
+        assert _evaluate_lp_hysteresis(True, None, self.THRESHOLD, self.BUFFER, self.HYSTERESIS) is False
+        assert _evaluate_lp_hysteresis(False, None, self.THRESHOLD, self.BUFFER, self.HYSTERESIS) is False
+
+    def test_edge_zero_buffer_charge_until_equals_threshold(self):
+        """buffer=0 → charge_until = threshold; hysteresis still prevents re-trigger."""
+        # threshold=20, buffer=0 → charge_until=20, hysteresis_soc=0.6, resume_below=19.4
+        assert _evaluate_lp_hysteresis(True, 19.9, 20.0, 0.0, 3.0) is True   # still charging
+        assert _evaluate_lp_hysteresis(True, 20.0, 20.0, 0.0, 3.0) is False  # stops at 20
+        assert _evaluate_lp_hysteresis(False, 19.4, 20.0, 0.0, 3.0) is False  # no restart at 19.4
+        assert _evaluate_lp_hysteresis(False, 19.3, 20.0, 0.0, 3.0) is True   # restarts at 19.3
+
+    def test_edge_zero_hysteresis_resumes_at_threshold(self):
+        """hysteresis=0 → resume_below = threshold; no dead zone below threshold."""
+        # threshold=20, buffer=10 → charge_until=22, hysteresis_soc=0, resume_below=20
+        assert _evaluate_lp_hysteresis(False, 19.9, 20.0, 10.0, 0.0) is True  # just below 20
+        assert _evaluate_lp_hysteresis(False, 20.0, 20.0, 10.0, 0.0) is False  # at threshold
+
+    def test_derived_bounds_match_problem_example(self):
+        """Verify the problem-statement example: threshold=20, buffer=10, hysteresis=5."""
+        # charge_until = 22, resume_below = 19
+        # In the coordinator: hysteresis_soc = threshold × (hysteresis_pct/100) = 20×0.05 = 1.0
+        assert _evaluate_lp_hysteresis(True, 21.9, 20.0, 10.0, 5.0) is True   # still charging
+        assert _evaluate_lp_hysteresis(True, 22.0, 20.0, 10.0, 5.0) is False  # stop at 22
+        assert _evaluate_lp_hysteresis(False, 19.1, 20.0, 10.0, 5.0) is False  # no restart at 19.1
+        assert _evaluate_lp_hysteresis(False, 18.9, 20.0, 10.0, 5.0) is True   # restart below 19
 
 
 def _total_to_remaining(total_kwh: float, daily_production_kwh: float) -> float:
