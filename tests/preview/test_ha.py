@@ -39,6 +39,57 @@ async def test_enever_native_datetime_prices_cover_today_and_tomorrow(tmp_path):
         await hass.async_stop()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_times", [True, False])
+async def test_enever_midnight_rollover_without_tomorrow_prices(tmp_path, native_times):
+    """A missing next-day publication must not discard today's live prices."""
+    from custom_components.adaptive_charge_preview.sources import price_feed_live
+
+    hass = HomeAssistant(str(tmp_path))
+    await hass.config.async_update(time_zone="Europe/Amsterdam")
+    midnight = datetime.fromisoformat("2026-11-14T00:00:00+01:00")
+    rows = [{"time": midnight + timedelta(minutes=15 * i), "price": 0.25} for i in range(96)]
+    if not native_times:
+        rows = [{**row, "time": row["time"].isoformat()} for row in rows]
+    config = {"price_entity": "sensor.enever", "price_attribute": "prices_today,prices_tomorrow"}
+    try:
+        hass.states.async_set("sensor.enever", 0.25, {"prices_today": [], "prices_tomorrow": rows})
+        assert price_feed_live(hass, config, midnight.timestamp())
+        hass.states.async_set("sensor.enever", 0.25, {"prices_today": rows, "prices_tomorrow": None})
+        tariffs, warnings = price_rows(hass, config, midnight.timestamp())
+        assert len(tariffs) == 96
+        assert "invalid_price_rows" not in warnings
+        assert price_feed_live(hass, config, midnight.timestamp(), tariffs, warnings)
+        assert not price_feed_live(hass, config, (midnight + timedelta(days=1)).timestamp())
+    finally:
+        await hass.async_stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attributes,source_state,expected_warning", [
+    ({"prices_today": None, "prices_tomorrow": None}, "0.25", None),
+    ({"prices_today": [], "prices_tomorrow": None}, "0.25", None),
+    ({"prices_today": [], "prices_tomorrow": "pending"}, "0.25", "invalid_price_rows"),
+    ({"prices_today": [], "prices_tomorrow": {}}, "0.25", "invalid_price_rows"),
+    ({"prices_today": [], "prices_tomorrow": [None]}, "0.25", "invalid_price_rows"),
+    ({"prices_today": [], "prices_tomorrow": None}, "unavailable", "prices_unavailable"),
+])
+async def test_missing_or_malformed_price_publication_cannot_enable_control(tmp_path, attributes, source_state, expected_warning):
+    from custom_components.adaptive_charge_preview.sources import price_feed_live
+
+    hass = HomeAssistant(str(tmp_path))
+    try:
+        hass.states.async_set("sensor.enever", source_state, attributes)
+        config = {"price_entity": "sensor.enever", "price_attribute": "prices_today,prices_tomorrow"}
+        rows, warnings = price_rows(hass, config, 1794610800)
+        assert not rows
+        assert not price_feed_live(hass, config, 1794610800, rows, warnings)
+        if expected_warning:
+            assert expected_warning in warnings
+    finally:
+        await hass.async_stop()
+
+
 def entry(subentries=True):
     return ConfigEntry(domain=DOMAIN, title="Preview", version=1, minor_version=1, source="user", unique_id="sensor.iq_energy", data={"meter_entity":"sensor.iq_energy", "power_entity":"sensor.hw_power", "plug_entity":"binary_sensor.evse_plug", "connection_entity":"sensor.connection", "session_entity":"input_text.live_session", "active_entity":"input_boolean.live_active", "generation_entity":"counter.live_gen"}, options={}, discovery_keys={}, subentries_data=[{"subentry_type":"vehicle","title":"Tesla","unique_id":"sensor.tesla_soc","data":{"kind":"tesla","soc_entity":"sensor.tesla_soc","battery_entity":"sensor.tesla_energy","range_entity":"sensor.tesla_range","limit_entity":"number.tesla_limit","cable_entity":"binary_sensor.tesla_cable","target_entity":"input_number.live_goal","departure_entity":"input_datetime.live_departure","measurement_time_entity":"sensor.car_capture","limit_writer_entity":"number.tesla_limit"}}] if subentries else [])
 

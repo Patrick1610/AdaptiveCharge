@@ -103,6 +103,16 @@ diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg
 
 ## Oplevering 13 november 2026
 
+### Ontbrekende volgende prijsdag, 5.1.0b3
+
+Na de datumwisseling publiceert Enever geldige kwartieren voor vandaag terwijl
+`prices_tomorrow` nog `None` is. Dat betekent dat die volgende dag nog niet is
+gepubliceerd. 5.1.0b3 slaat zo'n lege publicatie over. De bestaande voorwaarden
+blijven gelden: een beschikbare bron, geldige intervallen en dekking van het
+huidige tijdstip zijn vereist voor aanvullend laden. Verlopen, onbeschikbare of
+ongeldige prijzen geven geen toestemming voor Manual. De regressies toetsen de
+datumwisseling met native datums en ISO-tekst, plus ontbrekende en misvormde data.
+
 ### Tariefformaatcorrectie 5.1.0b2
 
 Enever 1.8 publiceert de tijden in `prices_today` en `prices_tomorrow` intern als

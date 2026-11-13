@@ -192,6 +192,8 @@ def price_rows(hass: HomeAssistant, config: dict[str, Any], now: float) -> tuple
     raw = []
     for attribute in config.get("price_attribute", "data").split(","):
         part = source.attributes.get(attribute.strip(), [])
+        if part is None:
+            continue  # No publication yet; other intervals still need valid coverage.
         if not isinstance(part, (list, tuple)):
             return [], ["invalid_price_rows"]
         raw.extend(part)
