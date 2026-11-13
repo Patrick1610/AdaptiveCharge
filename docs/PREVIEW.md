@@ -218,7 +218,7 @@ Dit zijn softwaretests en read-only observaties, geen fysiek functioneel akkoord
 voor doelstop of natuurlijk bijladen bij Tesla of ID.3. Live-installatie, bronnen en
 readback worden afzonderlijk vastgelegd in het uitvoeringsdossier.
 
-## Opleverstatus 13 november 2026, 00:58 CET
+## Historische bestandeninstallatie 13 november 2026, 00:58 CET
 
 De 20 previewbestanden staan op HA en alle hashes zijn teruggelezen. Vier relevante
 bestaande controller-/guardconfiguraties behielden exact dezelfde hash; de bestaande
@@ -235,3 +235,30 @@ met de auto’s eronder; bestaande bediening en Shortcuts blijven gelden.
 Bewijs staat op HA in
 `/config/ev_v2_control_20261106/adaptive_charge_preview_20261113/`:
 `install_receipt.json`, `runtime_outcome.json` en `observations.jsonl`.
+
+
+## Actuele opleverstatus 13 november 2026, 05:52 CET
+
+De beta is inmiddels gepubliceerd via de canonieke repository en via HACS
+geïnstalleerd. Eén laadpaalinstantie **Enphase Preview** is geladen, met
+**Stormbreaker** en **Éowyn ID.3** als autosubconfiguraties en tien beschikbare
+entiteiten. De indicator voor actieve besturing staat uit; de root meldt
+`read_only=true` en `control_enabled=false`.
+
+Alle 21 releasebestanden en de volledige bestandenset zijn gecontroleerd. De oude
+uitgeschakelde AdaptiveCharge-entry is na expliciet akkoord verwijderd. De oude
+bestanden zijn gearchiveerd, de 26 achtergebleven entiteitsregistraties en het oude
+apparaat zijn opgeruimd. Vier native controller-/guardconfiguraties behielden exact
+dezelfde hash; de bestaande opdracht en energiebasis zijn behouden. Er is geen
+HA-herstart uitgevoerd en geen native laad-, helper- of limietactie aangevraagd.
+
+Er blijven bronbeperkingen: beide profielen melden ontbrekende/onvoldoende
+bewijsbare voertuigmeettijden. De gekoppelde prijsbron is dezelfde als bij de
+bestaande planner, maar levert op deze waarneming voor zowel vandaag als morgen
+`None`. De adviezen zijn daarom voorlopig. De huisverbruiksmeting is gekoppeld aan
+de bestaande gemiddelde meting zonder auto. Dit is live read-only commissioning,
+geen bewijs van een volledig actueel prijsplan of fysiek geslaagde doelstop of
+natuurlijk bijladen. De bestaande softwarevalidatie omvat 935 geslaagde tests.
+
+Definitieve readback staat op HA in `hacs_commissioning_receipt_20261113.json`
+binnen de hierboven genoemde bewijsmap, met een UTC-regel in `observations.jsonl`.

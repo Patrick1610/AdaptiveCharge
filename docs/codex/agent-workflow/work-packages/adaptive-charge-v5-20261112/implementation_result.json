@@ -185,5 +185,67 @@
       "verdict": "GO",
       "open_critical_high_medium": 0
     }
+  },
+  "commissioning_20261113": {
+    "observed_utc": "2026-11-13T04:52:58.848479+00:00",
+    "status": "COMMISSIONED_READ_ONLY_WITH_SOURCE_WARNINGS",
+    "authorization": "User replied Akkoord to removal of only the disabled AdaptiveCharge- Model Y entry and subsequent read-only setup",
+    "version": "5.0.0b1",
+    "hacs_repository": "Patrick1610/AdaptiveCharge",
+    "hacs_domain": "adaptive_charge_preview",
+    "release_tag_commit": "31d521576a89b8140b11b95b940af7953b32db48",
+    "installed_file_count": 21,
+    "installed_release_file_hashes_verified": true,
+    "installed_file_set_matches_release": true,
+    "preview_entry_id": "01M79KM637810GZS0HH07H5R16",
+    "entry_state": "loaded",
+    "charger_entries": 1,
+    "vehicle_subentries": [
+      "Stormbreaker",
+      "Éowyn ID.3"
+    ],
+    "entity_count": 10,
+    "control_enabled": false,
+    "control_indicator_entity": "binary_sensor.enphase_preview_control_active",
+    "control_indicator_state": "off",
+    "native_config_hashes_verified_unchanged": 4,
+    "native_session_identity_target_and_energy_budget_preserved": true,
+    "global_restart_requested": false,
+    "native_actuator_helper_limit_actions_requested": false,
+    "legacy_entry_absent": true,
+    "legacy_registry_entities_removed": 26,
+    "legacy_devices_remaining": 0,
+    "legacy_files_preserved_in_own_archive": 31,
+    "operational_repair": {
+      "initial_entry_delete_http_status": 500,
+      "entry_absent_in_readback_after_error": true,
+      "completion": "Removed only the 26 old-entry-owned entity registrations through public WS API; ordinary HA device cleanup removed its orphan device. New config-entry writes followed. No direct storage editing or runtime injection."
+    },
+    "price_binding_matches_native_planner": true,
+    "price_input_observation": {
+      "prices_today": null,
+      "prices_tomorrow": null
+    },
+    "house_binding": "sensor.ev_v2_huisverbruik_gemiddeld",
+    "remaining_source_warnings": [
+      "vehicle_measurement_stale_or_time_unknown",
+      "invalid_price_rows"
+    ],
+    "planning_qualification": "Advice remains provisional; live source measurements/tariff data do not support a current complete plan. This is not physical vehicle acceptance.",
+    "ha_receipt": "/config/ev_v2_control_20261106/adaptive_charge_preview_20261113/hacs_commissioning_receipt_20261113.json",
+    "ha_observation_log": "/config/ev_v2_control_20261106/adaptive_charge_preview_20261113/observations.jsonl",
+    "software_tests": "The unchanged release code has 935 passing tests recorded in publication_20261113; no new software test run was claimed for this configuration-only commissioning.",
+    "documentation_review": {
+      "review_id": "ac8f9fd7-0892-4178-adbe-1f7d9ee4a739",
+      "sequence": 1,
+      "verdict": "GO",
+      "open_critical_high_medium": 0,
+      "independent_live_receipt_access": false,
+      "accepted_low_notes": [
+        "Detailed live receipt remains on private HA instance",
+        "Concise public handover omits concrete native telemetry",
+        "Enphase Preview is the instance friendly name within AdaptiveCharge Preview"
+      ]
+    }
   }
 }
