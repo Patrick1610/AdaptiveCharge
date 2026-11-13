@@ -1,4 +1,4 @@
-"""A visible, immutable control-disabled indicator."""
+"""A visible indicator of the persisted charger master."""
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -14,10 +14,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class ControlDisabled(PreviewEntity, BinarySensorEntity):
-    """No switch or option can turn this preview into an actuator."""
+    """Keep the existing diagnostic entity identity while reflecting real state."""
 
-    _attr_is_on = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: PreviewCoordinator) -> None:
         super().__init__(coordinator, "control_enabled")
+
+    @property
+    def is_on(self) -> bool:
+        """Mirror the actual persisted master, not a hardcoded assurance."""
+        return self.coordinator.control.enabled

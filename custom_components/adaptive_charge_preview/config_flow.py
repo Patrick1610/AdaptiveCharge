@@ -1,4 +1,4 @@
-"""One charger entry with independent vehicle subentries; no control toggle."""
+"""One charger entry with vehicle subentries; control defaults off."""
 
 from __future__ import annotations
 
@@ -49,12 +49,14 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         vol.Required("power_entity", default=data.get("power_entity", vol.UNDEFINED)): entity(["sensor"]),
         vol.Required("plug_entity", default=data.get("plug_entity", vol.UNDEFINED)): entity(["binary_sensor"]),
     }
-    for key, domains in {"connection_entity": ["sensor", "binary_sensor", "switch"], "mode_entity": ["select", "sensor"], "charging_entity": ["binary_sensor"], "price_entity": ["sensor"], "forecast_entity": ["sensor"], "house_entity": ["sensor"], "session_entity": ["input_text"], "active_entity": ["input_boolean"], "generation_entity": ["counter"]}.items():
+    for key, domains in {"connection_entity": ["sensor", "binary_sensor", "switch"], "mode_entity": ["select", "sensor"], "charging_entity": ["binary_sensor"], "price_entity": ["sensor"], "forecast_entity": ["sensor"], "house_entity": ["sensor"], "session_entity": ["input_text"], "active_entity": ["input_boolean"], "generation_entity": ["counter"], "pending_entity": ["input_text"], "legacy_master_entity": ["input_boolean"], "control_mode_entity": ["select"], "charger_switch_entity": ["switch"], "control_feedback_entity": ["sensor"], "control_report_entity": ["sensor"]}.items():
         fields[vol.Optional(key)] = entity(domains)
     for key, default, lower, upper in (("power_kw", 11, 1, 22), ("reserve_min", 15, 0, 60), ("minimum_min", 3, 1, 30), ("house_kw", 0.5, 0, 30), ("price_interval_min", 15, 15, 60)):
         fields[vol.Required(key, default=data.get(key, default))] = vol.All(vol.Coerce(float), vol.Range(min=lower, max=upper))
     for key, default in (("connection_attribute", ""), ("price_attribute", "data"), ("price_time_key", "time"), ("import_price_key", "price"), ("export_price_key", "")):
         fields[vol.Required(key, default=data.get(key, default))] = str
+    fields[vol.Required("maximum_command_kwh", default=data.get("maximum_command_kwh", 30))] = vol.All(vol.Coerce(float), vol.Range(min=0.1, max=100))
+    fields[vol.Required("require_prices_for_control", default=data.get("require_prices_for_control", True))] = bool
     return vol.Schema(fields)
 
 
@@ -64,10 +66,12 @@ def vehicle_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     fields: dict[Any, Any] = {vol.Required("name", default=data.get("name", "")): str, vol.Required("kind", default=data.get("kind", "tesla")): vol.In(["tesla", "id3"])}
     for key, domains in {"soc_entity": ["sensor"], "battery_entity": ["sensor"], "range_entity": ["sensor"], "limit_entity": ["sensor", "number"], "cable_entity": ["binary_sensor"]}.items():
         fields[vol.Required(key, default=data.get(key, vol.UNDEFINED))] = entity(domains)
-    for key, domains in {"home_entity": ["binary_sensor", "device_tracker"], "soh_entity": ["sensor"], "measurement_time_entity": ["sensor"], "limit_writer_entity": ["number"], "target_entity": ["input_number", "number"], "departure_entity": ["input_datetime", "datetime"], "native_plan_entity": ["sensor"]}.items():
+    for key, domains in {"home_entity": ["binary_sensor", "device_tracker"], "soh_entity": ["sensor"], "measurement_time_entity": ["sensor"], "limit_writer_entity": ["number"], "target_entity": ["input_number", "number"], "departure_entity": ["input_datetime", "datetime"], "native_plan_entity": ["sensor"], "vehicle_charge_switch_entity": ["switch"]}.items():
         fields[vol.Optional(key)] = entity(domains)
     fields[vol.Required("droop_pp", default=data.get("droop_pp", 1))] = vol.All(vol.Coerce(float), vol.Range(min=0.1, max=10))
     fields[vol.Required("margin", default=data.get("margin", 0.15))] = vol.All(vol.Coerce(float), vol.Range(min=0, max=0.5))
+    fields[vol.Required("allow_limit_raise", default=data.get("allow_limit_raise", False))] = bool
+    fields[vol.Required("maximum_soc", default=data.get("maximum_soc", 100))] = vol.All(vol.Coerce(float), vol.Range(min=1, max=100))
     return vol.Schema(fields)
 
 
@@ -99,6 +103,8 @@ class PreviewConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_abort(reason="charger_identity_changed")
             if any(e.entry_id != entry.entry_id and e.unique_id == charger_key for e in self._async_current_entries()):
                 return self.async_abort(reason="already_configured")
+            if getattr(entry, "runtime_data", None) and entry.runtime_data.control.binding_change_blocked(user_input):
+                return self.async_abort(reason="finish_control_cleanup_first")
             return self.async_update_and_abort(entry, unique_id=charger_key, title=user_input["name"], data={**user_input, "charger_key": charger_key, "control_enabled": False})
         defaults = user_input or dict(entry.data)
         return self.async_show_form(step_id="reconfigure", data_schema=self.add_suggested_values_to_schema(charger_schema(defaults), defaults), errors=errors)
@@ -125,6 +131,8 @@ class VehicleSubentryFlow(ConfigSubentryFlow):
                 return self.async_abort(reason="vehicle_identity_changed")
             if any(s.subentry_id != subentry.subentry_id and s.unique_id == unique_id for s in entry.subentries.values()):
                 return self.async_abort(reason="vehicle_already_configured")
+            if getattr(entry, "runtime_data", None) and entry.runtime_data.control.binding_change_blocked(user_input, subentry.subentry_id):
+                return self.async_abort(reason="finish_control_cleanup_first")
             return self.async_update_and_abort(entry, subentry, unique_id=unique_id, title=user_input["name"], data=user_input)
         defaults = user_input or dict(subentry.data)
         return self.async_show_form(step_id="reconfigure", data_schema=self.add_suggested_values_to_schema(vehicle_schema(defaults), defaults), errors=errors)

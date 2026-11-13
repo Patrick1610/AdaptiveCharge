@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity_component import DATA_INSTANCES
 
 from .core.models import Measurement, Tariff, VehicleSnapshot, finite, timestamp
 from .const import DOMAIN, MAX_POWER_AGE
@@ -59,12 +60,56 @@ def measurement(hass: HomeAssistant, entity_id: str | None, common_capture: floa
     source = state(hass, entity_id)
     if source is None:
         return Measurement(None, entity_id or "")
-    return Measurement(finite(source.state), entity_id or "", source.attributes.get("unit_of_measurement"), capture_at(source) or common_capture, observed_at(source))
+    return Measurement(finite(source.state), entity_id or "", source.attributes.get("unit_of_measurement"), capture_at(source) or common_capture or tessie_capture(hass, source), observed_at(source))
+
+
+def tessie_capture(hass: HomeAssistant, source: State) -> float | None:
+    """Read the selected Tessie entity's charge-state timestamp, without I/O.
+
+    HA 2026.11.1 exposes the charge values as sensors but not their upstream
+    timestamp attributes. Its existing entity coordinator retains that timestamp.
+    Match the exact published value before attaching it; never use last_reported.
+    This compatibility adapter reads no credentials and never refreshes Tessie.
+    """
+    registry = hass.data.get(er.DATA_REGISTRY)
+    registered = registry.async_get(source.entity_id) if registry and hasattr(registry, "entities") else None
+    if registered is None or registered.platform != "tessie":
+        return None
+    component = hass.data.get(DATA_INSTANCES, {}).get(source.domain)
+    entity = component.get_entity(source.entity_id) if component else None
+    coordinator = getattr(entity, "coordinator", None)
+    if coordinator is None or not type(coordinator).__module__.startswith("homeassistant.components.tessie.") or not coordinator.last_update_success:
+        return None
+    data = coordinator.data
+    description = getattr(entity, "entity_description", None)
+    key = getattr(description, "data_key", None) or getattr(description, "key", None)
+    if not isinstance(data, dict) or key not in {"charge_state_usable_battery_level", "charge_state_battery_level", "charge_state_energy_remaining", "charge_state_est_battery_range", "charge_state_battery_range", "charge_state_ideal_battery_range"}:
+        return None
+    value, published = finite(data.get(key)), finite(source.state)
+    if value is None or published is None:
+        return None
+    if "range" in key and source.attributes.get("unit_of_measurement") == "km":
+        value *= 1.609344
+    if abs(value - published) > max(0.005, abs(value) * 0.0001):
+        return None
+    captured = finite(data.get("charge_state_timestamp"))
+    if captured is None:
+        return None
+    return timestamp(captured / 1000 if captured > 100_000_000_000 else captured)
 
 
 def boolean(source: State | None) -> bool | None:
     """Unknown/unavailable is neither connected nor disconnected."""
     return {"on": True, "off": False, "home": True, "not_home": False}.get(source.state) if source else None
+
+
+def connection_identity(hass: HomeAssistant, charger: dict[str, Any]) -> str | None:
+    """One attachment-token adapter for observation and every executor check."""
+    token = state(hass, charger.get("connection_entity"))
+    source = token or state(hass, charger.get("plug_entity"))
+    attribute = charger.get("connection_attribute", "")
+    value = source.attributes.get(attribute) if source and attribute else token.state if token else None
+    return str(value) if type(value) in (str, int, float) and str(value) not in {"unknown", "unavailable", ""} else None
 
 
 def vehicle_snapshot(hass: HomeAssistant, profile: dict[str, Any], charger: dict[str, Any]) -> VehicleSnapshot:
@@ -78,12 +123,12 @@ def vehicle_snapshot(hass: HomeAssistant, profile: dict[str, Any], charger: dict
     connected = boolean(cable) if cable else None
     if boolean(shared) is False:
         connected = False
-    token_source = plug_token or shared
-    attribute = charger.get("connection_attribute", "")
-    token_value = token_source.attributes.get(attribute) if token_source and attribute else plug_token.state if plug_token else None
-    connection_id = str(token_value) if type(token_value) in (str, int, float) and str(token_value) not in {"unknown", "unavailable", ""} else None
+    connection_id = connection_identity(hass, charger)
     # An edge time is safer than treating an old cached cable value as a new event.
     edge_times = [s.last_updated.timestamp() for s in (cable, shared, plug_token) if s is not None]
+    charger_report = state(hass, charger.get("control_report_entity"))
+    if charger_report and (reported := timestamp(charger_report.state)) is not None:
+        edge_times.append(reported)
     soh = measurement(hass, profile.get("soh_entity"), common_capture) if profile.get("soh_entity") else Measurement(100.0, unit="%", measured_at=common_capture)
     return VehicleSnapshot(
         measurement(hass, profile.get("soc_entity"), common_capture),
@@ -92,6 +137,7 @@ def vehicle_snapshot(hass: HomeAssistant, profile: dict[str, Any], charger: dict
         measurement(hass, profile.get("limit_entity"), common_capture),
         soh, connected, boolean(home) if home else None, connection_id,
         max(edge_times) if edge_times else None,
+        boolean(shared),
     )
 
 
@@ -139,6 +185,8 @@ def price_rows(hass: HomeAssistant, config: dict[str, Any], now: float) -> tuple
     source = state(hass, config.get("price_entity"))
     if source is None:
         return [], ["prices_missing"]
+    if source.state in {"unknown", "unavailable"}:
+        return [], ["prices_unavailable"]
     raw = []
     for attribute in config.get("price_attribute", "data").split(","):
         part = source.attributes.get(attribute.strip(), [])
@@ -197,3 +245,11 @@ def price_rows(hass: HomeAssistant, config: dict[str, Any], now: float) -> tuple
         solar = max(0.0, forecasts.get(float(hour), 0.0) - house)
         rows.append(Tariff(a, b, buy, sell, solar))
     return rows, warnings
+
+
+def price_feed_live(hass: HomeAssistant, config: dict[str, Any], now: float, rows: list[Tariff] | None = None, warnings: list[str] | None = None) -> bool:
+    """Available feed with valid intervals covering now; cached unavailable is not live."""
+    if rows is None or warnings is None:
+        rows, warnings = price_rows(hass, config, now)
+    source = state(hass, config.get("price_entity"))
+    return bool(source and source.state not in {"unknown", "unavailable"} and rows and not any(w in warnings for w in ("prices_missing", "prices_unavailable", "invalid_price_rows", "conflicting_price_rows")) and any(row.start <= now < row.end for row in rows))

@@ -1,5 +1,10 @@
 # AdaptiveCharge Preview 5.0.0b1
 
+Dit document bewaart het contract en bewijs van de historische read-only release.
+De opvolgende opt-in besturing staat in [CONTROL.md](CONTROL.md). De bronmeettijd-,
+boekhoudings- en bewijsprincipes blijven gelden; alleen expliciet beschreven
+uitbreidingen vervangen de hard-readonly grens en blokkade op vertraagde appdata.
+
 Deze versie rekent alleen mee naast de bestaande laadregeling. Domein:
 `adaptive_charge_preview`. De oude AdaptiveCharge v4-bron is gearchiveerd buiten het HACS-installatiepad.
 De native EV-scripts/automations worden niet vervangen, uitgeschakeld of aangeroepen.

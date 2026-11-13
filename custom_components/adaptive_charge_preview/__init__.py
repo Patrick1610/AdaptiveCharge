@@ -1,4 +1,4 @@
-"""AdaptiveCharge Preview: strictly read-only beside the existing controller."""
+"""AdaptiveCharge: read-only by default, with one explicitly enabled executor."""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ import voluptuous as vol
 from .const import DOMAIN
 from .coordinator import PreviewCoordinator
 
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.DATETIME]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.DATETIME, Platform.SWITCH, Platform.BUTTON]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Load an isolated observer; no existing integration/automation is changed."""
+    """Load calculation plus optional own executor; never alter native configs."""
     if entry.data.get("control_enabled", False) is not False or entry.options.get("control_enabled", False) is not False:
-        raise ConfigEntryError("This preview cannot enable control")
+        raise ConfigEntryError("Enable control using the master, not entry data")
     coordinator = PreviewCoordinator(hass, entry)
     try:
         await coordinator.async_initialize()
@@ -44,7 +44,7 @@ async def _reload_preview(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 def _register_actions(hass: HomeAssistant) -> None:
-    """Register own-namespace simulation actions, not hardware control."""
+    """Register own commands; only the master-authorized executor can actuate."""
     if hass.services.has_service(DOMAIN, "start"):
         return
 
@@ -67,6 +67,7 @@ def _register_actions(hass: HomeAssistant) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove only this preview's entities/listeners and persist its own state."""
+    await entry.runtime_data.control.prepare_unload()
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         raise HomeAssistantError("Preview platforms could not unload")
     await entry.runtime_data.async_shutdown()

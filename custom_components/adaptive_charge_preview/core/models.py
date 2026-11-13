@@ -85,6 +85,7 @@ class VehicleSnapshot:
     home: bool | None = None
     connection_id: str | None = None
     connection_measured_at: float | None = None
+    shared_connected: bool | None = None
 
 
 @dataclass(frozen=True)

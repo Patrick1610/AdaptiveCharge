@@ -15,18 +15,34 @@ from .test_ha import setup, entry
 PACKAGE=Path(__file__).resolve().parents[2]/"custom_components/adaptive_charge_preview"
 
 
-def test_package_has_no_actuator_or_network_calls_or_subprocesses():
+def test_actuators_confined_to_executor_no_network_or_subprocesses():
     assert CONTROL_ENABLED is False
     forbidden={"async_call","call_service","async_set_value","urlopen","request","run","Popen","system","exec","eval","set_state"}
     # DateTimeEntity.async_set_value is an incoming entity method, not a call.
     for path in PACKAGE.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        tree=ast.parse(path.read_text())
+        parents={child:parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        dispatchers=set()
+        for node in ast.walk(tree):
             if isinstance(node,ast.Call):
                 name=node.func.attr if isinstance(node.func,ast.Attribute) else node.func.id if isinstance(node.func,ast.Name) else ""
+                if name == "async_call" and path.name == "control.py":
+                    owner=node
+                    while not isinstance(owner,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                        owner=parents[owner]
+                    dispatchers.add(owner.name)
+                    assert ast.unparse(node.func)=="self.hass.services.async_call"
+                    assert owner.name in {"_call","_notify_fault","_notify_limit"}
+                    if owner.name!="_call":
+                        assert isinstance(node.args[0],ast.Constant) and node.args[0].value=="persistent_notification"
+                        assert isinstance(node.args[1],ast.Constant) and node.args[1].value=="create"
+                    continue
                 assert name not in forbidden, f"Forbidden call {name} in {path}"
+        if path.name=="control.py":
+            assert dispatchers=={"_call","_notify_fault","_notify_limit"}
     manifest=json.loads((PACKAGE/"manifest.json").read_text())
     assert manifest["domain"]=="adaptive_charge_preview" and not manifest["requirements"]
-    assert not (PACKAGE/"switch.py").exists()
+    assert (PACKAGE/"switch.py").exists()
 
 
 @pytest.mark.asyncio
@@ -37,7 +53,7 @@ async def test_control_cannot_be_enabled_by_entry_data(tmp_path):
     # Reconstruct immutable HA entry data through its supported local helper.
     from types import MappingProxyType
     object.__setattr__(e,"data",MappingProxyType({**e.data,"control_enabled":True}))
-    with pytest.raises(ConfigEntryError,match="cannot enable"):
+    with pytest.raises(ConfigEntryError,match="using the master"):
         await async_setup_entry(hass,e)
     await hass.async_stop()
 

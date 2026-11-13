@@ -1,7 +1,7 @@
-"""Preview-only contract. This distribution has no actuator implementation."""
+"""Shared contracts. Charger control is explicitly opt-in and defaults off."""
 
 DOMAIN = "adaptive_charge_preview"
-VERSION = "5.0.0b1"
+VERSION = "5.1.0b1"
 CONTROL_ENABLED = False
 STORAGE_VERSION = 1
 DEFAULT_POWER_KW = 11.0

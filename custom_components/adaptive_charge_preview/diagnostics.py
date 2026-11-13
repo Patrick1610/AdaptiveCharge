@@ -8,4 +8,5 @@ from homeassistant.core import HomeAssistant
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     """Only configured observations and the current explanation are exported."""
-    return {"control_enabled": False, "read_only": True, "preview": deepcopy(entry.runtime_data.data)}
+    control = entry.runtime_data.control
+    return {"control_enabled": control.enabled, "read_only": not control.enabled and not control.owned_manual and not control.has_limits, "preview": deepcopy(entry.runtime_data.data)}

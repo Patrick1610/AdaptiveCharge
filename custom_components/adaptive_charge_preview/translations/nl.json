@@ -1,10 +1,10 @@
 {
-  "title": "AdaptiveCharge Preview",
+  "title": "AdaptiveCharge",
   "config": {
     "step": {
       "user": {
-        "title": "Laadpaal alleen laten meerekenen",
-        "description": "Besturing is hard uitgeschakeld. Bestaande scripts, automations, helpers en autolimieten blijven ongewijzigd. Vul bij prijzen expliciet het juiste interval en de juiste all-in prijskolom in.",
+        "title": "Laadpaal instellen",
+        "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet.",
         "data": {
           "name": "Naam",
           "meter_entity": "IQ-energiemeter (kWh)",
@@ -12,7 +12,7 @@
           "plug_entity": "Laadpaal aangesloten",
           "connection_entity": "Tijdstip/identiteit van aansluiting",
           "mode_entity": "Huidige laadmodus (alleen lezen)",
-          "charging_entity": "Fysiek laden",
+          "charging_entity": "Laadstatus (optionele aanvullende terugmelding)",
           "price_entity": "Tariefbron",
           "forecast_entity": "Bestaande zonneprognose",
           "house_entity": "Huisvermogen zonder auto (W/kW)",
@@ -28,11 +28,19 @@
           "price_time_key": "Veld met begintijd",
           "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
           "export_price_key": "Veld met netto terugleverprijs (optioneel)",
-          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)"
+          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)",
+          "pending_entity": "Native pending-aanvraag (alleen lezen)",
+          "legacy_master_entity": "Hoofdschakelaar oude regeling (moet uit staan)",
+          "control_mode_entity": "Enphase laadmodusbediening",
+          "charger_switch_entity": "Enphase start-/stopschakelaar",
+          "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
+          "control_report_entity": "Enphase echte rapporttijd",
+          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
+          "require_prices_for_control": "Geen netladen zonder bruikbare actuele prijzen"
         }
       },
       "reconfigure": {
-        "title": "Preview-laadpaal wijzigen",
+        "title": "Laadpaal instellen",
         "data": {
           "name": "Naam",
           "meter_entity": "IQ-energiemeter (kWh)",
@@ -40,7 +48,7 @@
           "plug_entity": "Laadpaal aangesloten",
           "connection_entity": "Tijdstip/identiteit van aansluiting",
           "mode_entity": "Huidige laadmodus (alleen lezen)",
-          "charging_entity": "Fysiek laden",
+          "charging_entity": "Laadstatus (optionele aanvullende terugmelding)",
           "price_entity": "Tariefbron",
           "forecast_entity": "Bestaande zonneprognose",
           "house_entity": "Huisvermogen zonder auto (W/kW)",
@@ -56,13 +64,23 @@
           "price_time_key": "Veld met begintijd",
           "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
           "export_price_key": "Veld met netto terugleverprijs (optioneel)",
-          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)"
-        }
+          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)",
+          "pending_entity": "Native pending-aanvraag (alleen lezen)",
+          "legacy_master_entity": "Hoofdschakelaar oude regeling (moet uit staan)",
+          "control_mode_entity": "Enphase laadmodusbediening",
+          "charger_switch_entity": "Enphase start-/stopschakelaar",
+          "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
+          "control_report_entity": "Enphase echte rapporttijd",
+          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
+          "require_prices_for_control": "Geen netladen zonder bruikbare actuele prijzen"
+        },
+        "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet."
       }
     },
     "abort": {
       "already_configured": "Deze laadpaal heeft al een preview.",
-      "charger_identity_changed": "Maak voor een andere laadpaal een nieuwe preview."
+      "charger_identity_changed": "Maak voor een andere laadpaal een nieuwe preview.",
+      "finish_control_cleanup_first": "Rond eerst de eigen laadactie en limietherstel af voordat je deze bediening wijzigt."
     },
     "error": {
       "preview_source": "Kies een bestaande bronentiteit; preview-uitvoer kan geen eigen invoer zijn."
@@ -77,8 +95,8 @@
       },
       "step": {
         "user": {
-          "title": "Voertuig alleen laten meerekenen",
-          "description": "De meettijd moet een echte capture-tijd van het voertuig zijn. Ontvangsttijd of feed health bewijst geen nieuwe meting. De optionele limietbediening wordt nooit aangestuurd in deze preview.",
+          "title": "Voertuig instellen",
+          "description": "Vertraagde appgegevens wissen geen opdracht. Een bestaande fysieke aansluiting en energieboekhouding blijven bruikbaar. Echte meettijd blijft apart zichtbaar. ID.3-limieten worden nooit geschreven.",
           "data": {
             "name": "Naam",
             "kind": "Voertuigberekening",
@@ -90,16 +108,19 @@
             "home_entity": "Auto thuis",
             "soh_entity": "VW accugezondheid SOH (%)",
             "measurement_time_entity": "Echte voertuigmeettijd (geen ontvangstmoment)",
-            "limit_writer_entity": "Optionele limietbediening (preview leest alleen)",
+            "limit_writer_entity": "Optionele Tesla-limietbediening",
             "target_entity": "Bestaand bereikdoel (alleen lezen)",
             "departure_entity": "Bestaand vertrek (alleen lezen)",
             "native_plan_entity": "Bestaande plansensor ter vergelijking",
             "droop_pp": "SOC-terugval (procentpunten)",
-            "margin": "Energiemarge als fractie (0,15 = 15%)"
+            "margin": "Energiemarge als fractie (0,15 = 15%)",
+            "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
+            "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
+            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening"
           }
         },
         "reconfigure": {
-          "title": "Voertuigpreview wijzigen",
+          "title": "Voertuig instellen",
           "data": {
             "name": "Naam",
             "kind": "Voertuigberekening",
@@ -111,18 +132,23 @@
             "home_entity": "Auto thuis",
             "soh_entity": "VW accugezondheid SOH (%)",
             "measurement_time_entity": "Echte voertuigmeettijd (geen ontvangstmoment)",
-            "limit_writer_entity": "Optionele limietbediening (preview leest alleen)",
+            "limit_writer_entity": "Optionele Tesla-limietbediening",
             "target_entity": "Bestaand bereikdoel (alleen lezen)",
             "departure_entity": "Bestaand vertrek (alleen lezen)",
             "native_plan_entity": "Bestaande plansensor ter vergelijking",
             "droop_pp": "SOC-terugval (procentpunten)",
-            "margin": "Energiemarge als fractie (0,15 = 15%)"
-          }
+            "margin": "Energiemarge als fractie (0,15 = 15%)",
+            "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
+            "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
+            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening"
+          },
+          "description": "Vertraagde appgegevens wissen geen opdracht. Een bestaande fysieke aansluiting en energieboekhouding blijven bruikbaar. Echte meettijd blijft apart zichtbaar. ID.3-limieten worden nooit geschreven."
         }
       },
       "abort": {
         "vehicle_already_configured": "Dit voertuig is al toegevoegd.",
-        "vehicle_identity_changed": "Voeg een andere auto als nieuw voertuig toe."
+        "vehicle_identity_changed": "Voeg een andere auto als nieuw voertuig toe.",
+        "finish_control_cleanup_first": "Rond eerst de eigen laadactie en limietherstel af voordat je deze bediening wijzigt."
       },
       "error": {
         "preview_source": "Kies een bestaande bronentiteit; preview-uitvoer kan geen eigen invoer zijn."
@@ -132,7 +158,25 @@
   "entity": {
     "sensor": {
       "preview": {
-        "name": "Preview"
+        "name": "Preview",
+        "state": {
+          "idle": "Geen actieve opdracht",
+          "waiting_data": "Wacht op gegevens",
+          "watching": "Doelbewaking",
+          "charging": "Bijladen waargenomen",
+          "paused": "Opdracht bewaard",
+          "scheduled": "Ingepland",
+          "would_boost": "Aanvullend laden gepland",
+          "verifying": "Wacht op voertuigbevestiging",
+          "within_tolerance": "Binnen tolerantie",
+          "blocked": "Besturing vraagt aandacht",
+          "fault": "Brongegevens vragen aandacht",
+          "cancelled": "Opdracht beëindigd",
+          "disconnected": "Ontkoppeling gezien",
+          "read_only": "Alleen meerekenen",
+          "control_enabled": "Besturing ingeschakeld",
+          "stopping": "Eigen acties afronden"
+        }
       }
     },
     "binary_sensor": {
@@ -142,7 +186,7 @@
     },
     "number": {
       "target_range_km": {
-        "name": "Preview bereikdoel"
+        "name": "Bereikdoel"
       },
       "droop_pp": {
         "name": "SOC-terugval"
@@ -150,26 +194,39 @@
     },
     "datetime": {
       "departure": {
-        "name": "Preview vertrek"
+        "name": "Vertrek"
+      }
+    },
+    "switch": {
+      "control_master": {
+        "name": "Control master"
+      }
+    },
+    "button": {
+      "start": {
+        "name": "Start"
+      },
+      "stop": {
+        "name": "Stop"
       }
     }
   },
   "services": {
     "start": {
-      "name": "Start previewopdracht",
-      "description": "Start uitsluitend een lokale simulatie. De auto en bestaande laadopdracht worden NIET gestart of gewijzigd."
+      "name": "Start laadopdracht",
+      "description": "Met de hoofdschakelaar uit alleen meerekenen. Met de hoofdschakelaar aan wordt de geselecteerde auto volgens doel en vertrek aangestuurd."
     },
     "set_target": {
-      "name": "Previewdoel wijzigen",
-      "description": "Wijzig eigen previewwaarden; geen bestaande doel- of vertrekhelper wordt aangepast."
+      "name": "Doel wijzigen",
+      "description": "Wijzig het eigen doel/vertrek zonder nieuwe energieallocatie. Een inactieve wijziging start geen lading."
     },
     "stop": {
-      "name": "Previewopdracht beëindigen",
-      "description": "Beëindig alleen de lokale previewopdracht. Dit stopt GEEN fysieke lading of bestaande opdracht."
+      "name": "Laadopdracht beëindigen",
+      "description": "Trek hervattingsrecht in en beëindig uitsluitend eigen aanvullend laden. Green blijft de basis."
     },
     "follow_helpers": {
       "name": "Bestaande helpers volgen",
-      "description": "Wis uitsluitend lokale doel-/vertrekoverrides; start of wijzig geen echte laadopdracht."
+      "description": "Verwijder lokale doel-/vertrekoverrides en volg de gekoppelde helpers, zonder een nieuwe opdracht te starten."
     }
   }
 }

@@ -21,7 +21,7 @@ class PreviewEntity(CoordinatorEntity[PreviewCoordinator]):
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{ident}_{key}"
         self._attr_translation_key = key
         title = coordinator.profiles[vehicle_id]["name"] if vehicle_id else coordinator.entry.title
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, f"{coordinator.entry.entry_id}_{ident}")}, name=title, manufacturer="AdaptiveCharge", model="Read-only preview", sw_version=VERSION, via_device=(DOMAIN, f"{coordinator.entry.entry_id}_charger") if vehicle_id else None)
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, f"{coordinator.entry.entry_id}_{ident}")}, name=title, manufacturer="AdaptiveCharge", model="Charger coordinator", sw_version=VERSION, via_device=(DOMAIN, f"{coordinator.entry.entry_id}_charger") if vehicle_id else None)
 
     @property
     def row(self) -> dict[str, Any]:

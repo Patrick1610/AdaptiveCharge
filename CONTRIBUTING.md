@@ -9,7 +9,7 @@
 
 ### Pull Request Rules
 1. **No analysis files**: Log files, history exports, energy dashboard CSVs, and similar analysis artifacts must **never** be merged into `release`, `develop` or `main`. These belong in feature branches only. The `.gitignore` is configured to exclude `*.csv` files automatically.
-2. **Version bump required**: Every release must use a new version in the active integration's `custom_components/adaptive_charge_preview/manifest.json`. Version 5 is a separate, read-only preview; v4 is archived under `legacy/v4/` and is not shipped by HACS. Use [Semantic Versioning](https://semver.org/), including prerelease suffixes for previews:
+2. **Version bump required**: Every release must use a new version in the active integration's `custom_components/adaptive_charge_preview/manifest.json`. Version 5.0 was a read-only observer; 5.1 adds explicit opt-in control while preserving its domain and entity identities. v4 is archived under `legacy/v4/` and is not shipped by HACS. Use [Semantic Versioning](https://semver.org/), including prerelease suffixes for previews:
    - **Patch** (x.y.Z): Bug fixes, small improvements
    - **Minor** (x.Y.0): New features, new config options, new sensors
    - **Major** (X.0.0): Breaking changes (config format changes, entity ID changes)
@@ -23,7 +23,10 @@
 - Publish preview versions as GitHub pre-releases from a reviewed feature commit;
   keep the protected branches behind the normal PR process.
 - Never claim live commissioning from a published release or passing software tests.
-- Preview code must remain unable to call actuator services or change source entities.
+- The default-disabled path must issue no actuator services or source/helper writes.
+  Only `control.py` may call the configured actuator allowlist after explicit
+  Master/Start authority and native-controller exclusion. Never change phases,
+  amperage, source values or another controller's helpers.
 - This beta is distributed as a custom repository, not submitted to the default
   HACS catalog. Its repository description/topics are currently absent; the
   available GitHub credentials have write, not admin, access. The HACS Action

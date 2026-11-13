@@ -1,36 +1,36 @@
-# AdaptiveCharge-preview in een bestaand dashboard
+# AdaptiveCharge in het bestaande EV-dashboard
 
-Deze configuratie vervangt uitsluitend het bestaande dashboard `ev-v2-proef`
-(oude zijbalktitel `EV laadplan · V2`) en geeft het de titel `EV · AdaptiveCharge`.
-De drie bestaande viewpaden `proef`, `tesla` en `id3` blijven behouden.
-`dashboard-stormbreaker` / `EV laden` blijft de bestaande echte bediening en wordt
-niet gewijzigd. Maak geen nieuw dashboard, helpers of sensoren aan.
+`EV laden` / `dashboard-stormbreaker` blijft de oude native bediening.
+`EV · AdaptiveCharge` / `ev-v2-proef` is de bestaande tweede plek voor de nieuwe
+integratie. Maak geen derde dashboard. De viewpaden `proef`, `tesla`, `id3`, URL,
+ID, opslagmodus en toegangsinstellingen blijven behouden.
 
-De bron is `tools/preview_dashboard.py`; genereer `dashboards/preview.json` hiermee
-opnieuw na een wijziging. De bronbindingen zijn de tien preview-entiteiten van
-Patricks bestaande HA-instantie. Bij hernoemen van die entiteiten moeten de
-bindingen hier worden aangepast. De generator schrijft alleen een lokaal bestand,
-maakt geen verbinding met HA en doet geen installatie.
+De bron is `tools/preview_dashboard.py`; genereer `dashboards/preview.json` na een
+wijziging opnieuw. De installatiegebonden entity-ID's blijven bewust zichtbaar;
+controleer ze tegen de publieke registry na een HACS-upgrade. De generator schrijft
+uitsluitend een lokaal bestand en maakt geen verbinding met HA.
 
 ```sh
 .venv/bin/python tools/preview_dashboard.py
 ```
 
-Er zijn uitsluitend ingebouwde Markdown- en entiteitskaarten en navigatielinks.
-De entiteitskaarten wijzigen alleen de eigen previewwaarden voor bereik, vertrek
-en terugval. Er zijn geen laadknoppen of service-acties voor native scripts,
-helpers, auto, laadpaal of limieten. De besturingsstatus wordt uit de integratie
-gelezen; een ontbrekende status wordt niet als bevestigd uit weergegeven.
+Vanaf 5.1 toont Overzicht de echte gedeelde hoofdschakelaar. Beide autoviews tonen
+het eigen doel, vertrek, terugval en de eigen Start/Stop-knoppen. Met de hoofdschakelaar
+uit blijft Start een lokale simulatie. Met de hoofdschakelaar aan geeft Start echte
+uitvoeringsbevoegdheid, na de interlocks. Een doelwijziging zonder actieve opdracht
+start niets. De oude regeling moet uit staan; zij wordt niet door dit dashboard
+omgeschakeld. Er zijn uitsluitend ingebouwde Markdown- en entiteitskaarten.
 
-Bewaar vóór installatie de twee huidige dashboardconfigs en metadata via de
-publieke Lovelace-API. Valideer de templates en aanwezige bronentiteiten. Schrijf
-alleen de configuratie van `ev-v2-proef` en wijzig alleen diens zijbalktitel;
-behoud url, id, opslagmodus en toegangsinstellingen. Controleer de teruggelezen
-config, het ongewijzigde `EV laden`, de ongewijzigde dashboard-ID-set en native
-regelconfiguraties. Backup en readback horen in de eigen HA-bewijsmap, niet in
-publieke bronbestanden.
+Bewaar vóór iedere dashboardupdate de twee configs en alle dashboardmetadata via
+Lovelace. Valideer templates en de bestaande entiteiten; schrijf alleen de config
+van `ev-v2-proef`. Verifieer readback, ongewijzigd `EV laden`, alle andere metadata,
+dezelfde dashboard-ID-set en native regelconfigs. Runtime-/installatiebewijs blijft
+in de eigen HA-map, buiten publieke bronbestanden.
 
-## Uitgevoerd op 13 november 2026
+De 5.1-config is pas live na afzonderlijke installatie/readback; onderstaande
+historische verificatie bewijst uitsluitend de eerdere read-only dashboardvariant.
+
+## Historische verificatie van de 5.0-variant, 13 november 2026
 
 Het bestaande `ev-v2-proef` is vervangen en heet nu `EV · AdaptiveCharge`.
 Overzicht, Stormbreaker en Éowyn zijn in de HA-frontend bekeken; alle tien unieke

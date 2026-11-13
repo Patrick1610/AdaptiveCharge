@@ -1,7 +1,7 @@
 start:
-  name: Start previewopdracht
-  description: Start uitsluitend een lokale simulatie. De auto en bestaande laadopdracht
-    worden NIET gestart of gewijzigd.
+  name: Start laadopdracht
+  description: Met de hoofdschakelaar uit alleen meerekenen. Met de hoofdschakelaar aan
+    wordt de geselecteerde auto volgens het eigen doel en vertrek aangestuurd.
   fields:
     vehicle_id:
       required: true
@@ -17,13 +17,13 @@ start:
           max: 2000
           unit_of_measurement: km
     departure:
-      description: ISO-tijd met tijdzone, of now voor een direct previewadvies.
+      description: ISO-tijd met tijdzone, of now voor direct bijladen.
       selector:
         text: null
 set_target:
-  name: Previewdoel wijzigen
-  description: Wijzig eigen previewwaarden; geen bestaande doel- of vertrekhelper
-    wordt aangepast.
+  name: Doel wijzigen
+  description: Wijzig het eigen doel zonder gebruikt energiebudget te resetten.
+    Een inactieve doelwijziging start geen laadopdracht. Bestaande helpers worden niet geschreven.
   fields:
     vehicle_id:
       required: true
@@ -41,9 +41,9 @@ set_target:
       selector:
         text: null
 stop:
-  name: Previewopdracht beëindigen
-  description: Beëindig alleen de lokale previewopdracht. Dit stopt GEEN fysieke lading
-    of bestaande opdracht.
+  name: Laadopdracht beëindigen
+  description: Trek hervattingsrecht in en beëindig uitsluitend eigen aanvullend laden.
+    Green blijft de basis; een buitenlandse opdracht wordt niet overgenomen.
   fields:
     vehicle_id:
       required: true
@@ -54,8 +54,7 @@ stop:
         text: null
 follow_helpers:
   name: Bestaande helpers volgen
-  description: Wis uitsluitend lokale doel-/vertrekoverrides; start of wijzig geen
-    echte laadopdracht.
+  description: Wis lokale doel-/vertrekoverrides en volg gekoppelde helpers zonder nieuwe Start.
   fields:
     vehicle_id:
       required: true

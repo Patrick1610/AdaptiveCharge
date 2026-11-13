@@ -1,4 +1,4 @@
-"""Build/install only the isolated preview package; never replace an existing tree."""
+"""Build/install the package; explicit upgrades require exact existing-file pins."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def build(source_root: Path, output: Path) -> dict[str, object]:
     content = stream.getvalue()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(content)
-    receipt = {"domain": DOMAIN, "control_enabled": False, "sha256": sha256(content).hexdigest(), "files": hashes}
+    receipt = {"domain": DOMAIN, "control_enabled": False, "control_capable": True, "version": json.loads((package / "manifest.json").read_text())["version"], "sha256": sha256(content).hexdigest(), "files": hashes}
     output.with_suffix(".json").write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
 
@@ -106,11 +106,100 @@ def install(content: bytes, config_dir: Path, expected_sha256: str) -> dict[str,
     return {"domain": DOMAIN, "control_enabled": False, "sha256": expected_sha256, "files": {str(p.relative_to(config_dir)): sha256(data).hexdigest() for p, data in written.items()}}
 
 
+def component_hashes(config_dir: Path) -> dict[str, str]:
+    """Inspect only this domain, refusing links and unexpected foreign files."""
+    component = config_dir / "custom_components" / DOMAIN
+    if not component.is_dir() or any(p.is_symlink() for p in (config_dir, component.parent, component)):
+        raise ValueError("Expected a real existing component directory")
+    return _component_tree(component)
+
+
+def _component_tree(component: Path) -> dict[str, str]:
+    result = {}
+    for path in component.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("Component contains a symlink")
+        if path.is_file() and "__pycache__" not in path.relative_to(component).parts:
+            result[PREFIX + path.relative_to(component).as_posix()] = sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def upgrade(content: bytes, config_dir: Path, expected_sha256: str, expected_before: dict[str, str], proof_dir: Path) -> dict[str, object]:
+    """Replace exactly the pinned component with reversible directory renames.
+
+    No HA services, source execution, helpers or storage are accessed. The caller
+    must separately verify idle authority and arrange the authorized HA restart.
+    A previously written proof directory forbids a duplicate automatic attempt.
+    """
+    if proof_dir.exists() or proof_dir.is_symlink():
+        raise FileExistsError("An upgrade receipt/staging directory already exists")
+    if not expected_before or any(not key.startswith(PREFIX) or not re.fullmatch(r"[0-9a-f]{64}", value) for key, value in expected_before.items()):
+        raise ValueError("An independently verified complete baseline is required")
+    root = config_dir.resolve(strict=True)
+    original_proof = proof_dir.absolute()
+    proof = proof_dir.resolve()
+    if not proof.is_relative_to(root) or proof.is_relative_to(root / "custom_components") or any(p.is_symlink() for p in original_proof.parents):
+        raise ValueError("Proof directory must be a separate non-symlink path inside config")
+    if component_hashes(config_dir) != expected_before:
+        raise ValueError("Existing component drift; nothing replaced")
+    proof.mkdir(parents=True)
+    destination = config_dir / "custom_components" / DOMAIN
+    backup = proof / "component_before"
+    receipt: dict[str, object] = {"phase": "preparing", "archive_sha256": expected_sha256, "before": dict(expected_before), "after": None, "control_enabled": False, "ha_restarted": False}
+    receipt_path = proof / "upgrade_receipt.json"
+    def save() -> None:
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+    save()
+    try:
+        candidate_config = proof / "candidate_config"
+        candidate_config.mkdir()
+        (candidate_config / "configuration.yaml").touch()
+        staged = install(content, candidate_config, expected_sha256)
+        candidate = candidate_config / "custom_components" / DOMAIN
+        receipt.update(phase="prepared", after=staged["files"])
+        save()
+        # Recheck after staging, immediately before the first mutation of old code.
+        if component_hashes(config_dir) != expected_before:
+            raise ValueError("Component changed during preparation")
+        destination.rename(backup)
+    except Exception as exc:
+        receipt.update(phase="failed_before_rename", error_type=type(exc).__name__)
+        save()
+        raise
+    try:
+        if _component_tree(backup) != expected_before:
+            raise ValueError("Component changed at rename; restore without installing")
+        candidate.rename(destination)
+        if component_hashes(config_dir) != staged["files"]:
+            raise ValueError("Upgrade readback differs from reviewed archive")
+        receipt["phase"] = "installed_restart_pending"
+        save()
+    except Exception as exc:
+        if not destination.exists() and not destination.is_symlink():
+            backup.rename(destination)
+            receipt["phase"] = "rolled_back"
+        else:
+            try:
+                owned_candidate = component_hashes(config_dir) == staged["files"]
+            except (ValueError, OSError):
+                owned_candidate = False
+            if owned_candidate:
+                destination.rename(proof / "failed_candidate")
+                backup.rename(destination)
+                receipt["phase"] = "rolled_back"
+            else:
+                receipt["phase"] = "blocked_foreign_change_backup_retained"
+        receipt["error_type"] = type(exc).__name__
+        save()
+        raise
+    return receipt
+
+
 def main() -> None:
     """Build locally; installation is called explicitly through the allowed route."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=Path("dist/adaptive_charge_preview-5.0.0b1.zip"))
-    parser.add_argument("--install", type=Path, help="Install this reviewed preview-only ZIP")
+    parser.add_argument("--output", type=Path, default=Path("dist") / f"adaptive_charge_preview-{json.loads((Path(__file__).resolve().parents[1] / PREFIX / 'manifest.json').read_text())['version']}.zip")
+    parser.add_argument("--install", type=Path, help="Install this reviewed integration ZIP (default control off)")
     parser.add_argument("--config", type=Path, help="Existing HA config directory")
     parser.add_argument("--sha256", help="Independently verified ZIP digest")
     args = parser.parse_args()

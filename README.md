@@ -1,25 +1,28 @@
-# AdaptiveCharge 5 — read-only preview
+# AdaptiveCharge 5.1 — uitschakelbare laadbesturing
 
 Deze beta bundelt planning rond een gedeelde laadpaal met afzonderlijke
 voertuigprofielen voor Tesla en Volkswagen ID.3. Enphase Green blijft de basis;
-de preview berekent aanvullend netladen naar een bereikdoel en vertrektijd.
+de integratie plant aanvullend netladen naar een bereikdoel en vertrektijd.
 
-**De integratie bestuurt niets.** Er is geen laad-, fase-, ampère- of limietactie
-en geen schakelaar om besturing aan te zetten. Bestaande werkende scripts,
-automations, helpers en Shortcuts blijven de echte laadregeling uitvoeren.
+**De hoofdschakelaar staat standaard uit.** Uit betekent alleen meerekenen.
+Met de hoofdschakelaar aan en een expliciete Start bestuurt de integratie de
+geselecteerde auto via de bestaande Enphase-/voertuigintegraties. De oude
+controller moet uit staan; actieve native opdrachten worden niet overgenomen.
+Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTROL.md).
 
 ## Installeren via HACS
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.0.0b1`. Met beta's ingeschakeld biedt HACS ook
+downloaden en kies expliciet `v5.1.0b1`. Met beta's ingeschakeld biedt HACS ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
-**AdaptiveCharge Preview** toe onder Apparaten & diensten, met één hoofdinstantie
+**AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie
 voor de laadpaal en Tesla/ID.3 als autosubconfiguraties.
 
-Deze beta gebruikt het eigen domein `adaptive_charge_preview`, zodat hij geen
-bestaande native laadregeling kan overnemen. Een oude AdaptiveCharge v4-entry
+Deze beta behoudt het domein `adaptive_charge_preview` voor een gewone update van
+5.0.0b1. Bestaande entries, voertuigsubentries en entiteitsidentiteiten blijven staan.
+Een oude AdaptiveCharge v4-entry
 wordt niet automatisch gemigreerd of gebruikt. Deze release verwijdert geen reeds
 geïnstalleerde v4-code of entries. HACS ruimt de oude domeinmap bij deze naamswijziging
 niet betrouwbaar op. Controleer daarom vóór een eventuele herstart:
@@ -40,8 +43,8 @@ HACS kan bij vervanging om een herstart vragen. Plan die wanneer de huidige
 laadopdracht mag eindigen: de bestaande native herstartveiligheid kan een
 actieve opdracht annuleren. Een herstart is geen onderdeel van de previewbesturing.
 
-Zie [werking, bronbindingen en bewijsgrenzen](docs/PREVIEW.md) voor de volledige
-uitleg. De beta is softwarematig getest; dit is geen fysiek functioneel akkoord
+Zie [de volledige besturing](docs/CONTROL.md) en de
+[historische 5.0-previewberekeningen](docs/PREVIEW.md). Softwaretests zijn geen fysiek functioneel akkoord
 voor doelstop of natuurlijk bijladen bij beide auto's.
 
 ## Ontwikkelen

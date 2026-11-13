@@ -5,26 +5,30 @@ from pathlib import Path
 BASE='/ev-v2-proef'
 BANNER={
  'type':'markdown',
- 'content':'''# AdaptiveCharge · preview
+ 'content':'''# AdaptiveCharge
 {% if is_state('binary_sensor.enphase_preview_control_active', 'off') and state_attr('sensor.enphase_preview_preview', 'read_only') == true %}
-**Besturing uit — alleen een voorvertoning.**
+**Hoofdschakelaar uit — alleen meerekenen.**
+{% elif is_state('binary_sensor.enphase_preview_control_active', 'on') %}
+**Hoofdschakelaar aan.** Alleen een eigen Start geeft een laadopdracht.
 {% else %}
-**⚠ Besturingsstatus niet bevestigd.**
+**Besturing wacht op bevestiging of afronding.**
 {% endif %}
-De huidige laadregeling bedien je via [EV laden](/dashboard-stormbreaker).
-Voorbeeldwaarden op dit dashboard veranderen alleen de preview.'''
+De oude bediening staat onder [EV laden](/dashboard-stormbreaker).
+Alleen één regeling mag de laadpaal besturen. Stop beëindigt de opdracht;
+een fasepauze of nulvermogen doet dat niet.'''
 }
 WARNINGS={
  'vehicle_measurement_stale_or_time_unknown':'Voertuigmeting is verouderd of de meettijd ontbreekt.',
- 'invalid_price_rows':'Er zijn geen bruikbare stroomtarieven.',
- 'prices_missing':'De prijsbron ontbreekt.',
+ 'invalid_price_rows':'Er zijn geen bruikbare stroomtarieven. Manual wacht; Green mag doorlopen.',
+ 'prices_missing':'De prijsbron ontbreekt. Manual wacht; Green mag doorlopen.',
+ 'prices_unavailable':'Enever is niet beschikbaar; alleen zelfstandig Green-laden is toegestaan.',
  'export_price_unknown_cost_estimate_incomplete':'Terugleverprijs ontbreekt; kosten zijn nog niet volledig te bepalen.',
  'forecast_stale_ignored':'Zonneprognose is verouderd en telt niet mee.',
  'forecast_invalid_ignored':'Zonneprognose is niet bruikbaar.',
  'native_vehicle_identity_ambiguous':'De actieve auto is niet eenduidig vast te stellen.',
  'price_gap':'De tariefreeks bevat een gat.',
 }
-PHASES={'idle':'Alleen advies','waiting_data':'Wacht op brongegevens','watching':'Doelbewaking in de preview','charging':'Bijladen in de preview','scheduled':'Ingepland in de preview','verifying':'Wacht op doelbevestiging','cancelled':'Preview beëindigd','disconnected':'Ontkoppeling gezien','fault':'Brongegevens vragen aandacht'}
+PHASES={'idle':'Geen actieve opdracht','waiting_data':'Wacht op bruikbare gegevens','watching':'Doelbewaking','charging':'Fysiek bijladen waargenomen','paused':'Opdracht bewaard · fysiek laden nog niet bevestigd','scheduled':'Ingepland','would_boost':'Zou aanvullend laden','verifying':'Energiegrens bereikt · wacht op voertuigbevestiging','within_tolerance':'Klein restant binnen tolerantie','blocked':'Besturing vraagt aandacht','cancelled':'Opdracht beëindigd','disconnected':'Ontkoppeling gezien','fault':'Brongegevens vragen aandacht'}
 
 def md(text):
  return {'type':'markdown','content':cleandoc(text)}
@@ -37,7 +41,7 @@ def status(sensor,name):
 {% set phases = '''+json.dumps(PHASES,ensure_ascii=False)+''' %}
 **{{ phases.get(states(e), 'Wacht op gegevens') }}**
 {% if state_attr(e, 'plan_provisional') != false %}
-**Advies voorlopig.** Gebruik onderstaande schattingen nog niet als bevestigd laadplan.
+**Voertuigmeting onbevestigd.** De schatting is voorlopig. Een bewaard energiebudget kan worden afgemaakt; dit is geen bevestiging van doelbereik.
 {% endif %}
 {% set messages = '''+json.dumps(WARNINGS,ensure_ascii=False)+''' %}
 {% for warning in state_attr(e, 'warnings') or [] %}
@@ -62,12 +66,12 @@ def facts(sensor):
 | Gemelde accu-energie | {{ (battery.get('value') | round(2) | string ~ ' kWh') if battery.get('value') is number else 'Onbekend' }} |
 | Meetmoment accu-energie | {{ battery.get('measured_at') | timestamp_custom('%d-%m %H:%M', true) if battery.get('measured_at') is number else 'Onbekend' }} |
 | Ingestelde autolimiet | {{ (limit.get('value') | round(0) | int | string ~ ' %') if limit.get('value') is number else 'Onbekend' }} |
-| Bereikdoel preview | {{ (target | round(0) | int | string ~ ' km') if target is number else 'Onbekend' }} |
-| Doelindicatie preview | {{ (d.get('effective_soc') | round(1) | string ~ ' %') if d.get('effective_soc') is number else 'Onbekend' }} |
+| Bereikdoel | {{ (target | round(0) | int | string ~ ' km') if target is number else 'Onbekend' }} |
+| Doelindicatie | {{ (d.get('effective_soc') | round(1) | string ~ ' %') if d.get('effective_soc') is number else 'Onbekend' }} |
 | Extra laadenergie · schatting | {{ (d.get('needed_kwh') | round(2) | string ~ ' kWh') if d.get('needed_kwh') is number else 'Onbekend' }} |
 | Bereik nodig op | {{ departure | timestamp_custom('%d-%m-%Y %H:%M', true) if departure is number else 'Onbekend' }} |
 {% if d.get('limited') %}
-Het effectieve doel is begrensd door de autolimiet. De preview wijzigt die limiet niet.
+Het effectieve doel is begrensd door de bevestigde autolimiet. Een optionele Tesla-verhoging geldt pas na terugmelding.
 {% endif %}''')
 
 def planning(sensor):
@@ -84,13 +88,13 @@ def planning(sensor):
 {% endif %}
 {% endfor %}
 {% else %}
-Nog geen laadvensters in de preview.
+Geen geplande tijdvensters. Een direct/urgent verzoek kan nu bijladen; zonder Start wordt alleen meegerekend.
 {% endif %}
 
 **Geschatte kosten:** {{ ('€ ' ~ (p.get('cost') | round(2))) if p.get('cost') is number else 'Niet beschikbaar' }}
 
 {% set c = state_attr(e, 'comparison') or {} %}
-**Vergelijking:** huidige regeling {{ c.get('native_mode') or 'onbekend' }} · preview {{ c.get('preview_mode') or 'onbekend' }}.
+**Vergelijking:** oude native berekening {{ c.get('native_mode') or 'onbekend' }} · AdaptiveCharge {{ c.get('preview_mode') or 'onbekend' }}.
 Een voorgesteld venster of dezelfde modus is nog geen bewijs dat de auto zo heeft geladen.''')
 
 def build() -> dict:
@@ -99,7 +103,29 @@ def build() -> dict:
      ('Stormbreaker','tesla','sensor.stormbreaker_preview','number.stormbreaker_preview_range_target','datetime.stormbreaker_preview_departure','number.stormbreaker_soc_return_threshold'),
      ('Éowyn · ID.3','id3','sensor.eowyn_id_3_preview','number.eowyn_id_3_preview_range_target','datetime.eowyn_id_3_preview_departure','number.eowyn_id_3_soc_return_threshold'),
     ]
-    overview=[BANNER,md('''### Laadpaal · waarneming
+    overview=[BANNER,{'type':'entities','title':'Hoofdschakelaar · laadpaal','show_header_toggle':False,'entities':[
+     {'entity':'switch.enphase_preview_control_master','name':'AdaptiveCharge-besturing'},
+    ]},md('''### Besturing
+    {% set e = 'sensor.enphase_preview_preview' %}
+    {% set status = state_attr(e, 'control_status') %}
+    {% if status == 'physical_start_unconfirmed' %}
+    **Laadstart nog niet bevestigd.** De opdracht blijft bewaard. Controleer de auto en laadpaal; er wordt geen extra Start verstuurd.
+    {% elif state_attr(e, 'control_fault') or status == 'price_feed_stop_unconfirmed' %}
+    **Besturing vraagt aandacht.** Er komt geen automatische nieuwe laadstart.
+    Controleer het fysieke laadvermogen; een aangevraagde stop kan nog onbevestigd zijn.
+    {% elif status == 'waiting_prices' %}
+    **Wacht op bruikbare stroomtarieven.** De opdracht blijft bewaard.
+    {% elif status == 'enabled_no_request' %}
+    **Klaar voor een opdracht.** Kies auto, doel en vertrek en druk op Start.
+    {% elif state_attr(e, 'active_vehicle') %}
+    **Opdracht bewaard.** De voertuigkaart toont planning en voortgang.
+    {% else %}
+    **Geen actieve laadopdracht.**
+    {% endif %}
+    {% set a = state_attr(e, 'limit_audit') or {} %}
+    {% if a.get('retired_reason') in ['foreign_controller_owner', 'writer_identity_changed', 'restore_readback_timeout'] %}
+    **Laatste limietherstel vraagt controle.** AdaptiveCharge schreef {{ a.get('written') }}%; de oorspronkelijke Tesla-instelling was {{ a.get('original') }}%. Controleer de voertuiglimiet in de Tesla-app.
+    {% endif %}'''),md('''### Laadpaal · waarneming
     {% set p = state_attr('sensor.enphase_preview_preview', 'physical') or {} %}
     {% set meter = state_attr('sensor.enphase_preview_preview', 'meter_kwh') %}
     {% if p.get('fresh') and p.get('kw') is number %}
@@ -111,7 +137,7 @@ def build() -> dict:
 
     **Laadmeter:** {{ (meter | round(2) | string ~ ' kWh') if meter is number else 'Niet beschikbaar' }}
 
-    De preview observeert deze waarden en stuurt de laadpaal niet aan.''')]
+    Dit is gemeten laadvermogen, los van de berekende planning.''')]
     for name,path,sensor,*_ in cars:
      card=status(sensor,name)
      card['content']+='\n[Bekijk profiel]('+BASE+'/'+path+')'
@@ -120,10 +146,12 @@ def build() -> dict:
     for name,path,sensor,target,departure,droop in cars:
      views.append({'title':name,'path':path,'icon':'mdi:car-electric','cards':[
       BANNER,status(sensor,name),facts(sensor),
-      {'type':'entities','title':'Voorbeeldinstellingen · alleen preview','show_header_toggle':False,'entities':[
-       {'entity':target,'name':'Bereikdoel · preview','icon':'mdi:map-marker-distance'},
-       {'entity':departure,'name':'Bereik nodig op · preview'},
+      {'type':'entities','title':'Doel en vertrek','show_header_toggle':False,'entities':[
+       {'entity':target,'name':'Bereikdoel','icon':'mdi:map-marker-distance'},
+       {'entity':departure,'name':'Bereik nodig op'},
        {'entity':droop,'name':'Terugval voor bijladen · procentpunt'},
+       {'entity':'button.'+('stormbreaker' if path=='tesla' else 'eowyn_id_3')+'_start','name':'Start opdracht'},
+       {'entity':'button.'+('stormbreaker' if path=='tesla' else 'eowyn_id_3')+'_stop','name':'Stop opdracht'},
       ]},planning(sensor)
      ]})
     return {'title':'EV · AdaptiveCharge','views':views}

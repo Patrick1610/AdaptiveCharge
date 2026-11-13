@@ -35,13 +35,15 @@ class Session:
     meter_fault: bool = False
     identity_gap: bool = False
     tolerated_soc: float | None = None
+    origin_meter: float | None = None
+    reference_values: tuple[float | None, ...] | None = None
 
     def stop(self, reason: str = "explicit_preview_stop") -> None:
         """Revoke the local preview command only; Green is independent."""
         self.terminal, self.phase, self.reason = True, "idle", reason
         self.below_since = None
 
-    def observe_connection(self, now: float, snapshot: VehicleSnapshot) -> bool:
+    def observe_connection(self, now: float, snapshot: VehicleSnapshot, *, trust_attachment: bool = False) -> bool:
         """Mutate attachment state independently of valid vehicle measurements.
 
         False means skip energy accounting this tick; inspect terminal/phase/
@@ -50,9 +52,10 @@ class Session:
         """
         if self.terminal:
             return False
+        continuous = bool(trust_attachment and snapshot.shared_connected is True and self.connection_id is not None and snapshot.connection_id == self.connection_id)
         # Only positive, source-timed connection evidence may terminate a request.
         connection_fresh = snapshot.connection_measured_at is not None and max(self.started_at - MAX_CLOCK_SKEW, now - MAX_EVSE_AGE) <= snapshot.connection_measured_at <= now + MAX_CLOCK_SKEW
-        if connection_fresh and snapshot.connected is False:
+        if not continuous and connection_fresh and snapshot.connected is False:
             self.stop("vehicle_disconnected")
             return False
         if self.connection_id and snapshot.connection_id and self.connection_id != snapshot.connection_id:
@@ -62,7 +65,7 @@ class Session:
                 self.identity_gap = True
                 self.phase, self.reason = "waiting_data", "connection_identity_mismatch_unverified"
             return False
-        if snapshot.connected is not True or snapshot.home is False:
+        if not continuous and (snapshot.connected is not True or snapshot.home is False):
             self.phase, self.reason = "waiting_data", "vehicle_connection_not_confirmed"
             self.below_since = None
             return False
@@ -79,9 +82,9 @@ class Session:
             return False
         return True
 
-    def update(self, now: float, snapshot: VehicleSnapshot, demand: Demand, meter: float | None, droop_pp: float, *, meter_id: str | None = None) -> float | None:
+    def update(self, now: float, snapshot: VehicleSnapshot, demand: Demand, meter: float | None, droop_pp: float, *, meter_id: str | None = None, allow_estimated: bool = False) -> float | None:
         """Evaluate connection, budget and goal without issuing a command."""
-        if not self.observe_connection(now, snapshot):
+        if not self.observe_connection(now, snapshot, trust_attachment=allow_estimated):
             return None
         if self.meter_fault:
             self.phase, self.reason = "blocked", "meter_fault_requires_stop_and_new_preview_start"
@@ -104,10 +107,30 @@ class Session:
             return None
         self.meter_id = meter_id
         self.last_meter = meter
+        if self.origin_meter is None:
+            self.origin_meter = self.anchor_meter if self.anchor_meter is not None else meter
         if not demand.source_fresh:
-            self.phase, self.reason = "waiting_data", "vehicle_measurement_stale_or_time_unknown"
-            self.below_since = None
-            return None
+            if not allow_estimated:
+                self.phase, self.reason = "waiting_data", "vehicle_measurement_stale_or_time_unknown"
+                self.below_since = None
+                return None
+            # An existing, bounded energy allowance does not expire with the
+            # vehicle app. Stale data cannot confirm a goal or refill it.
+            if self.confirmed_soc is not None or self.tolerated_soc is not None:
+                self.phase = "watching" if self.confirmed_soc is not None else "within_tolerance"
+                self.reason = "preserved_goal_watch_waiting_vehicle"
+                self.below_since = None
+                return 0.0
+            if self.anchor_meter is None:
+                if not 10 <= snapshot.battery_kwh.value / snapshot.soc.value * 100 <= 150:
+                    self.phase, self.reason = "waiting_data", "initial_battery_estimate_incoherent"
+                    return None
+                self.anchor_meter, self.anchor_need = meter, demand.needed_kwh
+                self.anchor_soc = snapshot.soc.value
+                self.anchor_signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
+                self.reference_values = (*self.anchor_signature, snapshot.soh.value)
+            return self.consume_meter(meter)
+        self.reference_values = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value, snapshot.soh.value)
         soc = snapshot.soc.value
         if demand.confirmed:
             if self.confirmed_soc is None:
@@ -147,6 +170,22 @@ class Session:
         self.reason = "energy_guard_waiting_vehicle" if remaining <= 0 else "request_preserved"
         return max(0.0, remaining)
 
+    def consume_meter(self, meter: float) -> float | None:
+        """Use the saved allowance when vehicle data is temporarily absent."""
+        if self.terminal or self.meter_fault or self.identity_gap or self.anchor_meter is None or finite(meter) is None or meter < 0:
+            return None
+        if self.last_meter is not None and meter < self.last_meter - 0.01:
+            self.meter_fault = True
+            self.phase, self.reason = "blocked", "energy_meter_regressed"
+            return None
+        self.last_meter = meter
+        if self.confirmed_soc is not None or self.tolerated_soc is not None:
+            return 0.0
+        self.remaining_kwh = (self.anchor_need or 0.0) - (meter - self.anchor_meter)
+        self.phase = "verifying" if self.remaining_kwh <= 0 else "scheduled"
+        self.reason = "energy_guard_waiting_vehicle" if self.remaining_kwh <= 0 else "saved_energy_allowance_vehicle_data_delayed"
+        return max(0.0, self.remaining_kwh)
+
     def accept_tolerance(self, soc: float | None) -> None:
         """Use SOC from the fresh Demand in the preceding scheduled update.
 
@@ -165,14 +204,14 @@ class Session:
             raise ValueError("Invalid departure")
         self.departure = departure
 
-    def set_target(self, target_km: float, departure: float | None, new_demand: Demand | None, old_demand: Demand | None) -> None:
+    def set_target(self, target_km: float, departure: float | None, new_demand: Demand | None, old_demand: Demand | None, *, allow_estimated: bool = False) -> None:
         """Adjust the allowance, retaining every previously delivered kWh."""
         if finite(target_km) is None or not 0 < target_km <= 2000 or departure is not None and (finite(departure) is None or departure <= 0):
             raise ValueError("Invalid new target/departure")
         self.set_departure(departure)
         if target_km == self.target_km:
             return
-        if new_demand is None or old_demand is None or not new_demand.source_fresh or not old_demand.source_fresh:
+        if new_demand is None or old_demand is None or not allow_estimated and (not new_demand.source_fresh or not old_demand.source_fresh):
             self.phase, self.reason = "waiting_data", "target_changed_awaiting_data"
             raise ValueError("Target change awaits valid demand; previous allowance retained")
         if self.anchor_need is not None:
@@ -201,11 +240,11 @@ class Session:
         for key in ("connection_id", "source_token", "meter_id"):
             if getattr(session, key) is not None and not isinstance(getattr(session, key), str):
                 raise ValueError("Invalid stored identity")
-        for key in ("departure", "anchor_meter", "last_meter", "anchor_need", "anchor_soc", "confirmed_soc", "tolerated_soc", "below_since", "remaining_kwh"):
+        for key in ("departure", "anchor_meter", "last_meter", "anchor_need", "anchor_soc", "confirmed_soc", "tolerated_soc", "below_since", "remaining_kwh", "origin_meter"):
             value = getattr(session, key)
             if value is not None and not number(value):
                 raise ValueError("Non-finite stored command value")
-        if any(getattr(session, key) is not None and getattr(session, key) < 0 for key in ("departure", "anchor_meter", "last_meter", "below_since")) or any(getattr(session, key) is not None and not 0 <= getattr(session, key) <= 100 for key in ("anchor_soc", "confirmed_soc", "tolerated_soc")):
+        if any(getattr(session, key) is not None and getattr(session, key) < 0 for key in ("departure", "anchor_meter", "last_meter", "below_since", "origin_meter")) or any(getattr(session, key) is not None and not 0 <= getattr(session, key) <= 100 for key in ("anchor_soc", "confirmed_soc", "tolerated_soc")):
             raise ValueError("Stored command value out of range")
         if (session.anchor_meter is None) != (session.anchor_need is None) or session.anchor_meter is not None and session.last_meter is not None and session.last_meter < session.anchor_meter:
             raise ValueError("Inconsistent stored energy anchor")
@@ -213,4 +252,8 @@ class Session:
             if not isinstance(session.anchor_signature, (list, tuple)) or len(session.anchor_signature) != 4 or any(v is not None and finite(v) is None for v in session.anchor_signature):
                 raise ValueError("Invalid stored source signature")
             session.anchor_signature = tuple(session.anchor_signature)
+        if session.reference_values is not None:
+            if not isinstance(session.reference_values, (list, tuple)) or len(session.reference_values) != 5 or any(type(v) not in (int, float) or finite(v) is None for v in session.reference_values[:4]) or session.reference_values[4] is not None and (type(session.reference_values[4]) not in (int, float) or finite(session.reference_values[4]) is None):
+                raise ValueError("Invalid saved vehicle reference")
+            session.reference_values = tuple(session.reference_values)
         return session
