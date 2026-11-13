@@ -144,8 +144,11 @@ HACS installeert het enige top-level integratiedomein `adaptive_charge_preview`;
 `legacy/v4/` wordt niet geïnstalleerd bij een nieuwe download. Een reeds aanwezige
 `/config/custom_components/adaptive_charge`-map kan bij een domeinwijziging door HACS
 blijven staan. Deze release verwijdert die map of bestaande v4-entries niet.
-Deactiveer vóór een eventuele herstart alle oude `adaptive_charge`-entries, en
-archiveer de oude map buiten `custom_components`. Laat de werkende native regeling
+Archiveer of noteer de oude configuratie en verwijder vóór de HACS-domeinupgrade
+alleen de oude `adaptive_charge`-entries. Ook gedeactiveerde entries blokkeren deze
+upgrade met `domain_changed` / `repository_in_use`. Verwijder daarna de oude
+HACS-installatie en download expliciet de v5-beta opnieuw. Archiveer de oude map
+buiten `custom_components`. Laat de werkende native regeling
 volledig staan. Er is geen automatische migratie of
 activering van oude AdaptiveCharge-entries. De huidige native regeling blijft leidend.
 

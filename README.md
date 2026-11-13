@@ -24,8 +24,11 @@ wordt niet automatisch gemigreerd of gebruikt. Deze release verwijdert geen reed
 geïnstalleerde v4-code of entries. HACS ruimt de oude domeinmap bij deze naamswijziging
 niet betrouwbaar op. Controleer daarom vóór een eventuele herstart:
 
-1. Deactiveer of verwijder **alleen** de oude `adaptive_charge`-integratie-entries.
-   Laat de werkende native scripts, automations en helpers staan.
+1. Noteer of archiveer de oude configuratie en verwijder **alleen** de oude
+   `adaptive_charge`-integratie-entries. Alleen deactiveren is voor deze upgrade
+   niet voldoende: HACS weigert een domeinwijziging zolang een oude entry bestaat.
+   Verwijder vervolgens de oude HACS-installatie en installeer de geselecteerde
+   v5-beta opnieuw. Laat de werkende native scripts, automations en helpers staan.
 2. Controleer of `/config/custom_components/adaptive_charge` is achtergebleven.
    Verplaats die oude map buiten `custom_components` naar een eigen archief of
    verwijder haar pas na archivering. Het gedeactiveerd houden van oude entries
