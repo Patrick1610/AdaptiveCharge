@@ -100,3 +100,41 @@ Als de prijsbron onbeschikbaar is, vervallen ook de voorgestelde adviesvensters 
 kosten. Oude tariefattributen worden dan niet als een live feed behandeld.
 De besturingsstatus en foutcodes in attributen blijven technisch herkenbaar voor
 diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg.
+
+## Oplevering 13 november 2026
+
+Versie [5.1.0b1](https://github.com/Patrick1610/AdaptiveCharge/releases/tag/v5.1.0b1)
+is gepubliceerd op commit `c27cee992f0ddb565e11b9ddd58a2392a0ad1a26`.
+Alle 1.043 softwaretests zijn lokaal geslaagd. De
+[GitHub-tests](https://github.com/Patrick1610/AdaptiveCharge/actions/runs/43415681777)
+en [hassfest/HACS-validatie](https://github.com/Patrick1610/AdaptiveCharge/actions/runs/43415681834)
+zijn voor dezelfde releasecommit geslaagd.
+De geconsolideerde onafhankelijke critical-review gaf GO zonder open critical,
+high of medium bevindingen; de herstelbare bestandsupgrade kreeg afzonderlijk GO.
+
+De bestaande HA-instantie is bijgewerkt en na een toegestane HA-herstart geladen.
+De 24 componentbestanden komen overeen met het gepubliceerde releasearchief.
+Beide voertuigsubentries, de tien bestaande entiteiten en de vijf nieuwe
+bedieningsentiteiten zijn geverifieerd. Alle drie configuraties zijn via de gewone
+configuratiestromen opgeslagen en teruggelezen. HACS was op de host afwezig;
+daarom is de bestaande component vanuit de gepubliceerde GitHub-release bijgewerkt
+met een exacte controle van de oude bestanden en een bewaarde herstelkopie.
+
+De oude native Master is uit; diens vier automationconfiguraties zijn ongewijzigd.
+De nieuwe Master is aan, zonder Start, actieve auto of wachtende actuatoractie.
+De eerste proef is ingesteld op maximaal 6 kWh en 80% SOC. De bestaande
+AdaptiveCharge-dashboardroute heeft dezelfde drie tabbladen behouden; alle
+15 entiteitsverwijzingen en 13 Markdown-templates zijn in HA gecontroleerd.
+Het oude EV-dashboard en de dashboardinventaris zijn ongewijzigd.
+
+De afsluitende feedcontrole gaf `unknown`, zonder tarieven voor vandaag of morgen.
+Daarom is de fysieke proef niet gestart en wacht Manual op Enever. Zelfstandig
+Green bleef toegestaan en fysiek laden werd waargenomen. Er is geen Codextaak
+voor feedbewaking gemaakt. Dit is installatiebewijs; fysieke doelstop, herstart
+tijdens eigen laden en natuurlijk bijladen met deze release blijven onbewezen.
+De oorspronkelijke proefuitslagen zijn hierdoor niet gewijzigd.
+
+De eigen HA-bewijzen staan onder
+`adaptive_charge_preview_20261113/control_preparation_20261113/upgrade_5_1_0b1`:
+het oorspronkelijke upgrade-receipt bewaart de bestandsfase, terwijl
+`runtime_outcome.json` de geverifieerde herstart, inrichting en wachttoestand vastlegt.
