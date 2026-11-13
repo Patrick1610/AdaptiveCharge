@@ -116,7 +116,8 @@
             "margin": "Energiemarge als fractie (0,15 = 15%)",
             "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
             "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
-            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening"
+            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening",
+            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)"
           }
         },
         "reconfigure": {
@@ -140,7 +141,8 @@
             "margin": "Energiemarge als fractie (0,15 = 15%)",
             "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
             "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
-            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening"
+            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening",
+            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)"
           },
           "description": "Vertraagde appgegevens wissen geen opdracht. Een bestaande fysieke aansluiting en energieboekhouding blijven bruikbaar. Echte meettijd blijft apart zichtbaar. ID.3-limieten worden nooit geschreven."
         }

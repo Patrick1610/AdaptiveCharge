@@ -116,7 +116,8 @@
             "margin": "Energy margin fraction (0.15 means 15%)",
             "allow_limit_raise": "Allow temporary Tesla limit raise",
             "maximum_soc": "Ceiling for temporary limit raises (%)",
-            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch"
+            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
           }
         },
         "reconfigure": {
@@ -140,7 +141,8 @@
             "margin": "Energy margin fraction (0.15 means 15%)",
             "allow_limit_raise": "Allow temporary Tesla limit raise",
             "maximum_soc": "Ceiling for temporary limit raises (%)",
-            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch"
+            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
           },
           "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written."
         }

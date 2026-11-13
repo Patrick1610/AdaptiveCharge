@@ -103,6 +103,20 @@ diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg
 
 ## Oplevering 13 november 2026
 
+### Planningsvermogen per voertuig, 5.1.0b4
+
+Een auto kan met een lagere bestaande stroomlimiet laden dan de laadpaal aankan.
+Daarom kan ieder voertuig een eigen planningsvermogen krijgen. `0` behoudt het
+gedeelde laadpaalvermogen; een positieve waarde begrenst alleen de berekening
+voor die auto en kan nooit boven het gedeelde vermogen uitkomen. Vensters,
+urgentie, minimale blokduur en de berekening bij vertraagde data gebruiken
+dezelfde waarde, zichtbaar als `planning_power_kw` op de voertuigsensor.
+
+Dit wijzigt geen ampères of fasen en leert geen laadvermogen uit wisselende
+zonneopbrengst. Kies een conservatief haalbaar vermogen bij de gebruikte
+voertuiginstelling en controleer het opnieuw wanneer die instelling verandert.
+Andere voertuigen blijven het gedeelde laadpaalvermogen gebruiken.
+
 ### Ontbrekende volgende prijsdag, 5.1.0b3
 
 Na de datumwisseling publiceert Enever geldige kwartieren voor vandaag terwijl

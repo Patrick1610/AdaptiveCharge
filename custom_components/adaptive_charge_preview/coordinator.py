@@ -128,6 +128,14 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _config(self, vehicle_id: str, profile: dict[str, Any]) -> VehicleConfig:
         return VehicleConfig(vehicle_id, profile["name"], profile["kind"], float(profile.get("droop_pp", 1)), float(profile.get("margin", 0.15)), profile.get("limit_writer_entity"))
 
+    def planning_power(self, profile: dict[str, Any]) -> float:
+        """Apply an optional vehicle planning cap without changing charger current."""
+        shared = finite(self.entry.data.get("power_kw", 11))
+        vehicle = finite(profile.get("planning_power_kw", 0))
+        if shared is None or not 1 <= shared <= 22 or vehicle is None or vehicle != 0 and not 1 <= vehicle <= 22:
+            raise ValueError("planning_power_unavailable_or_invalid")
+        return min(shared, vehicle) if vehicle else shared
+
     def _native(self) -> tuple[dict[str, Any] | None, str | None]:
         """Unknown JSON is not an explicit cancellation; empty JSON is."""
         source = state(self.hass, self.entry.data.get("session_entity"))
@@ -252,7 +260,10 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     elif request.source_token:
                         self.suppressed_token = request.source_token
                     active = None
+            planning_power = None
             try:
+                planning_power = self.planning_power(profile)
+                row["planning_power_kw"] = planning_power
                 departure = self.departure(profile)
                 row["departure"] = departure
                 if request and not request.terminal and request.departure != departure:
@@ -296,7 +307,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if request.terminal and request.source_token:
                         self.suppressed_token = request.source_token
                         active = None
-                prediction = plan(now, departure, estimated, need.band_kwh if need.source_fresh else 0, rows, power=float(shared.get("power_kw", 11)), reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)))
+                prediction = plan(now, departure, estimated, need.band_kwh if need.source_fresh else 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)))
                 prediction_data = prediction.as_dict()
                 if "export_price_unknown_cost_estimate_incomplete" in price_warnings and prediction.expected_solar_kwh > 0:
                     prediction_data["cost"] = None
@@ -320,10 +331,10 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 row.update({"phase": request.phase if ended else "waiting_data", "reason": request.reason if ended else str(exc), "warnings": list(dict.fromkeys([str(exc), *price_warnings])), "plan": None, "session": request.as_dict() if request else None})
                 # A temporary missing vehicle value cannot erase an owned
                 # allowance or require a new VW update after an HA restart.
-                if request and self.control.owns(vehicle_id) and request.observe_connection(now, snapshot, trust_attachment=True) and meter is not None and request.meter_id == shared.get("meter_entity"):
+                if planning_power is not None and request and self.control.owns(vehicle_id) and request.observe_connection(now, snapshot, trust_attachment=True) and meter is not None and request.meter_id == shared.get("meter_entity"):
                     remaining = request.consume_meter(meter)
                     if remaining is not None:
-                        prediction = plan(now, request.departure, remaining, 0, rows, power=float(shared.get("power_kw", 11)), reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)))
+                        prediction = plan(now, request.departure, remaining, 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)))
                         row.update(phase=request.phase, reason=request.reason, target_km=request.target_km, departure=request.departure, plan=prediction.as_dict(), eligible_for_boost=request.phase == "scheduled", would_control_mode=prediction.mode if request.phase == "scheduled" else "Green", session=request.as_dict())
             result["vehicles"][vehicle_id] = row
         result["active_vehicle"] = next((s.vehicle_id for s in self.sessions.values() if not s.terminal), None)

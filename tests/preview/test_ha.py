@@ -118,6 +118,97 @@ async def setup(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("vehicle_power,expected", [(None, 11), (0, 11), (5.5, 5.5), (22, 11)])
+async def test_vehicle_planning_power_limits_actual_plan_without_services(tmp_path, vehicle_power, expected):
+    hass, c, vehicle = await setup(tmp_path)
+    try:
+        sub = c.entry.subentries[vehicle]
+        if vehicle_power is not None:
+            object.__setattr__(sub, "data", MappingProxyType({**sub.data, "planning_power_kw": vehicle_power}))
+        else:
+            assert "planning_power_kw" not in sub.data
+        object.__setattr__(c.entry, "data", MappingProxyType({**c.entry.data, "power_kw": 11, "price_entity": "sensor.price"}))
+        now = datetime.now(timezone.utc).timestamp()
+        c.values[vehicle] = {"departure": now + 6 * 3600}
+        hass.states.async_set("sensor.price", 0.25, {"data": [{"time": (now // 900 + i) * 900, "price": 0.25} for i in range(96)]})
+        with patch.object(type(hass.services), "async_call", side_effect=AssertionError("Forbidden outgoing service")):
+            result = await c._observe()
+        row = result["vehicles"][vehicle]
+        assert row["planning_power_kw"] == expected
+        windows = row["plan"]["windows"]
+        assert sum(w["end"] - w["start"] for w in windows) == pytest.approx(row["plan"]["needed_kwh"] / expected * 3600)
+        assert dict(c.entry.data)["power_kw"] == 11
+        # Retained-energy planning after a missing helper uses the same cap.
+        c.control.owns = Mock(return_value=True)
+        c.values[vehicle].clear()
+        hass.states.async_set("input_datetime.live_departure", "unavailable")
+        with patch.object(type(hass.services), "async_call", side_effect=AssertionError("Forbidden outgoing service")):
+            fallback = (await c._observe())["vehicles"][vehicle]
+        assert fallback["planning_power_kw"] == expected
+        assert sum(w["end"] - w["start"] for w in fallback["plan"]["windows"]) == pytest.approx(fallback["plan"]["needed_kwh"] / expected * 3600)
+    finally:
+        await c.async_shutdown()
+        await hass.async_stop()
+
+
+@pytest.mark.parametrize("invalid", [-1, 0.5, 23, float("nan"), float("inf")])
+def test_vehicle_planning_power_rejects_invalid_configuration(invalid):
+    import voluptuous as vol
+    from custom_components.adaptive_charge_preview.config_flow import vehicle_schema
+
+    data = dict(next(iter(entry().subentries.values())).data)
+    with pytest.raises(vol.Invalid):
+        vehicle_schema()({**data, "planning_power_kw": invalid})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [0.5, float("nan")])
+async def test_invalid_saved_planning_power_cannot_use_energy_fallback(tmp_path, invalid):
+    hass, c, vehicle = await setup(tmp_path)
+    try:
+        await c._observe()
+        saved = c.sessions[vehicle].as_dict()
+        c.control.owns = Mock(return_value=True)
+        sub = c.entry.subentries[vehicle]
+        object.__setattr__(sub, "data", MappingProxyType({**sub.data, "planning_power_kw": invalid}))
+        with patch.object(type(hass.services), "async_call", side_effect=AssertionError("Forbidden outgoing service")):
+            row = (await c._observe())["vehicles"][vehicle]
+        assert row["phase"] == "waiting_data" and row["plan"] is None
+        assert not row["eligible_for_boost"]
+        assert row["reason"] == "planning_power_unavailable_or_invalid"
+        assert c.sessions[vehicle].as_dict() == saved
+    finally:
+        await c.async_shutdown()
+        await hass.async_stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect", [True, False])
+async def test_invalid_planning_power_still_observes_disconnect_or_replacement(tmp_path, disconnect):
+    hass, c, vehicle = await setup(tmp_path)
+    try:
+        await c._observe()
+        request = c.sessions[vehicle]
+        c.control.owns = Mock(return_value=True)
+        sub = c.entry.subentries[vehicle]
+        object.__setattr__(sub, "data", MappingProxyType({**sub.data, "planning_power_kw": 0.5}))
+        if disconnect:
+            hass.states.async_set("binary_sensor.evse_plug", "off")
+            hass.states.async_set("binary_sensor.tesla_cable", "off")
+        else:
+            hass.states.async_set("sensor.connection", "connection-b")
+        with patch.object(type(hass.services), "async_call", side_effect=AssertionError("Forbidden outgoing service")):
+            result = await c._observe()
+        assert request.terminal
+        assert result["active_vehicle"] is None
+        assert result["vehicles"][vehicle]["session"]["terminal"]
+        assert not result["vehicles"][vehicle]["eligible_for_boost"]
+    finally:
+        await c.async_shutdown()
+        await hass.async_stop()
+
+
+@pytest.mark.asyncio
 async def test_observer_actions_and_shutdown_have_zero_outgoing_services(tmp_path):
     hass,c,vehicle = await setup(tmp_path)
     source_before = {s.entity_id:s.as_dict() for s in hass.states.async_all()}
