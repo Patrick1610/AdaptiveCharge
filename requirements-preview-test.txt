@@ -1,0 +1,4 @@
+# Isolated test environment; never installed into the live HA instance.
+homeassistant==2026.11.1
+pytest==9.2.0
+pytest-asyncio==1.5.0

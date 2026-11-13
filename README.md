@@ -1,5 +1,10 @@
 # AdaptiveCharge
 
+> **Read-only v5 preview:** the separate `adaptive_charge_preview` integration
+> observes the existing charger/controller and cannot actuate. Existing Adaptive
+> Charge code below is preserved. Install only the separate preview bundle;
+> see [Preview setup and boundaries](docs/PREVIEW.md).
+
 [![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Patrick1610/AdaptiveCharge.svg)](https://github.com/Patrick1610/AdaptiveCharge/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

@@ -1,0 +1,175 @@
+{
+  "title": "AdaptiveCharge Preview",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Laadpaal alleen laten meerekenen",
+        "description": "Besturing is hard uitgeschakeld. Bestaande scripts, automations, helpers en autolimieten blijven ongewijzigd. Vul bij prijzen expliciet het juiste interval en de juiste all-in prijskolom in.",
+        "data": {
+          "name": "Naam",
+          "meter_entity": "IQ-energiemeter (kWh)",
+          "power_entity": "Onafhankelijk laadvermogen (W/kW)",
+          "plug_entity": "Laadpaal aangesloten",
+          "connection_entity": "Tijdstip/identiteit van aansluiting",
+          "mode_entity": "Huidige laadmodus (alleen lezen)",
+          "charging_entity": "Fysiek laden",
+          "price_entity": "Tariefbron",
+          "forecast_entity": "Bestaande zonneprognose",
+          "house_entity": "Huisvermogen zonder auto (W/kW)",
+          "session_entity": "Bestaande sessiehelper (alleen lezen)",
+          "active_entity": "Bestaande opdracht actief (alleen lezen)",
+          "generation_entity": "Bestaande opdrachtgeneratie (alleen lezen)",
+          "power_kw": "Rekenvermogen (kW)",
+          "reserve_min": "Vertrekreserve (minuten)",
+          "minimum_min": "Minimumduur los laadblok (minuten)",
+          "house_kw": "Terugval huisvermogen (kW)",
+          "price_interval_min": "Tariefinterval zonder eindtijd (15 of 60 minuten)",
+          "price_attribute": "Attribuut met tariefregels",
+          "price_time_key": "Veld met begintijd",
+          "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
+          "export_price_key": "Veld met netto terugleverprijs (optioneel)",
+          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)"
+        }
+      },
+      "reconfigure": {
+        "title": "Preview-laadpaal wijzigen",
+        "data": {
+          "name": "Naam",
+          "meter_entity": "IQ-energiemeter (kWh)",
+          "power_entity": "Onafhankelijk laadvermogen (W/kW)",
+          "plug_entity": "Laadpaal aangesloten",
+          "connection_entity": "Tijdstip/identiteit van aansluiting",
+          "mode_entity": "Huidige laadmodus (alleen lezen)",
+          "charging_entity": "Fysiek laden",
+          "price_entity": "Tariefbron",
+          "forecast_entity": "Bestaande zonneprognose",
+          "house_entity": "Huisvermogen zonder auto (W/kW)",
+          "session_entity": "Bestaande sessiehelper (alleen lezen)",
+          "active_entity": "Bestaande opdracht actief (alleen lezen)",
+          "generation_entity": "Bestaande opdrachtgeneratie (alleen lezen)",
+          "power_kw": "Rekenvermogen (kW)",
+          "reserve_min": "Vertrekreserve (minuten)",
+          "minimum_min": "Minimumduur los laadblok (minuten)",
+          "house_kw": "Terugval huisvermogen (kW)",
+          "price_interval_min": "Tariefinterval zonder eindtijd (15 of 60 minuten)",
+          "price_attribute": "Attribuut met tariefregels",
+          "price_time_key": "Veld met begintijd",
+          "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
+          "export_price_key": "Veld met netto terugleverprijs (optioneel)",
+          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Deze laadpaal heeft al een preview.",
+      "charger_identity_changed": "Maak voor een andere laadpaal een nieuwe preview."
+    },
+    "error": {
+      "preview_source": "Kies een bestaande bronentiteit; preview-uitvoer kan geen eigen invoer zijn."
+    }
+  },
+  "config_subentries": {
+    "vehicle": {
+      "entry_type": "Auto",
+      "initiate_flow": {
+        "user": "Auto toevoegen",
+        "reconfigure": "Auto wijzigen"
+      },
+      "step": {
+        "user": {
+          "title": "Voertuig alleen laten meerekenen",
+          "description": "De meettijd moet een echte capture-tijd van het voertuig zijn. Ontvangsttijd of feed health bewijst geen nieuwe meting. De optionele limietbediening wordt nooit aangestuurd in deze preview.",
+          "data": {
+            "name": "Naam",
+            "kind": "Voertuigberekening",
+            "soc_entity": "Acculading (%)",
+            "battery_entity": "Beschikbare accu-energie (kWh)",
+            "range_entity": "Tesla-praktijkrange / VW-volle referentierange (km)",
+            "limit_entity": "Actuele autolimiet (%)",
+            "cable_entity": "Eigen kabelmelding auto",
+            "home_entity": "Auto thuis",
+            "soh_entity": "VW accugezondheid SOH (%)",
+            "measurement_time_entity": "Echte voertuigmeettijd (geen ontvangstmoment)",
+            "limit_writer_entity": "Optionele limietbediening (preview leest alleen)",
+            "target_entity": "Bestaand bereikdoel (alleen lezen)",
+            "departure_entity": "Bestaand vertrek (alleen lezen)",
+            "native_plan_entity": "Bestaande plansensor ter vergelijking",
+            "droop_pp": "SOC-terugval (procentpunten)",
+            "margin": "Energiemarge als fractie (0,15 = 15%)"
+          }
+        },
+        "reconfigure": {
+          "title": "Voertuigpreview wijzigen",
+          "data": {
+            "name": "Naam",
+            "kind": "Voertuigberekening",
+            "soc_entity": "Acculading (%)",
+            "battery_entity": "Beschikbare accu-energie (kWh)",
+            "range_entity": "Tesla-praktijkrange / VW-volle referentierange (km)",
+            "limit_entity": "Actuele autolimiet (%)",
+            "cable_entity": "Eigen kabelmelding auto",
+            "home_entity": "Auto thuis",
+            "soh_entity": "VW accugezondheid SOH (%)",
+            "measurement_time_entity": "Echte voertuigmeettijd (geen ontvangstmoment)",
+            "limit_writer_entity": "Optionele limietbediening (preview leest alleen)",
+            "target_entity": "Bestaand bereikdoel (alleen lezen)",
+            "departure_entity": "Bestaand vertrek (alleen lezen)",
+            "native_plan_entity": "Bestaande plansensor ter vergelijking",
+            "droop_pp": "SOC-terugval (procentpunten)",
+            "margin": "Energiemarge als fractie (0,15 = 15%)"
+          }
+        }
+      },
+      "abort": {
+        "vehicle_already_configured": "Dit voertuig is al toegevoegd.",
+        "vehicle_identity_changed": "Voeg een andere auto als nieuw voertuig toe."
+      },
+      "error": {
+        "preview_source": "Kies een bestaande bronentiteit; preview-uitvoer kan geen eigen invoer zijn."
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "preview": {
+        "name": "Preview"
+      }
+    },
+    "binary_sensor": {
+      "control_enabled": {
+        "name": "Besturing actief"
+      }
+    },
+    "number": {
+      "target_range_km": {
+        "name": "Preview bereikdoel"
+      },
+      "droop_pp": {
+        "name": "SOC-terugval"
+      }
+    },
+    "datetime": {
+      "departure": {
+        "name": "Preview vertrek"
+      }
+    }
+  },
+  "services": {
+    "start": {
+      "name": "Start previewopdracht",
+      "description": "Start uitsluitend een lokale simulatie. De auto en bestaande laadopdracht worden NIET gestart of gewijzigd."
+    },
+    "set_target": {
+      "name": "Previewdoel wijzigen",
+      "description": "Wijzig eigen previewwaarden; geen bestaande doel- of vertrekhelper wordt aangepast."
+    },
+    "stop": {
+      "name": "Previewopdracht beëindigen",
+      "description": "Beëindig alleen de lokale previewopdracht. Dit stopt GEEN fysieke lading of bestaande opdracht."
+    },
+    "follow_helpers": {
+      "name": "Bestaande helpers volgen",
+      "description": "Wis uitsluitend lokale doel-/vertrekoverrides; start of wijzig geen echte laadopdracht."
+    }
+  }
+}

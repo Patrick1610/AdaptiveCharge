@@ -1,0 +1,66 @@
+start:
+  name: Start previewopdracht
+  description: Start uitsluitend een lokale simulatie. De auto en bestaande laadopdracht
+    worden NIET gestart of gewijzigd.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null
+    target_range_km:
+      selector:
+        number:
+          min: 0.1
+          max: 2000
+          unit_of_measurement: km
+    departure:
+      description: ISO-tijd met tijdzone, of now voor een direct previewadvies.
+      selector:
+        text: null
+set_target:
+  name: Previewdoel wijzigen
+  description: Wijzig eigen previewwaarden; geen bestaande doel- of vertrekhelper
+    wordt aangepast.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null
+    target_range_km:
+      selector:
+        number:
+          min: 0.1
+          max: 2000
+    departure:
+      selector:
+        text: null
+stop:
+  name: Previewopdracht beëindigen
+  description: Beëindig alleen de lokale previewopdracht. Dit stopt GEEN fysieke lading
+    of bestaande opdracht.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null
+follow_helpers:
+  name: Bestaande helpers volgen
+  description: Wis uitsluitend lokale doel-/vertrekoverrides; start of wijzig geen
+    echte laadopdracht.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null

@@ -1,0 +1,23 @@
+{
+  "utc": "2026-11-12T19:23:53.384003+00:00",
+  "status": "PLATFORM_ACTION_REQUIRED",
+  "base_commit": "b2ea3e0ff2cc5491722f217f3c69a6372c40fb4a",
+  "branch": "codex/adaptive-charge-v5",
+  "parent_preflight_id": "01a1d134-e51a-7053-ae38-c13a4f345050",
+  "child_preflight_id": "01a1d134-fe52-75a3-96a2-1d1294e2b4a6",
+  "expected_agent_role": "awf_phase_architect",
+  "actual_agent_role": null,
+  "actual_agent_path": "/root/awf_phase_architect",
+  "model_effort": "gpt-5.6-terra/high",
+  "sandbox": "read-only",
+  "preflight_result": "FAIL: could not identify exactly one matching child runtime thread",
+  "baseline_tests": {
+    "command": ".venv/bin/python -m pytest tests -q",
+    "passed": 801,
+    "failed": 0,
+    "duration_seconds": 0.47
+  },
+  "product_changes": false,
+  "ha_changes": false,
+  "pending_question": "Explicit exception to implement directly with tests, Jev and independent Claude review; otherwise restore custom-agent runtime."
+}

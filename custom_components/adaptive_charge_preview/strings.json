@@ -1,0 +1,175 @@
+{
+  "title": "AdaptiveCharge Preview",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Observe charger (read only)",
+        "description": "Control cannot be enabled. Existing automations, helpers, modes and vehicle limits remain unchanged. Configure the real price interval and all-in price column explicitly.",
+        "data": {
+          "name": "Name",
+          "meter_entity": "IQ lifetime energy (kWh)",
+          "power_entity": "Independent charger power (W/kW)",
+          "plug_entity": "Charger cable connected",
+          "connection_entity": "Connection identity / plugged-in timestamp",
+          "mode_entity": "Observed charging mode (read only)",
+          "charging_entity": "Observed charging active",
+          "price_entity": "Tariff source",
+          "forecast_entity": "Existing solar forecast",
+          "house_entity": "House power excluding car (W/kW)",
+          "session_entity": "Existing session helper (read only)",
+          "active_entity": "Existing active-command helper (read only)",
+          "generation_entity": "Existing command generation (read only)",
+          "power_kw": "Planning power (kW)",
+          "reserve_min": "Departure reserve (minutes)",
+          "minimum_min": "Minimum isolated block (minutes)",
+          "house_kw": "Fallback house power (kW)",
+          "price_interval_min": "Interval without explicit end (15 or 60 minutes)",
+          "price_attribute": "Attribute containing price rows",
+          "price_time_key": "Price start-time column",
+          "import_price_key": "All-in import price column (EUR/kWh)",
+          "export_price_key": "Net export price column (optional)",
+          "connection_attribute": "Connection identity attribute (empty = state)"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure charger preview",
+        "data": {
+          "name": "Name",
+          "meter_entity": "IQ lifetime energy (kWh)",
+          "power_entity": "Independent charger power (W/kW)",
+          "plug_entity": "Charger cable connected",
+          "connection_entity": "Connection identity / plugged-in timestamp",
+          "mode_entity": "Observed charging mode (read only)",
+          "charging_entity": "Observed charging active",
+          "price_entity": "Tariff source",
+          "forecast_entity": "Existing solar forecast",
+          "house_entity": "House power excluding car (W/kW)",
+          "session_entity": "Existing session helper (read only)",
+          "active_entity": "Existing active-command helper (read only)",
+          "generation_entity": "Existing command generation (read only)",
+          "power_kw": "Planning power (kW)",
+          "reserve_min": "Departure reserve (minutes)",
+          "minimum_min": "Minimum isolated block (minutes)",
+          "house_kw": "Fallback house power (kW)",
+          "price_interval_min": "Interval without explicit end (15 or 60 minutes)",
+          "price_attribute": "Attribute containing price rows",
+          "price_time_key": "Price start-time column",
+          "import_price_key": "All-in import price column (EUR/kWh)",
+          "export_price_key": "Net export price column (optional)",
+          "connection_attribute": "Connection identity attribute (empty = state)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This charger already has a preview.",
+      "charger_identity_changed": "Add another charger as a new preview."
+    },
+    "error": {
+      "preview_source": "Select an existing source entity; preview output cannot be its own input."
+    }
+  },
+  "config_subentries": {
+    "vehicle": {
+      "entry_type": "Vehicle",
+      "initiate_flow": {
+        "user": "Add vehicle",
+        "reconfigure": "Reconfigure vehicle"
+      },
+      "step": {
+        "user": {
+          "title": "Observe vehicle (read only)",
+          "description": "Select actual capture time only when it belongs to these vehicle measurements. Reception/feed health does not prove a new measurement. The optional limit capability is never actuated.",
+          "data": {
+            "name": "Name",
+            "kind": "Vehicle calculation",
+            "soc_entity": "Battery state of charge (%)",
+            "battery_entity": "Stored battery energy, not capacity (kWh)",
+            "range_entity": "Tesla remaining range / VW full range reference (km)",
+            "limit_entity": "Observed vehicle limit (%)",
+            "cable_entity": "Vehicle-specific cable connected",
+            "home_entity": "Vehicle at home",
+            "soh_entity": "VW state of health (%)",
+            "measurement_time_entity": "Actual vehicle capture time, not reception time",
+            "limit_writer_entity": "Optional limit-control capability (never actuated in preview)",
+            "target_entity": "Existing range target (read only)",
+            "departure_entity": "Existing departure (read only)",
+            "native_plan_entity": "Existing native plan for comparison",
+            "droop_pp": "SOC return threshold (percentage points)",
+            "margin": "Energy margin fraction (0.15 means 15%)"
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure vehicle preview",
+          "data": {
+            "name": "Name",
+            "kind": "Vehicle calculation",
+            "soc_entity": "Battery state of charge (%)",
+            "battery_entity": "Stored battery energy, not capacity (kWh)",
+            "range_entity": "Tesla remaining range / VW full range reference (km)",
+            "limit_entity": "Observed vehicle limit (%)",
+            "cable_entity": "Vehicle-specific cable connected",
+            "home_entity": "Vehicle at home",
+            "soh_entity": "VW state of health (%)",
+            "measurement_time_entity": "Actual vehicle capture time, not reception time",
+            "limit_writer_entity": "Optional limit-control capability (never actuated in preview)",
+            "target_entity": "Existing range target (read only)",
+            "departure_entity": "Existing departure (read only)",
+            "native_plan_entity": "Existing native plan for comparison",
+            "droop_pp": "SOC return threshold (percentage points)",
+            "margin": "Energy margin fraction (0.15 means 15%)"
+          }
+        }
+      },
+      "abort": {
+        "vehicle_already_configured": "This vehicle is already configured.",
+        "vehicle_identity_changed": "Add another vehicle as a new vehicle."
+      },
+      "error": {
+        "preview_source": "Select an existing source entity; preview output cannot be its own input."
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "preview": {
+        "name": "Preview"
+      }
+    },
+    "binary_sensor": {
+      "control_enabled": {
+        "name": "Control active"
+      }
+    },
+    "number": {
+      "target_range_km": {
+        "name": "Preview range target"
+      },
+      "droop_pp": {
+        "name": "SOC return threshold"
+      }
+    },
+    "datetime": {
+      "departure": {
+        "name": "Preview departure"
+      }
+    }
+  },
+  "services": {
+    "start": {
+      "name": "Start preview request",
+      "description": "Changes only this local preview; never starts, stops or changes the real charger, vehicle or existing helpers."
+    },
+    "set_target": {
+      "name": "Set preview target",
+      "description": "Changes only this local preview; never starts, stops or changes the real charger, vehicle or existing helpers."
+    },
+    "stop": {
+      "name": "Stop preview request",
+      "description": "Changes only this local preview; never starts, stops or changes the real charger, vehicle or existing helpers."
+    },
+    "follow_helpers": {
+      "name": "Follow bound helpers",
+      "description": "Changes only this local preview; never starts, stops or changes the real charger, vehicle or existing helpers."
+    }
+  }
+}

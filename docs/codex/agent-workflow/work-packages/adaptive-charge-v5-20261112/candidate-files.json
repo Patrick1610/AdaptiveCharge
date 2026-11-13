@@ -1,0 +1,29 @@
+{
+  "phase": "accepted_read_only_candidate",
+  "domain": "adaptive_charge_preview",
+  "control_enabled": false,
+  "release_sha256": "9d52decd5d9e320a28b629ec4302921373870e38eb34835c7b26568bfe1e54c1",
+  "files": {
+    "custom_components/adaptive_charge_preview/__init__.py": "60e1669c18bd9bfa4283970869cabb9be3c8807348a2b245e5527805103156f0",
+    "custom_components/adaptive_charge_preview/binary_sensor.py": "927f2ce3c414ea54198731f0ede2aa30583868b0c4082c5a1db4e8fccac3e81a",
+    "custom_components/adaptive_charge_preview/config_flow.py": "40a35d1e5cdd94cffc195aaa32092664a765f7ac4bb1db731d0478d06fb74bca",
+    "custom_components/adaptive_charge_preview/const.py": "a24305dcc5c7c972d1f428d37dc6f8ae9182955765ab98654582464e7d816ac9",
+    "custom_components/adaptive_charge_preview/coordinator.py": "4d483760b5f855c6f6f0802c08c233f92143b0545a4d8ac7f45edb1b2ef9342d",
+    "custom_components/adaptive_charge_preview/core/__init__.py": "9479ffab58ec22d1718a75545d315e5382ae6fea484ef0c7b0bc0da96edf7d4c",
+    "custom_components/adaptive_charge_preview/core/models.py": "f768fe772b6a0f588e36bfeb6e06b21c408767d05a18677059b3bb7be66587b9",
+    "custom_components/adaptive_charge_preview/core/planner.py": "be7a84c10c09217dbbb6b5ad30d5580b12ab9dd7589030e3f1805b5c7bf47548",
+    "custom_components/adaptive_charge_preview/core/session.py": "89a28590280e52bacf48f1a8a10df1d80e7766cf480870e33e4493262879b63b",
+    "custom_components/adaptive_charge_preview/datetime.py": "38981a2943dfbb738ebca7ade31a9ecf8b31059b0c501354184088b171b353a5",
+    "custom_components/adaptive_charge_preview/diagnostics.py": "cb1a55a6d8dd26409a90f2c9d5703898cd0ef3dc967f3cc907d8e84ad7f27b9b",
+    "custom_components/adaptive_charge_preview/entity.py": "e5f0204dc383568ed49d844c6c0f5ebebd25e7354abeacc6aeac1adc19e65b2e",
+    "custom_components/adaptive_charge_preview/manifest.json": "964e2d0e79139312706b46e24f5cb99c6442bb3b7e3b66886244cf72c6be2bf5",
+    "custom_components/adaptive_charge_preview/number.py": "e8264f8de55d06c0f766f2b26734f06dfcb88e547100e8b0e264a2d86a48d10b",
+    "custom_components/adaptive_charge_preview/sensor.py": "a1245fc78a125de33d03c8090218d0816e19c066b4869a6c0bb261c6ae57996a",
+    "custom_components/adaptive_charge_preview/services.yaml": "4110d590570dc67357320926f13b9b75f685cde13884c5d7ec3ff79f38df3638",
+    "custom_components/adaptive_charge_preview/sources.py": "af07a444f51735045aa4099c9c5d9daf9de5cfe08a9d5b861300949e44b025a6",
+    "custom_components/adaptive_charge_preview/strings.json": "63ff403dc3c9f333eb34335fa0c7996c8d38c7d2ef38b3570f81f309c6d06bde",
+    "custom_components/adaptive_charge_preview/translations/en.json": "63ff403dc3c9f333eb34335fa0c7996c8d38c7d2ef38b3570f81f309c6d06bde",
+    "custom_components/adaptive_charge_preview/translations/nl.json": "cd07b346535579db799b65d6bc67e8e4ff8889c45bd02426911f56bf3798c69d",
+    "tools/preview_bundle.py": "703929ebf511d5f3d8a9a6f24fac25ae13ccea19fe9bd96ac38c71af7b3ac600"
+  }
+}
