@@ -3,12 +3,12 @@
 ## Ground Rules
 
 ### Branch Protection
-- **`main`** and **`develop`** branches are protected.
+- **`release`** (the default branch), **`develop`**, and any historical **`main`** branch are protected publication targets.
 - All changes must go through a Pull Request from a feature branch.
-- Direct pushes to `main` or `develop` are not allowed.
+- Direct pushes to these branches are not allowed.
 
 ### Pull Request Rules
-1. **No analysis files**: Log files, history exports, energy dashboard CSVs, and similar analysis artifacts must **never** be merged into `main` or `develop`. These belong in feature branches only. The `.gitignore` is configured to exclude `*.csv` files automatically.
+1. **No analysis files**: Log files, history exports, energy dashboard CSVs, and similar analysis artifacts must **never** be merged into `release`, `develop` or `main`. These belong in feature branches only. The `.gitignore` is configured to exclude `*.csv` files automatically.
 2. **Version bump required**: Every release must use a new version in the active integration's `custom_components/adaptive_charge_preview/manifest.json`. Version 5 is a separate, read-only preview; v4 is archived under `legacy/v4/` and is not shipped by HACS. Use [Semantic Versioning](https://semver.org/), including prerelease suffixes for previews:
    - **Patch** (x.y.Z): Bug fixes, small improvements
    - **Minor** (x.Y.0): New features, new config options, new sensors
@@ -31,19 +31,9 @@
 - No hardcoded values — use constants from `const.py`.
 - Entity IDs must remain stable across versions (don't change `unique_id` patterns).
 
-### Merge Strategy: develop → main
-To merge `develop` into `main`:
-```bash
-git checkout main
-git merge develop
-git push origin main
-```
-If there are conflicts, resolve them locally and push. If `main` has diverged, use:
-```bash
-git checkout develop
-git rebase main
-# resolve any conflicts
-git checkout main
-git merge develop
-git push origin main
-```
+### Merge strategy
+
+Use a feature-branch PR to `develop`, then a separate reviewed PR from `develop`
+to the default `release` branch. Resolve conflicts on the feature branch without
+rewriting a shared branch. A beta tag may point to the reviewed feature commit;
+it does not imply a protected-branch merge or production acceptance.

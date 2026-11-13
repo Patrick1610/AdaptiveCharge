@@ -14,12 +14,13 @@ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 DOMAIN = "adaptive_charge_preview"
 PREFIX = f"custom_components/{DOMAIN}/"
 MAX_BYTES = 2_000_000
+SUFFIXES = {".py", ".json", ".yaml", ".png"}
 
 
 def build(source_root: Path, output: Path) -> dict[str, object]:
     """Produce deterministic bytes and external hash binding for review/install."""
     package = source_root / "custom_components" / DOMAIN
-    files = sorted(p for p in package.rglob("*") if p.is_file() and p.suffix in {".py", ".json", ".yaml"} and "__pycache__" not in p.parts)
+    files = sorted(p for p in package.rglob("*") if p.is_file() and p.suffix in SUFFIXES and "__pycache__" not in p.parts)
     hashes = {}
     stream = BytesIO()
     with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
@@ -60,7 +61,7 @@ def install(content: bytes, config_dir: Path, expected_sha256: str) -> dict[str,
         for item in archive.infolist():
             name = PurePosixPath(item.filename)
             mode = item.external_attr >> 16
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", item.filename) or not item.filename.startswith(PREFIX) or ".." in name.parts or name.is_absolute() or item.is_dir() or stat.S_ISLNK(mode) or str(name) != item.filename or name.suffix not in {".py", ".json", ".yaml"}:
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", item.filename) or not item.filename.startswith(PREFIX) or ".." in name.parts or name.is_absolute() or item.is_dir() or stat.S_ISLNK(mode) or str(name) != item.filename or name.suffix not in SUFFIXES:
                 raise ValueError("Unexpected archive path/type")
             relative = PurePosixPath(*name.parts[2:])
             if relative in files or len(files) >= 80:

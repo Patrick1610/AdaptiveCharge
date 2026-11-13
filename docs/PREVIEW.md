@@ -141,12 +141,40 @@ in diagnostiek beschikbaar, maar worden niet meegekopieerd naar recorderattribut
 
 De beta wordt gepubliceerd vanuit `Patrick1610/AdaptiveCharge` als `v5.0.0b1`.
 HACS installeert het enige top-level integratiedomein `adaptive_charge_preview`;
-`legacy/v4/` wordt niet geïnstalleerd. Er is geen automatische migratie of
+`legacy/v4/` wordt niet geïnstalleerd bij een nieuwe download. Een reeds aanwezige
+`/config/custom_components/adaptive_charge`-map kan bij een domeinwijziging door HACS
+blijven staan. Deze release verwijdert die map of bestaande v4-entries niet.
+Deactiveer vóór een eventuele herstart alle oude `adaptive_charge`-entries, en
+archiveer de oude map buiten `custom_components`. Laat de werkende native regeling
+volledig staan. Er is geen automatische migratie of
 activering van oude AdaptiveCharge-entries. De huidige native regeling blijft leidend.
+
+Voor HACS: voeg de repository toe als Integration, schakel Show beta versions in,
+en kies expliciet `v5.0.0b1` bij opnieuw downloaden. De beta-instelling blijft staan
+en kan ook latere betaversies aanbieden. HACS vervangt bestanden in de previewmap;
+de no-overwrite-garantie van het losse hulpmiddel geldt niet voor HACS. HACS haalt
+zonder `zip_release` de bronboom op de gekozen tag op, niet het losse ZIP-asset.
+
+Controleer daarom na HACS-installatie de geïnstalleerde bestanden tegen het
+`adaptive_charge_preview-5.0.0b1.json`-bewijs uit de gecontroleerde release. Voer
+onderstaande controle uit met de JSON op een eigen gekozen pad; dit leest alleen:
+
+```python
+import hashlib, json
+from pathlib import Path
+proof = json.loads(Path("/pad/naar/adaptive_charge_preview-5.0.0b1.json").read_text())
+assert proof["domain"] == "adaptive_charge_preview"
+for relative, expected in proof["files"].items():
+    path = Path(relative)
+    assert path.parts[:2] == ("custom_components", "adaptive_charge_preview")
+    assert ".." not in path.parts
+    assert hashlib.sha256((Path("/config") / path).read_bytes()).hexdigest() == expected
+print("Previewbestandhashes komen overeen")
+```
 
 Het afzonderlijke distributiearchief bevat uitsluitend `custom_components/adaptive_charge_preview`.
 Kopieer die nieuwe map; installeer niet de hele repository over de bestaande
-`adaptive_charge`-map. Het installatiehulpmiddel weigert een bestaande previewmap
+`adaptive_charge`-map. Alleen het losse Python-installatiehulpmiddel weigert een bestaande previewmap
 te overschrijven en controleert paden en hashes vóór schrijven.
 
 Het gecontroleerde hulpmiddel ondersteunt uitsluitend een bestaande HA-configmap

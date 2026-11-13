@@ -2,12 +2,20 @@
 
 from hashlib import sha256
 from io import BytesIO
+import json
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
 from tools.preview_bundle import DOMAIN, build, install
+
+
+def test_hacs_has_only_the_readonly_preview_domain():
+    root = Path(__file__).resolve().parents[2]
+    manifests = list((root / "custom_components").glob("*/manifest.json"))
+    assert [p.parent.name for p in manifests] == [DOMAIN]
+    assert json.loads(manifests[0].read_text())["domain"] == DOMAIN
 
 
 def test_deterministic_bundle_and_nonoverwriting_install(tmp_path):
@@ -21,6 +29,8 @@ def test_deterministic_bundle_and_nonoverwriting_install(tmp_path):
     legacy.mkdir(parents=True)
     (legacy/"__init__.py").write_text("existing")
     content=a.read_bytes()
+    with ZipFile(BytesIO(content)) as archive:
+        assert archive.read("custom_components/adaptive_charge_preview/brand/icon.png") == (root / "custom_components/adaptive_charge_preview/brand/icon.png").read_bytes()
     receipt=install(content,config,sha256(content).hexdigest())
     assert receipt["control_enabled"] is False
     assert (legacy/"__init__.py").read_text()=="existing"

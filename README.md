@@ -10,15 +10,29 @@ automations, helpers en Shortcuts blijven de echte laadregeling uitvoeren.
 
 ## Installeren via HACS
 
-Repository: `Patrick1610/AdaptiveCharge`. Kies de pre-release `v5.0.0b1`.
+Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
+**Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
+downloaden en kies expliciet `v5.0.0b1`. Met beta's ingeschakeld biedt HACS ook
+latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge Preview** toe onder Apparaten & diensten, met één hoofdinstantie
 voor de laadpaal en Tesla/ID.3 als autosubconfiguraties.
 
 Deze beta gebruikt het eigen domein `adaptive_charge_preview`, zodat hij geen
 bestaande native laadregeling kan overnemen. Een oude AdaptiveCharge v4-entry
-wordt niet automatisch gemigreerd of gebruikt. Verwijder of deactiveer zo nodig
-alleen die oude integratie-entry; laat de werkende native laadregeling staan.
+wordt niet automatisch gemigreerd of gebruikt. Deze release verwijdert geen reeds
+geïnstalleerde v4-code of entries. HACS ruimt de oude domeinmap bij deze naamswijziging
+niet betrouwbaar op. Controleer daarom vóór een eventuele herstart:
+
+1. Deactiveer of verwijder **alleen** de oude `adaptive_charge`-integratie-entries.
+   Laat de werkende native scripts, automations en helpers staan.
+2. Controleer of `/config/custom_components/adaptive_charge` is achtergebleven.
+   Verplaats die oude map buiten `custom_components` naar een eigen archief of
+   verwijder haar pas na archivering. Het gedeactiveerd houden van oude entries
+   blijft nodig; bestanden verplaatsen is geen entrymigratie.
+3. Controleer na HACS-download alle previewbestandhashes met het bij de release
+   gevoegde JSON-bewijs, zoals uitgelegd in [PREVIEW.md](docs/PREVIEW.md#installeren-naast-de-bestaande-regeling).
+
 HACS kan bij vervanging om een herstart vragen. Plan die wanneer de huidige
 laadopdracht mag eindigen: de bestaande native herstartveiligheid kan een
 actieve opdracht annuleren. Een herstart is geen onderdeel van de previewbesturing.

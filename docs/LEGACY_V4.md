@@ -1,13 +1,14 @@
-# AdaptiveCharge
+# Archived AdaptiveCharge v4 documentation
 
-> **Read-only v5 preview:** the separate `adaptive_charge_preview` integration
-> observes the existing charger/controller and cannot actuate. Existing Adaptive
-> Charge code below is preserved. Install only the separate preview bundle;
-> see [Preview setup and boundaries](docs/PREVIEW.md).
+> Historical reference only. This file describes the former actuating v4
+> integration, not the current read-only preview. Do not use it to install or
+> activate charging control. The archived source is outside HACS's installable
+> path; already-installed v4 entries/files require separate deactivation/archive.
+> See [current setup and boundaries](PREVIEW.md).
 
 [![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Patrick1610/AdaptiveCharge.svg)](https://github.com/Patrick1610/AdaptiveCharge/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../LICENSE)
 
 A Home Assistant custom integration that intelligently controls EV charging based on solar surplus power. It maximises self-consumption of solar energy by dynamically adjusting the charge current and automatically starting/stopping charging when surplus is available.
 
@@ -38,13 +39,11 @@ A Home Assistant custom integration that intelligently controls EV charging base
 
 ---
 
-## Installation via HACS
+## Historical installation
 
-1. Open **HACS** in Home Assistant.
-2. Go to **Integrations** → three-dot menu → **Custom repositories**.
-3. Add `https://github.com/Patrick1610/AdaptiveCharge` with category **Integration**.
-4. Click **Download** on the _AdaptiveCharge_ card.
-5. Restart Home Assistant.
+The former HACS installation steps are intentionally retired. The repository's
+v5 beta installs the read-only preview; follow [current instructions](../README.md).
+The configuration reference below applies only to archived v4, not to v5.
 
 ---
 
