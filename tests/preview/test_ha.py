@@ -1,6 +1,6 @@
 """Actual HA objects with a tripwire on all outgoing services and source writes."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import json
 from pathlib import Path
@@ -15,6 +15,28 @@ from homeassistant.core import HomeAssistant
 from custom_components.adaptive_charge_preview.const import DOMAIN
 from custom_components.adaptive_charge_preview.coordinator import PreviewCoordinator
 from custom_components.adaptive_charge_preview.sources import local_time, measurement, price_rows
+
+
+@pytest.mark.asyncio
+async def test_enever_native_datetime_prices_cover_today_and_tomorrow(tmp_path):
+    """Enever 1.8 keeps datetime objects in HA; REST renders them as strings."""
+    from custom_components.adaptive_charge_preview.sources import price_feed_live
+
+    hass = HomeAssistant(str(tmp_path))
+    await hass.config.async_update(time_zone="Europe/Amsterdam")
+    midnight = datetime.fromisoformat("2026-11-13T00:00:00+01:00")
+    rows = [{"time": midnight + timedelta(minutes=15 * i), "price": 0.25} for i in range(192)]
+    hass.states.async_set("sensor.enever", 0.25, {"prices_today": rows[:96], "prices_tomorrow": rows[96:]})
+    config = {"price_entity": "sensor.enever", "price_attribute": "prices_today,prices_tomorrow"}
+    try:
+        for now in (midnight + timedelta(hours=22), midnight + timedelta(days=1, hours=3)):
+            tariffs, warnings = price_rows(hass, config, now.timestamp())
+            assert len(tariffs) == 192
+            assert all(row.end - row.start == 900 for row in tariffs)
+            assert price_feed_live(hass, config, now.timestamp(), tariffs, warnings)
+        assert not price_feed_live(hass, config, (midnight + timedelta(days=2)).timestamp())
+    finally:
+        await hass.async_stop()
 
 
 def entry(subentries=True):

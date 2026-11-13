@@ -160,6 +160,8 @@ def power_kw(hass: HomeAssistant, entity_id: str | None, now: float) -> dict[str
 
 def local_time(value: Any, timezone: str) -> float | None:
     """Parse a helper/price time using HA's timezone, rejecting ambiguous DST."""
+    if isinstance(value, datetime):
+        value = value.isoformat()
     direct = timestamp(value)
     if direct is not None:
         return direct

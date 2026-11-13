@@ -103,6 +103,18 @@ diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg
 
 ## Oplevering 13 november 2026
 
+### Tariefformaatcorrectie 5.1.0b2
+
+Enever 1.8 publiceert de tijden in `prices_today` en `prices_tomorrow` intern als
+Python-datumobjecten. De HA-API toont dezelfde waarden als ISO-tekst. Versie
+5.1.0b1 accepteerde alleen die tekstvorm en wees de interne tariefregels af.
+5.1.0b2 verwerkt beide vormen met dezelfde tijdzone- en zomertijdcontrole.
+De eis van actuele prijzen vóór Manual blijft behouden. De regressietest gebruikt
+192 native Enever-kwartieren en toetst actuele dekking op beide dagen en afwijzing
+buiten de beschikbare periode. Dit verandert geen stop-, laad- of limietbeleid.
+
+### Eerdere oplevering 5.1.0b1
+
 Versie [5.1.0b1](https://github.com/Patrick1610/AdaptiveCharge/releases/tag/v5.1.0b1)
 is gepubliceerd op commit `c27cee992f0ddb565e11b9ddd58a2392a0ad1a26`.
 Alle 1.043 softwaretests zijn lokaal geslaagd. De
