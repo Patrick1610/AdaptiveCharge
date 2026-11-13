@@ -24,6 +24,15 @@
   keep the protected branches behind the normal PR process.
 - Never claim live commissioning from a published release or passing software tests.
 - Preview code must remain unable to call actuator services or change source entities.
+- This beta is distributed as a custom repository, not submitted to the default
+  HACS catalog. Its repository description/topics are currently absent; the
+  available GitHub credentials have write, not admin, access. The HACS Action
+  explicitly excludes only those catalog metadata checks. Manifest, file layout,
+  local brand assets and install compatibility still have to pass.
+- Before publishing a beta, build `python -m tools.preview_bundle`, attach both
+  `dist/adaptive_charge_preview-<version>.zip` and its `.json` proof to the release,
+  and verify the asset digests and every listed file against the exact tag tree.
+  Do not publish if a file or the proof is stale. Record live readback separately.
 
 ### Code Quality
 - Type hints on all function signatures.

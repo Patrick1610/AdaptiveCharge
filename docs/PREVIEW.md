@@ -163,12 +163,17 @@ onderstaande controle uit met de JSON op een eigen gekozen pad; dit leest alleen
 import hashlib, json
 from pathlib import Path
 proof = json.loads(Path("/pad/naar/adaptive_charge_preview-5.0.0b1.json").read_text())
+config = Path("/config")  # Vervang dit door de echte HA-configmap indien anders.
 assert proof["domain"] == "adaptive_charge_preview"
 for relative, expected in proof["files"].items():
     path = Path(relative)
     assert path.parts[:2] == ("custom_components", "adaptive_charge_preview")
     assert ".." not in path.parts
-    assert hashlib.sha256((Path("/config") / path).read_bytes()).hexdigest() == expected
+    assert hashlib.sha256((config / path).read_bytes()).hexdigest() == expected
+actual = {p.relative_to(config).as_posix()
+          for p in (config / "custom_components/adaptive_charge_preview").rglob("*")
+          if p.is_file() and "__pycache__" not in p.parts}
+assert actual == set(proof["files"]), "Onverwachte of ontbrekende previewbestanden"
 print("Previewbestandhashes komen overeen")
 ```
 
