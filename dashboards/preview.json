@@ -1,0 +1,114 @@
+{
+  "title": "EV · AdaptiveCharge",
+  "views": [
+    {
+      "title": "Overzicht",
+      "path": "proef",
+      "icon": "mdi:flask-outline",
+      "cards": [
+        {
+          "type": "markdown",
+          "content": "# AdaptiveCharge · preview\n{% if is_state('binary_sensor.enphase_preview_control_active', 'off') and state_attr('sensor.enphase_preview_preview', 'read_only') == true %}\n**Besturing uit — alleen een voorvertoning.**\n{% else %}\n**⚠ Besturingsstatus niet bevestigd.**\n{% endif %}\nDe huidige laadregeling bedien je via [EV laden](/dashboard-stormbreaker).\nVoorbeeldwaarden op dit dashboard veranderen alleen de preview."
+        },
+        {
+          "type": "markdown",
+          "content": "### Laadpaal · waarneming\n{% set p = state_attr('sensor.enphase_preview_preview', 'physical') or {} %}\n{% set meter = state_attr('sensor.enphase_preview_preview', 'meter_kwh') %}\n{% if p.get('fresh') and p.get('kw') is number %}\n**Vermogen:** {{ p.kw | round(3) }} kW  \n**Laden waargenomen:** {{ 'Ja' if p.get('positive') else 'Nee' }}\n{% else %}\nEr is geen verse vermogensmeting beschikbaar.\n{% endif %}\n\n**Laadmeter:** {{ (meter | round(2) | string ~ ' kWh') if meter is number else 'Niet beschikbaar' }}\n\nDe preview observeert deze waarden en stuurt de laadpaal niet aan."
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.stormbreaker_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n## Stormbreaker\n{% set phases = {\"idle\": \"Alleen advies\", \"waiting_data\": \"Wacht op brongegevens\", \"watching\": \"Doelbewaking in de preview\", \"charging\": \"Bijladen in de preview\", \"scheduled\": \"Ingepland in de preview\", \"verifying\": \"Wacht op doelbevestiging\", \"cancelled\": \"Preview beëindigd\", \"disconnected\": \"Ontkoppeling gezien\", \"fault\": \"Brongegevens vragen aandacht\"} %}\n**{{ phases.get(states(e), 'Wacht op gegevens') }}**\n{% if state_attr(e, 'plan_provisional') != false %}\n**Advies voorlopig.** Gebruik onderstaande schattingen nog niet als bevestigd laadplan.\n{% endif %}\n{% set messages = {\"vehicle_measurement_stale_or_time_unknown\": \"Voertuigmeting is verouderd of de meettijd ontbreekt.\", \"invalid_price_rows\": \"Er zijn geen bruikbare stroomtarieven.\", \"prices_missing\": \"De prijsbron ontbreekt.\", \"export_price_unknown_cost_estimate_incomplete\": \"Terugleverprijs ontbreekt; kosten zijn nog niet volledig te bepalen.\", \"forecast_stale_ignored\": \"Zonneprognose is verouderd en telt niet mee.\", \"forecast_invalid_ignored\": \"Zonneprognose is niet bruikbaar.\", \"native_vehicle_identity_ambiguous\": \"De actieve auto is niet eenduidig vast te stellen.\", \"price_gap\": \"De tariefreeks bevat een gat.\"} %}\n{% for warning in state_attr(e, 'warnings') or [] %}\n- {{ messages.get(warning, 'Bron of planning vraagt aandacht. Bekijk de bronstatus voordat je dit advies gebruikt.') }}\n{% endfor %}\n{% if not state_attr(e, 'warnings') %}\nGeen bronwaarschuwingen gemeld.\n{% endif %}\n[Bekijk profiel](/ev-v2-proef/tesla)"
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.eowyn_id_3_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n## Éowyn · ID.3\n{% set phases = {\"idle\": \"Alleen advies\", \"waiting_data\": \"Wacht op brongegevens\", \"watching\": \"Doelbewaking in de preview\", \"charging\": \"Bijladen in de preview\", \"scheduled\": \"Ingepland in de preview\", \"verifying\": \"Wacht op doelbevestiging\", \"cancelled\": \"Preview beëindigd\", \"disconnected\": \"Ontkoppeling gezien\", \"fault\": \"Brongegevens vragen aandacht\"} %}\n**{{ phases.get(states(e), 'Wacht op gegevens') }}**\n{% if state_attr(e, 'plan_provisional') != false %}\n**Advies voorlopig.** Gebruik onderstaande schattingen nog niet als bevestigd laadplan.\n{% endif %}\n{% set messages = {\"vehicle_measurement_stale_or_time_unknown\": \"Voertuigmeting is verouderd of de meettijd ontbreekt.\", \"invalid_price_rows\": \"Er zijn geen bruikbare stroomtarieven.\", \"prices_missing\": \"De prijsbron ontbreekt.\", \"export_price_unknown_cost_estimate_incomplete\": \"Terugleverprijs ontbreekt; kosten zijn nog niet volledig te bepalen.\", \"forecast_stale_ignored\": \"Zonneprognose is verouderd en telt niet mee.\", \"forecast_invalid_ignored\": \"Zonneprognose is niet bruikbaar.\", \"native_vehicle_identity_ambiguous\": \"De actieve auto is niet eenduidig vast te stellen.\", \"price_gap\": \"De tariefreeks bevat een gat.\"} %}\n{% for warning in state_attr(e, 'warnings') or [] %}\n- {{ messages.get(warning, 'Bron of planning vraagt aandacht. Bekijk de bronstatus voordat je dit advies gebruikt.') }}\n{% endfor %}\n{% if not state_attr(e, 'warnings') %}\nGeen bronwaarschuwingen gemeld.\n{% endif %}\n[Bekijk profiel](/ev-v2-proef/id3)"
+        }
+      ]
+    },
+    {
+      "title": "Stormbreaker",
+      "path": "tesla",
+      "icon": "mdi:car-electric",
+      "cards": [
+        {
+          "type": "markdown",
+          "content": "# AdaptiveCharge · preview\n{% if is_state('binary_sensor.enphase_preview_control_active', 'off') and state_attr('sensor.enphase_preview_preview', 'read_only') == true %}\n**Besturing uit — alleen een voorvertoning.**\n{% else %}\n**⚠ Besturingsstatus niet bevestigd.**\n{% endif %}\nDe huidige laadregeling bedien je via [EV laden](/dashboard-stormbreaker).\nVoorbeeldwaarden op dit dashboard veranderen alleen de preview."
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.stormbreaker_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n## Stormbreaker\n{% set phases = {\"idle\": \"Alleen advies\", \"waiting_data\": \"Wacht op brongegevens\", \"watching\": \"Doelbewaking in de preview\", \"charging\": \"Bijladen in de preview\", \"scheduled\": \"Ingepland in de preview\", \"verifying\": \"Wacht op doelbevestiging\", \"cancelled\": \"Preview beëindigd\", \"disconnected\": \"Ontkoppeling gezien\", \"fault\": \"Brongegevens vragen aandacht\"} %}\n**{{ phases.get(states(e), 'Wacht op gegevens') }}**\n{% if state_attr(e, 'plan_provisional') != false %}\n**Advies voorlopig.** Gebruik onderstaande schattingen nog niet als bevestigd laadplan.\n{% endif %}\n{% set messages = {\"vehicle_measurement_stale_or_time_unknown\": \"Voertuigmeting is verouderd of de meettijd ontbreekt.\", \"invalid_price_rows\": \"Er zijn geen bruikbare stroomtarieven.\", \"prices_missing\": \"De prijsbron ontbreekt.\", \"export_price_unknown_cost_estimate_incomplete\": \"Terugleverprijs ontbreekt; kosten zijn nog niet volledig te bepalen.\", \"forecast_stale_ignored\": \"Zonneprognose is verouderd en telt niet mee.\", \"forecast_invalid_ignored\": \"Zonneprognose is niet bruikbaar.\", \"native_vehicle_identity_ambiguous\": \"De actieve auto is niet eenduidig vast te stellen.\", \"price_gap\": \"De tariefreeks bevat een gat.\"} %}\n{% for warning in state_attr(e, 'warnings') or [] %}\n- {{ messages.get(warning, 'Bron of planning vraagt aandacht. Bekijk de bronstatus voordat je dit advies gebruikt.') }}\n{% endfor %}\n{% if not state_attr(e, 'warnings') %}\nGeen bronwaarschuwingen gemeld.\n{% endif %}"
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.stormbreaker_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n### Gemelde waarden en doel\n{% set soc = o.get('soc', {}) %}\n{% set battery = o.get('battery_kwh', {}) %}\n{% set limit = o.get('limit_soc', {}) %}\n{% set target = state_attr(e, 'target_km') %}\n{% set departure = state_attr(e, 'departure') %}\n| | |\n| :-- | --: |\n| Gemelde acculading | {{ (soc.get('value') | round(0) | int | string ~ ' %') if soc.get('value') is number else 'Onbekend' }} |\n| Meetmoment acculading | {{ soc.get('measured_at') | timestamp_custom('%d-%m %H:%M', true) if soc.get('measured_at') is number else 'Onbekend' }} |\n| Gemelde accu-energie | {{ (battery.get('value') | round(2) | string ~ ' kWh') if battery.get('value') is number else 'Onbekend' }} |\n| Meetmoment accu-energie | {{ battery.get('measured_at') | timestamp_custom('%d-%m %H:%M', true) if battery.get('measured_at') is number else 'Onbekend' }} |\n| Ingestelde autolimiet | {{ (limit.get('value') | round(0) | int | string ~ ' %') if limit.get('value') is number else 'Onbekend' }} |\n| Bereikdoel preview | {{ (target | round(0) | int | string ~ ' km') if target is number else 'Onbekend' }} |\n| Doelindicatie preview | {{ (d.get('effective_soc') | round(1) | string ~ ' %') if d.get('effective_soc') is number else 'Onbekend' }} |\n| Extra laadenergie · schatting | {{ (d.get('needed_kwh') | round(2) | string ~ ' kWh') if d.get('needed_kwh') is number else 'Onbekend' }} |\n| Bereik nodig op | {{ departure | timestamp_custom('%d-%m-%Y %H:%M', true) if departure is number else 'Onbekend' }} |\n{% if d.get('limited') %}\nHet effectieve doel is begrensd door de autolimiet. De preview wijzigt die limiet niet.\n{% endif %}"
+        },
+        {
+          "type": "entities",
+          "title": "Voorbeeldinstellingen · alleen preview",
+          "show_header_toggle": false,
+          "entities": [
+            {
+              "entity": "number.stormbreaker_preview_range_target",
+              "name": "Bereikdoel · preview",
+              "icon": "mdi:map-marker-distance"
+            },
+            {
+              "entity": "datetime.stormbreaker_preview_departure",
+              "name": "Bereik nodig op · preview"
+            },
+            {
+              "entity": "number.stormbreaker_soc_return_threshold",
+              "name": "Terugval voor bijladen · procentpunt"
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.stormbreaker_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n### Voorgestelde laadvensters\n{% if state_attr(e, 'plan_provisional') != false %}\n**Voorlopig advies; tijden en kosten zijn niet bevestigd.**\n{% endif %}\n{% if p.get('windows') %}\n| Van | Tot | Advies | Energie |\n| :-- | :-- | :-- | --: |\n{% for w in p.get('windows', []) %}\n{% if w.get('start') is number and w.get('end') is number and w.get('kwh') is number %}\n| {{ w.start | timestamp_custom('%d-%m %H:%M:%S', true) }} | {{ w.end | timestamp_custom('%d-%m %H:%M:%S', true) }} | Bijladen | {{ w.kwh | round(2) }} kWh |\n{% endif %}\n{% endfor %}\n{% else %}\nNog geen laadvensters in de preview.\n{% endif %}\n\n**Geschatte kosten:** {{ ('€ ' ~ (p.get('cost') | round(2))) if p.get('cost') is number else 'Niet beschikbaar' }}\n\n{% set c = state_attr(e, 'comparison') or {} %}\n**Vergelijking:** huidige regeling {{ c.get('native_mode') or 'onbekend' }} · preview {{ c.get('preview_mode') or 'onbekend' }}.\nEen voorgesteld venster of dezelfde modus is nog geen bewijs dat de auto zo heeft geladen."
+        }
+      ]
+    },
+    {
+      "title": "Éowyn · ID.3",
+      "path": "id3",
+      "icon": "mdi:car-electric",
+      "cards": [
+        {
+          "type": "markdown",
+          "content": "# AdaptiveCharge · preview\n{% if is_state('binary_sensor.enphase_preview_control_active', 'off') and state_attr('sensor.enphase_preview_preview', 'read_only') == true %}\n**Besturing uit — alleen een voorvertoning.**\n{% else %}\n**⚠ Besturingsstatus niet bevestigd.**\n{% endif %}\nDe huidige laadregeling bedien je via [EV laden](/dashboard-stormbreaker).\nVoorbeeldwaarden op dit dashboard veranderen alleen de preview."
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.eowyn_id_3_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n## Éowyn · ID.3\n{% set phases = {\"idle\": \"Alleen advies\", \"waiting_data\": \"Wacht op brongegevens\", \"watching\": \"Doelbewaking in de preview\", \"charging\": \"Bijladen in de preview\", \"scheduled\": \"Ingepland in de preview\", \"verifying\": \"Wacht op doelbevestiging\", \"cancelled\": \"Preview beëindigd\", \"disconnected\": \"Ontkoppeling gezien\", \"fault\": \"Brongegevens vragen aandacht\"} %}\n**{{ phases.get(states(e), 'Wacht op gegevens') }}**\n{% if state_attr(e, 'plan_provisional') != false %}\n**Advies voorlopig.** Gebruik onderstaande schattingen nog niet als bevestigd laadplan.\n{% endif %}\n{% set messages = {\"vehicle_measurement_stale_or_time_unknown\": \"Voertuigmeting is verouderd of de meettijd ontbreekt.\", \"invalid_price_rows\": \"Er zijn geen bruikbare stroomtarieven.\", \"prices_missing\": \"De prijsbron ontbreekt.\", \"export_price_unknown_cost_estimate_incomplete\": \"Terugleverprijs ontbreekt; kosten zijn nog niet volledig te bepalen.\", \"forecast_stale_ignored\": \"Zonneprognose is verouderd en telt niet mee.\", \"forecast_invalid_ignored\": \"Zonneprognose is niet bruikbaar.\", \"native_vehicle_identity_ambiguous\": \"De actieve auto is niet eenduidig vast te stellen.\", \"price_gap\": \"De tariefreeks bevat een gat.\"} %}\n{% for warning in state_attr(e, 'warnings') or [] %}\n- {{ messages.get(warning, 'Bron of planning vraagt aandacht. Bekijk de bronstatus voordat je dit advies gebruikt.') }}\n{% endfor %}\n{% if not state_attr(e, 'warnings') %}\nGeen bronwaarschuwingen gemeld.\n{% endif %}"
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.eowyn_id_3_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n### Gemelde waarden en doel\n{% set soc = o.get('soc', {}) %}\n{% set battery = o.get('battery_kwh', {}) %}\n{% set limit = o.get('limit_soc', {}) %}\n{% set target = state_attr(e, 'target_km') %}\n{% set departure = state_attr(e, 'departure') %}\n| | |\n| :-- | --: |\n| Gemelde acculading | {{ (soc.get('value') | round(0) | int | string ~ ' %') if soc.get('value') is number else 'Onbekend' }} |\n| Meetmoment acculading | {{ soc.get('measured_at') | timestamp_custom('%d-%m %H:%M', true) if soc.get('measured_at') is number else 'Onbekend' }} |\n| Gemelde accu-energie | {{ (battery.get('value') | round(2) | string ~ ' kWh') if battery.get('value') is number else 'Onbekend' }} |\n| Meetmoment accu-energie | {{ battery.get('measured_at') | timestamp_custom('%d-%m %H:%M', true) if battery.get('measured_at') is number else 'Onbekend' }} |\n| Ingestelde autolimiet | {{ (limit.get('value') | round(0) | int | string ~ ' %') if limit.get('value') is number else 'Onbekend' }} |\n| Bereikdoel preview | {{ (target | round(0) | int | string ~ ' km') if target is number else 'Onbekend' }} |\n| Doelindicatie preview | {{ (d.get('effective_soc') | round(1) | string ~ ' %') if d.get('effective_soc') is number else 'Onbekend' }} |\n| Extra laadenergie · schatting | {{ (d.get('needed_kwh') | round(2) | string ~ ' kWh') if d.get('needed_kwh') is number else 'Onbekend' }} |\n| Bereik nodig op | {{ departure | timestamp_custom('%d-%m-%Y %H:%M', true) if departure is number else 'Onbekend' }} |\n{% if d.get('limited') %}\nHet effectieve doel is begrensd door de autolimiet. De preview wijzigt die limiet niet.\n{% endif %}"
+        },
+        {
+          "type": "entities",
+          "title": "Voorbeeldinstellingen · alleen preview",
+          "show_header_toggle": false,
+          "entities": [
+            {
+              "entity": "number.eowyn_id_3_preview_range_target",
+              "name": "Bereikdoel · preview",
+              "icon": "mdi:map-marker-distance"
+            },
+            {
+              "entity": "datetime.eowyn_id_3_preview_departure",
+              "name": "Bereik nodig op · preview"
+            },
+            {
+              "entity": "number.eowyn_id_3_soc_return_threshold",
+              "name": "Terugval voor bijladen · procentpunt"
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "content": "{% set e = 'sensor.eowyn_id_3_preview' %}\n{% set d = state_attr(e, 'demand') or {} %}\n{% set o = state_attr(e, 'observations') or {} %}\n{% set p = state_attr(e, 'plan') or {} %}\n### Voorgestelde laadvensters\n{% if state_attr(e, 'plan_provisional') != false %}\n**Voorlopig advies; tijden en kosten zijn niet bevestigd.**\n{% endif %}\n{% if p.get('windows') %}\n| Van | Tot | Advies | Energie |\n| :-- | :-- | :-- | --: |\n{% for w in p.get('windows', []) %}\n{% if w.get('start') is number and w.get('end') is number and w.get('kwh') is number %}\n| {{ w.start | timestamp_custom('%d-%m %H:%M:%S', true) }} | {{ w.end | timestamp_custom('%d-%m %H:%M:%S', true) }} | Bijladen | {{ w.kwh | round(2) }} kWh |\n{% endif %}\n{% endfor %}\n{% else %}\nNog geen laadvensters in de preview.\n{% endif %}\n\n**Geschatte kosten:** {{ ('€ ' ~ (p.get('cost') | round(2))) if p.get('cost') is number else 'Niet beschikbaar' }}\n\n{% set c = state_attr(e, 'comparison') or {} %}\n**Vergelijking:** huidige regeling {{ c.get('native_mode') or 'onbekend' }} · preview {{ c.get('preview_mode') or 'onbekend' }}.\nEen voorgesteld venster of dezelfde modus is nog geen bewijs dat de auto zo heeft geladen."
+        }
+      ]
+    }
+  ]
+}

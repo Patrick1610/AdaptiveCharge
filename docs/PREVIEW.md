@@ -152,6 +152,11 @@ buiten `custom_components`. Laat de werkende native regeling
 volledig staan. Er is geen automatische migratie of
 activering van oude AdaptiveCharge-entries. De huidige native regeling blijft leidend.
 
+Het bestaande EV-V2-dashboard is voor de preview hergebruikt als
+**EV · AdaptiveCharge**. **EV laden** blijft de echte bediening. Zie de
+[dashboardconfiguratie en verificatie](../dashboards/README.md); er is geen derde
+EV-dashboard toegevoegd.
+
 Voor HACS: voeg de repository toe als Integration, schakel Show beta versions in,
 en kies expliciet `v5.0.0b1` bij opnieuw downloaden. De beta-instelling blijft staan
 en kan ook latere betaversies aanbieden. HACS vervangt bestanden in de previewmap;
