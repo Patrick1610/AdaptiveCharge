@@ -9,12 +9,21 @@
 
 ### Pull Request Rules
 1. **No analysis files**: Log files, history exports, energy dashboard CSVs, and similar analysis artifacts must **never** be merged into `main` or `develop`. These belong in feature branches only. The `.gitignore` is configured to exclude `*.csv` files automatically.
-2. **Version bump required**: Every PR merge to `develop` or `main` must include a version bump in `custom_components/adaptive_charge/manifest.json`. Use [Semantic Versioning](https://semver.org/):
+2. **Version bump required**: Every release must use a new version in the active integration's `custom_components/adaptive_charge_preview/manifest.json`. Version 5 is a separate, read-only preview; v4 is archived under `legacy/v4/` and is not shipped by HACS. Use [Semantic Versioning](https://semver.org/), including prerelease suffixes for previews:
    - **Patch** (x.y.Z): Bug fixes, small improvements
    - **Minor** (x.Y.0): New features, new config options, new sensors
    - **Major** (X.0.0): Breaking changes (config format changes, entity ID changes)
 3. **Tests must pass**: All existing tests must pass before merging. Run `pytest tests/` to verify.
 4. **Descriptive commit messages**: Use clear, descriptive commit messages. Include the issue number if applicable.
+
+### HACS distribution
+
+- Keep exactly one integration under `custom_components/`; HACS manages only one
+  integration per repository. Archived v4 code must stay outside that directory.
+- Publish preview versions as GitHub pre-releases from a reviewed feature commit;
+  keep the protected branches behind the normal PR process.
+- Never claim live commissioning from a published release or passing software tests.
+- Preview code must remain unable to call actuator services or change source entities.
 
 ### Code Quality
 - Type hints on all function signatures.

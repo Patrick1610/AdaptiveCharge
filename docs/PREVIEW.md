@@ -1,8 +1,8 @@
 # AdaptiveCharge Preview 5.0.0b1
 
 Deze versie rekent alleen mee naast de bestaande laadregeling. Domein:
-`adaptive_charge_preview`. De bestaande `adaptive_charge`-integratie en de native
-EV-scripts/automations worden niet vervangen, uitgeschakeld of aangeroepen.
+`adaptive_charge_preview`. De oude AdaptiveCharge v4-bron is gearchiveerd buiten het HACS-installatiepad.
+De native EV-scripts/automations worden niet vervangen, uitgeschakeld of aangeroepen.
 Getest op Home Assistant 2026.11.1; oudere HA-versies worden in deze beta niet ondersteund.
 
 ## Harde grens
@@ -139,7 +139,12 @@ in diagnostiek beschikbaar, maar worden niet meegekopieerd naar recorderattribut
 
 ## Installeren naast de bestaande regeling
 
-Het distributiearchief bevat uitsluitend `custom_components/adaptive_charge_preview`.
+De beta wordt gepubliceerd vanuit `Patrick1610/AdaptiveCharge` als `v5.0.0b1`.
+HACS installeert het enige top-level integratiedomein `adaptive_charge_preview`;
+`legacy/v4/` wordt niet geïnstalleerd. Er is geen automatische migratie of
+activering van oude AdaptiveCharge-entries. De huidige native regeling blijft leidend.
+
+Het afzonderlijke distributiearchief bevat uitsluitend `custom_components/adaptive_charge_preview`.
 Kopieer die nieuwe map; installeer niet de hele repository over de bestaande
 `adaptive_charge`-map. Het installatiehulpmiddel weigert een bestaande previewmap
 te overschrijven en controleert paden en hashes vóór schrijven.
