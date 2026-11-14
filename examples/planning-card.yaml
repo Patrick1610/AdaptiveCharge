@@ -21,7 +21,7 @@ cards:
       {% else %}
       | Tijd | Laden | Energie |
       |---|---:|---:|
-      {% for q in quarters %}
+      {% for q in quarters -%}
       | {{ as_timestamp(q.start) | timestamp_custom('%H:%M') }}–{{ as_timestamp(q.end) | timestamp_custom('%H:%M') }} | {{ q.minutes | round(1) }} min | {{ q.energy_kwh | round(2) }} kWh |
       {% endfor %}
       {% endif %}
