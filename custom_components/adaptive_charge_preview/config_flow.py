@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, ConfigSubentryFlow, SubentryFlowResult
 from homeassistant.core import callback
@@ -40,6 +41,16 @@ def entity(domains: list[str]) -> selector.EntitySelector:
     return selector.EntitySelector(selector.EntitySelectorConfig(domain=domains))
 
 
+class PlanningPowerSelector(selector.NumberSelector):
+    """Keep the zero-or-positive-range rule editable in HA's numeric form."""
+
+    def __call__(self, data: Any) -> float:
+        value = super().__call__(data)
+        if not isfinite(value) or 0 < value < 1:
+            raise vol.Invalid("Use 0 or a planning power from 1 to 22 kW")
+        return value
+
+
 def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     """Shared input bindings and calculation defaults; no credentials/writers."""
     data = defaults or {}
@@ -70,7 +81,7 @@ def vehicle_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         fields[vol.Optional(key)] = entity(domains)
     fields[vol.Required("droop_pp", default=data.get("droop_pp", 1))] = vol.All(vol.Coerce(float), vol.Range(min=0.1, max=10))
     fields[vol.Required("margin", default=data.get("margin", 0.15))] = vol.All(vol.Coerce(float), vol.Range(min=0, max=0.5))
-    fields[vol.Required("planning_power_kw", default=data.get("planning_power_kw", 0))] = vol.All(vol.Coerce(float), vol.Any(0, vol.Range(min=1, max=22)))
+    fields[vol.Required("planning_power_kw", default=data.get("planning_power_kw", 0))] = PlanningPowerSelector(selector.NumberSelectorConfig(min=0, max=22, step=0.1, mode=selector.NumberSelectorMode.BOX))
     fields[vol.Required("allow_limit_raise", default=data.get("allow_limit_raise", False))] = bool
     fields[vol.Required("maximum_soc", default=data.get("maximum_soc", 100))] = vol.All(vol.Coerce(float), vol.Range(min=1, max=100))
     return vol.Schema(fields)

@@ -101,7 +101,15 @@ kosten. Oude tariefattributen worden dan niet als een live feed behandeld.
 De besturingsstatus en foutcodes in attributen blijven technisch herkenbaar voor
 diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg.
 
-## Oplevering 13 november 2026
+## Oplevering 13–14 november 2026
+
+### Bewerkbaar vermogensveld, 5.1.0b5
+
+Het vermogensveld gebruikt een native numerieke HA-selector. De eerdere
+union-validator werd door HA als vaste nul weergegeven, hoewel de API andere
+geldige waarden accepteerde. De selector behoudt dezelfde validatie: nul of
+1–22 kW, met afwijzing van niet-eindige waarden. Een regressie toetst het echte
+geserialiseerde HA-formulier, naast de bestaande berekenings- en validatietests.
 
 ### Planningsvermogen per voertuig, 5.1.0b4
 

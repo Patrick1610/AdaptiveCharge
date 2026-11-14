@@ -161,6 +161,23 @@ def test_vehicle_planning_power_rejects_invalid_configuration(invalid):
         vehicle_schema()({**data, "planning_power_kw": invalid})
 
 
+def test_vehicle_planning_power_is_editable_in_real_ha_form():
+    import probatio
+    from homeassistant.helpers import config_validation as cv
+    from custom_components.adaptive_charge_preview.config_flow import VehicleSubentryFlow, vehicle_schema
+
+    schema = VehicleSubentryFlow().add_suggested_values_to_schema(vehicle_schema(), {"planning_power_kw": 5.5})
+    form = probatio.to_field_list(schema, custom_serializer=cv.custom_serializer)
+    field = next(x for x in form if x["name"] == "planning_power_kw")
+    assert field.get("type") != "constant"
+    expected = {"min": 0.0, "max": 22.0, "step": 0.1, "mode": "box"}
+    assert expected.items() <= field["selector"]["number"].items()
+    assert field["description"]["suggested_value"] == 5.5
+    data = dict(next(iter(entry().subentries.values())).data)
+    for value in (0, 1, 5.5, 22):
+        assert vehicle_schema()({**data, "planning_power_kw": value})["planning_power_kw"] == value
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid", [0.5, float("nan")])
 async def test_invalid_saved_planning_power_cannot_use_energy_fallback(tmp_path, invalid):
