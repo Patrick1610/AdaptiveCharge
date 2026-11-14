@@ -1,0 +1,18 @@
+{
+  "utc": "2026-11-12T22:04:47.450410+00:00",
+  "authority": "Direct user reply in this chat",
+  "literal_instruction": "Ja maar overschrijf de huidige werking in HA niet. Laat de besturing van de integration uit en laat het naast de huidige werking lopen.",
+  "execution_mode": "OWNER_DIRECT_EXCEPTION",
+  "product_writer": "current Codex controller",
+  "reviews": [
+    "Jev",
+    "independent Claude"
+  ],
+  "constraints": [
+    "Do not overwrite or disable existing HA control",
+    "Preview integration must be unable to send actuator/helper/limit writes",
+    "No HA restart or controller cutover",
+    "Preserve existing Adaptive Charge implementation"
+  ],
+  "workflow_preflight": "PLATFORM_ACTION_REQUIRED remains historical; exception does not claim a passed custom-agent role preflight."
+}

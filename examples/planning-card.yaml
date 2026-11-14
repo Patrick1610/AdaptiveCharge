@@ -1,0 +1,27 @@
+# Native Home Assistant cards. History shows past values, the table shows future quarters.
+# Replace sensor.vehicle_charge_planning with your vehicle's actual planning sensor.
+type: vertical-stack
+cards:
+  - type: sensor
+    entity: sensor.vehicle_charge_planning
+    name: Resterende geplande laadtijd
+    graph: line
+    hours_to_show: 6
+    detail: 2
+  - type: markdown
+    title: Geplande laadkwartieren
+    content: |
+      {% set quarters = state_attr('sensor.vehicle_charge_planning', 'quarters') or [] %}
+      {% if not quarters %}
+      {% if state_attr('sensor.vehicle_charge_planning', 'active_request') %}
+      De planning is tijdelijk niet beschikbaar; de opdracht blijft bewaard.
+      {% else %}
+      Er staat geen actieve laadplanning.
+      {% endif %}
+      {% else %}
+      | Tijd | Laden | Energie |
+      |---|---:|---:|
+      {% for q in quarters -%}
+      | {{ as_timestamp(q.start) | timestamp_custom('%H:%M') }}–{{ as_timestamp(q.end) | timestamp_custom('%H:%M') }} | {{ q.minutes | round(1) }} min | {{ q.energy_kwh | round(2) }} kWh |
+      {% endfor %}
+      {% endif %}

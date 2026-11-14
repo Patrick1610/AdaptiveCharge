@@ -1,0 +1,235 @@
+{
+  "title": "AdaptiveCharge",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure charger",
+        "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor.",
+        "data": {
+          "name": "Name",
+          "meter_entity": "IQ lifetime energy (kWh)",
+          "power_entity": "Independent charger power (W/kW)",
+          "plug_entity": "Charger cable connected",
+          "connection_entity": "Connection identity / plugged-in timestamp",
+          "mode_entity": "Observed charging mode (read only)",
+          "charging_entity": "Charging status (optional supplementary feedback)",
+          "price_entity": "Tariff source",
+          "forecast_entity": "Existing solar forecast",
+          "house_entity": "House power excluding car (W/kW)",
+          "session_entity": "Existing session helper (read only)",
+          "active_entity": "Existing active-command helper (read only)",
+          "generation_entity": "Existing command generation (read only)",
+          "power_kw": "Planning power (kW)",
+          "reserve_min": "Departure reserve (minutes)",
+          "minimum_min": "Minimum isolated block (minutes)",
+          "house_kw": "Fallback house power (kW)",
+          "price_interval_min": "Interval without explicit end (15 or 60 minutes)",
+          "price_attribute": "Attribute containing price rows",
+          "price_time_key": "Price start-time column",
+          "import_price_key": "All-in import price column (EUR/kWh)",
+          "export_price_key": "Net export price column (optional)",
+          "connection_attribute": "Connection identity attribute (empty = state)",
+          "pending_entity": "Native pending request (read only)",
+          "legacy_master_entity": "Legacy controller master (must be off)",
+          "control_mode_entity": "Enphase charge-mode selector",
+          "charger_switch_entity": "Enphase start/stop switch",
+          "control_feedback_entity": "Enphase preferred/effective mode feedback",
+          "control_report_entity": "Enphase actual report timestamp",
+          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)"
+        }
+      },
+      "reconfigure": {
+        "title": "Configure charger",
+        "data": {
+          "name": "Name",
+          "meter_entity": "IQ lifetime energy (kWh)",
+          "power_entity": "Independent charger power (W/kW)",
+          "plug_entity": "Charger cable connected",
+          "connection_entity": "Connection identity / plugged-in timestamp",
+          "mode_entity": "Observed charging mode (read only)",
+          "charging_entity": "Charging status (optional supplementary feedback)",
+          "price_entity": "Tariff source",
+          "forecast_entity": "Existing solar forecast",
+          "house_entity": "House power excluding car (W/kW)",
+          "session_entity": "Existing session helper (read only)",
+          "active_entity": "Existing active-command helper (read only)",
+          "generation_entity": "Existing command generation (read only)",
+          "power_kw": "Planning power (kW)",
+          "reserve_min": "Departure reserve (minutes)",
+          "minimum_min": "Minimum isolated block (minutes)",
+          "house_kw": "Fallback house power (kW)",
+          "price_interval_min": "Interval without explicit end (15 or 60 minutes)",
+          "price_attribute": "Attribute containing price rows",
+          "price_time_key": "Price start-time column",
+          "import_price_key": "All-in import price column (EUR/kWh)",
+          "export_price_key": "Net export price column (optional)",
+          "connection_attribute": "Connection identity attribute (empty = state)",
+          "pending_entity": "Native pending request (read only)",
+          "legacy_master_entity": "Legacy controller master (must be off)",
+          "control_mode_entity": "Enphase charge-mode selector",
+          "charger_switch_entity": "Enphase start/stop switch",
+          "control_feedback_entity": "Enphase preferred/effective mode feedback",
+          "control_report_entity": "Enphase actual report timestamp",
+          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)"
+        },
+        "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor."
+      }
+    },
+    "abort": {
+      "already_configured": "This charger is already configured.",
+      "charger_identity_changed": "Configure another charger as a new instance.",
+      "finish_control_cleanup_first": "Finish the owned charge action and limit restoration before changing these bindings."
+    },
+    "error": {
+      "preview_source": "Select an existing source entity; AdaptiveCharge output cannot be its own input."
+    }
+  },
+  "config_subentries": {
+    "vehicle": {
+      "entry_type": "Vehicle",
+      "initiate_flow": {
+        "user": "Add vehicle",
+        "reconfigure": "Reconfigure vehicle"
+      },
+      "step": {
+        "user": {
+          "title": "Configure vehicle",
+          "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written.",
+          "data": {
+            "name": "Name",
+            "kind": "Vehicle calculation",
+            "soc_entity": "Battery state of charge (%)",
+            "battery_entity": "Stored battery energy, not capacity (kWh)",
+            "range_entity": "Tesla remaining range / VW full range reference (km)",
+            "limit_entity": "Observed vehicle limit (%)",
+            "cable_entity": "Vehicle-specific cable connected",
+            "home_entity": "Vehicle at home",
+            "soh_entity": "VW state of health (%)",
+            "measurement_time_entity": "Actual vehicle capture time, not reception time",
+            "limit_writer_entity": "Optional Tesla limit writer",
+            "target_entity": "Existing range target (read only)",
+            "departure_entity": "Existing departure (read only)",
+            "native_plan_entity": "Existing native plan for comparison",
+            "droop_pp": "SOC return threshold (percentage points)",
+            "margin": "Energy margin fraction (0.15 means 15%)",
+            "allow_limit_raise": "Allow temporary Tesla limit raise",
+            "maximum_soc": "Ceiling for temporary limit raises (%)",
+            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
+          }
+        },
+        "reconfigure": {
+          "title": "Configure vehicle",
+          "data": {
+            "name": "Name",
+            "kind": "Vehicle calculation",
+            "soc_entity": "Battery state of charge (%)",
+            "battery_entity": "Stored battery energy, not capacity (kWh)",
+            "range_entity": "Tesla remaining range / VW full range reference (km)",
+            "limit_entity": "Observed vehicle limit (%)",
+            "cable_entity": "Vehicle-specific cable connected",
+            "home_entity": "Vehicle at home",
+            "soh_entity": "VW state of health (%)",
+            "measurement_time_entity": "Actual vehicle capture time, not reception time",
+            "limit_writer_entity": "Optional Tesla limit writer",
+            "target_entity": "Existing range target (read only)",
+            "departure_entity": "Existing departure (read only)",
+            "native_plan_entity": "Existing native plan for comparison",
+            "droop_pp": "SOC return threshold (percentage points)",
+            "margin": "Energy margin fraction (0.15 means 15%)",
+            "allow_limit_raise": "Allow temporary Tesla limit raise",
+            "maximum_soc": "Ceiling for temporary limit raises (%)",
+            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
+          },
+          "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written."
+        }
+      },
+      "abort": {
+        "vehicle_already_configured": "This vehicle is already configured.",
+        "vehicle_identity_changed": "Add another vehicle as a new vehicle.",
+        "finish_control_cleanup_first": "Finish the owned charge action and limit restoration before changing these bindings."
+      },
+      "error": {
+        "preview_source": "Select an existing source entity; AdaptiveCharge output cannot be its own input."
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "preview": {
+        "name": "Charge control",
+        "state": {
+          "idle": "No active request",
+          "waiting_data": "Waiting for data",
+          "watching": "Target monitoring",
+          "charging": "Charging observed",
+          "paused": "Request preserved",
+          "scheduled": "Scheduled",
+          "would_boost": "Grid charging planned",
+          "verifying": "Waiting for vehicle confirmation",
+          "within_tolerance": "Within tolerance",
+          "blocked": "Control needs attention",
+          "fault": "Source data needs attention",
+          "cancelled": "Request ended",
+          "disconnected": "Disconnect observed",
+          "read_only": "Calculation only",
+          "control_enabled": "Control enabled",
+          "stopping": "Finishing owned actions"
+        }
+      },
+      "planning": {
+        "name": "Charge planning"
+      }
+    },
+    "binary_sensor": {
+      "control_enabled": {
+        "name": "Control active"
+      }
+    },
+    "number": {
+      "target_range_km": {
+        "name": "Range target"
+      },
+      "droop_pp": {
+        "name": "SOC return threshold"
+      }
+    },
+    "datetime": {
+      "departure": {
+        "name": "Departure"
+      }
+    },
+    "switch": {
+      "control_master": {
+        "name": "Control master"
+      }
+    },
+    "button": {
+      "start": {
+        "name": "Start"
+      },
+      "stop": {
+        "name": "Stop"
+      }
+    }
+  },
+  "services": {
+    "start": {
+      "name": "Start charging request",
+      "description": "With the master off this only simulates. With the master on, control the selected vehicle toward its target and departure."
+    },
+    "set_target": {
+      "name": "Set target",
+      "description": "Change own target/departure without resetting delivered energy. An inactive change does not start charging."
+    },
+    "stop": {
+      "name": "Stop charging request",
+      "description": "Revoke resume rights and end only owned grid charging. Green remains the baseline."
+    },
+    "follow_helpers": {
+      "name": "Follow bound helpers",
+      "description": "Remove local target/departure overrides and follow bound helpers without starting a new request."
+    }
+  }
+}

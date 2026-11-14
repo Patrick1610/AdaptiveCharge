@@ -5,3 +5,6 @@ __pycache__/
 *.csv
 # HA diagnostic log files
 *.log
+.venv/
+dist/
+.ai-review-broker/
