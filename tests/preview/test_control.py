@@ -189,7 +189,7 @@ async def test_restart_preserves_master_request_budget_and_does_not_require_new_
         assert restored.sessions[v].remaining_kwh==pytest.approx(stored["sessions"][v]["remaining_kwh"])
         assert restored.control.fault is None
         assert calls.count(("switch","on"))==(2 if physical_after_restart=="off" else 1)
-        assert calls.count(("mode","Manual"))==2
+        assert calls.count(("mode","Manual"))==(2 if physical_after_restart=="off" else 1)
     finally:
         if restored:
             await restored.async_shutdown()

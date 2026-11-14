@@ -28,6 +28,19 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
 - Automatisch hervatten na een HA-herstart is de standaard voor een bewaarde
   opdracht met toekomstig vertrek en dezelfde aansluiting. Een oude kabeltimestamp
   is geen fout: de stabiele aansluitidentiteit heeft geen leeftijdslimiet.
+  Als dezelfde eigen opdracht al fysiek in Manual doorlaadt, volstaan vers
+  onafhankelijk positief vermogen en overeenstemmende Manual-terugmeldingen
+  zonder openstaand modusverzoek. De regelaar schrijft dan geen nieuwe Manual
+  en eist geen nieuw cloudrapport om dat reeds lopende laden opnieuw te bevestigen.
+  Een vermogenswaarneming na het herstel moet het doorladen nog bevestigen;
+  dezelfde opnieuw ontvangen startwaarde kan die bewaking niet opheffen. Blijft
+  bevestiging uit, dan volgt de bestaande melding `physical_start_unconfirmed`,
+  zonder extra Start of het wissen van de opdracht. Een nog onbevestigde gewone
+  laadstart behoudt ook na een herstart zijn normale modusbevestiging.
+  Dit herstel wordt eenmalig in het HA-log vermeld. Onvolledige terugmelding
+  blijft de gewone herstelhandshake gebruiken; nieuwe laadcommando's houden hun
+  terugmeldingscontrole. Stop, aansluiting, andere bediening en energie-/tijdgrenzen
+  gaan altijd voor. Een bestaande fout wordt hiermee niet automatisch gewist.
 - Ontbrekende/vertraagde voertuiggegevens wissen geen opdracht. De bewaarde
   energieallocatie mag worden afgemaakt zonder een nieuwe VW-update. Ook een eerste
   schatting met geldige getallen kan begrensd worden gebruikt; doelbevestiging,

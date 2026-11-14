@@ -1,6 +1,7 @@
 """Load the shipped custom integration in an isolated real Home Assistant."""
 
 from pathlib import Path
+import json
 from unittest.mock import patch
 
 import pytest
@@ -43,6 +44,9 @@ async def test_full_setup_platforms_and_unload_are_read_only(tmp_path):
         registered=entity_registry.async_entries_for_config_entry(entity_registry.async_get(hass),e.entry_id)
         assert len(registered)==10
         assert sum(item.config_subentry_id is not None for item in registered)==7
+        devices=device_registry.async_entries_for_config_entry(device_registry.async_get(hass),e.entry_id)
+        manifest=json.loads((Path(__file__).resolve().parents[2]/"custom_components"/DOMAIN/"manifest.json").read_text())
+        assert devices and all(device.sw_version==manifest["version"] for device in devices)
         own_states=[s for s in hass.states.async_all() if "preview" in s.entity_id]
         assert own_states
         assert hass.services.has_service(DOMAIN,"start")

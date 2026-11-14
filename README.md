@@ -25,7 +25,7 @@ Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTR
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.1.0b7`. Met beta's ingeschakeld biedt HACS ook
+downloaden en kies expliciet `v5.1.0b8`. Met beta's ingeschakeld biedt HACS ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie
@@ -50,9 +50,11 @@ niet betrouwbaar op. Controleer daarom vóór een eventuele herstart:
 3. Controleer na HACS-download alle previewbestandhashes met het bij de release
    gevoegde JSON-bewijs, zoals uitgelegd in [PREVIEW.md](docs/PREVIEW.md#installeren-naast-de-bestaande-regeling).
 
-HACS kan bij vervanging om een herstart vragen. Plan die wanneer de huidige
-laadopdracht mag eindigen: de bestaande native herstartveiligheid kan een
-actieve opdracht annuleren. Een herstart is geen onderdeel van de previewbesturing.
+HACS kan na vervanging om een HA-herstart vragen. Een eigen bewaarde opdracht met
+toekomstig vertrek en dezelfde aansluiting hervat automatisch, met behoud van
+energieboekhouding. Reeds fysiek doorlopend Manual-laden vereist geen extra
+moduswrite of nieuw cloudrapport. Dit geldt voor deze integratie; de oude native
+regeling heeft haar eigen herstartgedrag en moet bij overname uit blijven.
 
 Zie [de volledige besturing](docs/CONTROL.md) en de
 [historische 5.0-previewberekeningen](docs/PREVIEW.md). Softwaretests zijn geen fysiek functioneel akkoord
@@ -66,8 +68,8 @@ python3.14 -m venv .venv
 .venv/bin/python -m pytest tests -q
 ```
 
-`custom_components/` bevat uitsluitend de nieuwe preview, conform de
+`custom_components/` bevat uitsluitend de nieuwe integratie, conform de
 HACS-repository-indeling. De ongewijzigde v4-bron staat als archief onder
 `legacy/v4/`, met de oude uitleg in [LEGACY_V4.md](docs/LEGACY_V4.md).
 Die archiefcode wordt niet door HACS geïnstalleerd. Historische tests blijven
-meedraaien naast tests die de echte preview en HA-platformsetup uitvoeren.
+meedraaien naast tests die de huidige integratie en HA-platformsetup uitvoeren.

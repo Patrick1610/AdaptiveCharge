@@ -7,6 +7,7 @@ Physical zero power and anonymous OFF are deliberately not cancellation inputs.
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,7 @@ START_SETTLE_SECONDS = 120
 BINDING_KEYS = ("control_mode_entity", "charger_switch_entity", "control_feedback_entity", "control_report_entity", "meter_entity", "power_entity", "plug_entity", "connection_entity", "connection_attribute", "legacy_master_entity", "session_entity", "active_entity", "pending_entity", "generation_entity")
 VEHICLE_BINDING_KEYS = ("kind", "cable_entity", "vehicle_charge_switch_entity", "limit_writer_entity")
 TRANSIENT_INTERLOCKS = {"waiting_legacy_request_state", "waiting_legacy_controller_state", "control_bindings_incomplete", "waiting_actuator_source"}
+_LOGGER = logging.getLogger(__name__)
 
 
 class DispatchRefused(ValueError):
@@ -94,7 +96,7 @@ class ChargerControl:
             self.fault = "invalid_stored_control_authority"
             return
         pending, limit = data.get("pending"), data.get("limit")
-        if pending is not None and (not isinstance(pending, dict) or pending.get("kind") not in {"manual", "stop", "green"} or not number(pending.get("sent")) or pending["sent"] <= 0 or "mode_ack_at" in pending and not number(pending["mode_ack_at"]) or type(pending.get("attempts", 1)) is not int or not 1 <= pending.get("attempts", 1) <= 3 or not number(pending.get("last_attempt", pending["sent"]))):
+        if pending is not None and (not isinstance(pending, dict) or pending.get("kind") not in {"manual", "stop", "green"} or not number(pending.get("sent")) or pending["sent"] <= 0 or "mode_ack_at" in pending and not number(pending["mode_ack_at"]) or type(pending.get("attempts", 1)) is not int or not 1 <= pending.get("attempts", 1) <= 3 or not number(pending.get("last_attempt", pending["sent"])) or type(pending.get("recovery", False)) is not bool or pending.get("recovery") and pending["kind"] != "manual"):
             self.fault = "invalid_stored_control_operation"
             return
         dormant = data.get("dormant_limits", [])
@@ -365,6 +367,20 @@ class ChargerControl:
         recent = report_time is not None and -60 <= dt_util.utcnow().timestamp() - report_time <= 600
         return bool(selected and selected.state == option and feedback and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (feedback.attributes.get("effective_mode") == expected or stopped) and recent and (sent is None or report_time >= sent - 2 or stopped))
 
+    def _running_manual_readback(self, now: float) -> bool:
+        """Observe continuing Manual; this is not acknowledgment of a new write."""
+        cfg = self.grant["binding"]
+        selected = state(self.hass, cfg.get("control_mode_entity"))
+        feedback = state(self.hass, cfg.get("control_feedback_entity"))
+        power = power_kw(self.hass, cfg.get("power_entity"), now)
+        return bool(power["fresh"] and power["positive"]
+                    and (self.pending is None or power["received_at"] > self.pending["sent"])
+                    and selected and selected.state == "Manual"
+                    and feedback and feedback.state not in {"unknown", "unavailable"}
+                    and feedback.attributes.get("requested_mode") is None
+                    and feedback.attributes.get("preferred_mode") == "MANUAL_CHARGING"
+                    and feedback.attributes.get("effective_mode") == "MANUAL_CHARGING")
+
     def continuing_manual(self, request: Any) -> bool:
         """Preserve the start of our current block, including its start handshake."""
         owned = bool(request and self.coordinator.sessions.get(request.vehicle_id) is request
@@ -436,8 +452,10 @@ class ChargerControl:
         async with asyncio.timeout(SERVICE_TIMEOUT):
             await self.hass.services.async_call(domain, service, {"entity_id": entity_id, **values}, blocking=True, context=context)
 
-    async def _begin(self, kind: str, now: float) -> None:
+    async def _begin(self, kind: str, now: float, *, recovery: bool = False) -> None:
         self.pending = {"kind": kind, "sent": now, "attempts": 1, "last_attempt": now}
+        if recovery and kind == "manual":
+            self.pending["recovery"] = True
         await self.coordinator._save(immediate=True)
 
     async def _green(self, now: float) -> None:
@@ -507,7 +525,7 @@ class ChargerControl:
             since = self.grant.get("start_watch_since") if self.grant else None
             if since is not None:
                 power = power_kw(self.hass, cfg.get("power_entity"), now)
-                if power["fresh"] and power["positive"]:
+                if power["fresh"] and power["positive"] and power["received_at"] > since:
                     self.grant["start_watch_since"] = None
                     await self.coordinator._save(immediate=True)
                 elif now - since > FEEDBACK_TIMEOUT:
@@ -833,6 +851,22 @@ class ChargerControl:
         was_restored = self._restored
         if not restored_elapsed:
             self._restored = False
+        recovery_boost = bool(self.enabled and not self._stop_requested and not restored_elapsed and not self.fault and request and not request.terminal and row.get("eligible_for_boost") and row.get("would_control_mode") == "Manual")
+        recovery = was_restored and self.pending is None or bool(self.pending and self.pending.get("recovery"))
+        if (recovery_boost and recovery and self.owned_manual and not self._cleanup_required
+                and not (self.limit and self.limit.get("restore_pending"))
+                and (self.pending is None or self.pending.get("kind") == "manual")
+                and self._running_manual_readback(now)):
+            # The same owned request is already physically charging. A cloud
+            # report predating HA startup must not cause a redundant Manual
+            # write followed by a false acknowledgment timeout.
+            self.pending = None
+            self.grant["start_watch_since"] = now
+            if self.grant.get("manual_since") is None:
+                self.grant["manual_since"] = now
+            was_restored = False
+            await self.coordinator._save(immediate=True)
+            _LOGGER.info("Restored owned Manual without a new actuator write; awaiting next independent power observation (generation %s)", self.grant["generation"])
         feedback_anchor = self.pending.get("mode_ack_at", self.pending.get("sent")) if self.pending else None
         feedback_window = FEEDBACK_TIMEOUT + (START_SETTLE_SECONDS if self.pending and "mode_ack_at" in self.pending else 0)
         if self.pending and not self._interlock_fault and (finite(feedback_anchor) is None or now - feedback_anchor > feedback_window):
@@ -877,7 +911,7 @@ class ChargerControl:
             if boost and was_restored and self.owned_manual and self.pending is None:
                 # Exactly one explicit recovery handshake after a real reload;
                 # ordinary zero-power/anonymous OFF never enters this path.
-                await self._begin("manual", now)
+                await self._begin("manual", now, recovery=True)
                 await self._call("select", "select_option", self.config["control_mode_entity"], option="Manual")
                 self.status = "restoring_manual_feedback"
             elif boost and (self.pending is None or self.pending.get("kind") == "manual"):

@@ -262,7 +262,7 @@ async def test_fallback_restore_validates_hint_and_preserves_active_budget(tmp_p
         await tick(restored,3)
         assert restored.control.unpriced_started(restored.sessions[v])
         assert restored.sessions[v].remaining_kwh==pytest.approx(state['sessions'][v]['remaining_kwh'])
-        assert restored.control.fault is None and calls.count(('mode','Manual'))==2
+        assert restored.control.fault is None and calls.count(('mode','Manual'))==1
         bad=deepcopy(state['control'])
         bad['grant']['unpriced_departure']={'bad':'hint'}
         restored.control.restore(bad)
