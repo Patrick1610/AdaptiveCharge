@@ -60,6 +60,19 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
   De vroegere instelling `require_prices_for_control` wordt genegeerd en wordt
   niet meer aangeboden; een opgeslagen oude sleutel kan tot herconfiguratie blijven
   staan. De bestaande energie-, voertuig- en eigendomsgrenzen blijven gelden.
+- Een reeds begonnen prijsblok blijft vanaf nu doorlopen zolang het huidige
+  kwartier nog geselecteerd is. Metercredits schuiven zijn start niet opnieuw naar
+  voren. Het resterende korte stuk van dat lopende blok is geen nieuwe losse start.
+  Een niet meer geselecteerd kwartier wordt wel overgeslagen; Stop, ontkoppeling,
+  doel-/energiegrens en een buitenlandse opdracht gaan ongewijzigd voor.
+  Een pauze korter dan de ingestelde minimumblokduur naar het aangrenzende
+  geselecteerde kwartier wordt tijdens laden gesloten. Dezelfde energie wordt
+  uit de duurste toekomstige geselecteerde kwartieren gehaald; het totaalbudget
+  stijgt niet. Dat kan iets meer kosten dan een theoretische planning met een
+  pauze van enkele seconden. Valt de prijsfeed tijdens een prijsblok uit, dan
+  herplant dezelfde opdracht naar één blok dat bij vertrek eindigt, met Green in
+  de wachttijd. Een reeds begonnen fallbackblok blijft wel aaneengesloten; ook
+  een materiële vertrekwijziging wordt opnieuw ingepland zonder nieuw budget.
 - Een slapende Tesla houdt zijn voertuiglimiet-herstelopdracht bewaard. Die
   blokkeert geen Start van de ID.3 en blijft aan de oorspronkelijke Tesla-writer
   gekoppeld. Een vervangen writer of onbevestigde terugmelding na een herstelwrite

@@ -58,7 +58,40 @@ def _windows(slots: list[_Slot], power: float) -> list[Window]:
     return windows
 
 
-def _practical(slots: list[_Slot], power: float, minimum: float, band: float) -> tuple[list[Window], float, list[str]]:
+def _join_running_head(slots: list[_Slot], minimum: float) -> None:
+    """Bridge a short pause into the next quarter using the same allocation."""
+    if len(slots) < 2:
+        return
+    head = slots[0]
+    future = [(s,s.chosen) for s in slots[1:] if s.chosen]
+    if not future:
+        return
+    following = future[0][0]
+    gap_start = head.start+head.chosen
+    gap_end = following.start if following.chosen_start is None else following.chosen_start
+    if not 0 < gap_end-gap_start < minimum:
+        return
+    parts = [(s,max(s.start,gap_start),min(s.end,gap_end)) for s in slots if s.start < gap_end and s.end > gap_start]
+    extra = sum(s.incremental_power*(end-start)/3600 for s,start,end in parts)
+    available = sum(s.incremental_power*chosen/3600 for s,chosen in future)
+    if extra > available + EPSILON_KWH:
+        return  # A bridge must not exceed the remaining energy allowance.
+    for slot,start,end in parts:
+        slot.chosen += end-start
+        slot.chosen_start = slot.start
+    for slot,original in sorted(future,key=lambda item:(item[0].buy,item[0].start),reverse=True):
+        if slot.incremental_power <= 0:
+            continue
+        debit = min(original,extra*3600/slot.incremental_power)
+        slot.chosen -= debit
+        extra = max(0,extra-debit*slot.incremental_power/3600)
+        if slot.chosen <= 0:
+            slot.chosen_start = None
+        if extra <= 1e-12:
+            break
+
+
+def _practical(slots: list[_Slot], power: float, minimum: float, band: float, *, continuing_at: float | None = None) -> tuple[list[Window], float, list[str]]:
     """Attach isolated fragments by marginal cost, then apply agreed exceptions."""
     warnings: list[str] = []
     omitted = 0.0
@@ -68,6 +101,8 @@ def _practical(slots: list[_Slot], power: float, minimum: float, band: float) ->
         blocks = _windows(slots, power)
         moved = False
         for block in blocks:
+            if continuing_at is not None and abs(block.start-continuing_at) < 0.01:
+                continue  # This is the remainder of a running block, not a new short start.
             if block.end - block.start >= minimum - 0.01:
                 continue
             origins = [s for s in slots if s.chosen > 0 and block.start <= (s.start if s.chosen_start is None else s.chosen_start) < block.end]
@@ -109,7 +144,8 @@ def _practical(slots: list[_Slot], power: float, minimum: float, band: float) ->
             break
     result = []
     for block in _windows(slots, power):
-        if block.end - block.start < minimum - 0.01:
+        continuing = continuing_at is not None and abs(block.start-continuing_at) < 0.01
+        if not continuing and block.end - block.start < minimum - 0.01:
             if omitted + block.additional_kwh <= band + EPSILON_KWH:
                 omitted += block.additional_kwh
                 warnings.append("small_remainder_within_tolerance")
@@ -144,7 +180,7 @@ def deadline_fallback(now: float, departure: float | None, needed: float, power:
                 (Window(start, end, planned, None, planned),), warnings=tuple(warnings), shortfall_kwh=max(0, needed-planned))
 
 
-def plan(now: float, departure: float | None, needed: float, band: float, rows: list[Tariff], *, power: float = DEFAULT_POWER_KW, reserve_min: float = DEFAULT_RESERVE_MIN, minimum_min: float = DEFAULT_MIN_BLOCK_MIN, fallback_started: bool = False) -> Plan:
+def plan(now: float, departure: float | None, needed: float, band: float, rows: list[Tariff], *, power: float = DEFAULT_POWER_KW, reserve_min: float = DEFAULT_RESERVE_MIN, minimum_min: float = DEFAULT_MIN_BLOCK_MIN, fallback_started: bool = False, continue_current: bool = False) -> Plan:
     """Plan only the additional energy above autonomous Green, not solar control."""
     if not all(isfinite(v) for v in (now, needed, band, power, reserve_min, minimum_min)) or power <= 0 or needed < 0 or band < 0 or not 0 <= reserve_min <= 60 or not 1 <= minimum_min <= 30:
         raise ValueError("Invalid planning inputs")
@@ -199,9 +235,14 @@ def plan(now: float, departure: float | None, needed: float, band: float, rows: 
         if left <= EPSILON_KWH:
             break
     for i, slot in enumerate(slots[:-1]):
-        if 0 < slot.chosen < slot.end - slot.start and slots[i + 1].chosen and (i == 0 or not slots[i - 1].chosen):
+        # End-align future partial quarters to join their neighbor. A selected
+        # current quarter that we already execute stays at now: faster meter
+        # progress must not move its start forward and restart the EVSE handshake.
+        if 0 < slot.chosen < slot.end - slot.start and slots[i + 1].chosen and (i == 0 or not slots[i - 1].chosen) and not (i == 0 and continue_current):
             slot.chosen_start = slot.end - slot.chosen
-    windows, omitted, warnings = _practical(slots, power, minimum, band)
+    if continue_current:
+        _join_running_head(slots,minimum)
+    windows, omitted, warnings = _practical(slots, power, minimum, band, continuing_at=now if continue_current else None)
     if left > EPSILON_KWH:
         # Defensive accounting for accumulated sub-centisecond coverage noise;
         # continuous non-urgent coverage otherwise guarantees enough capacity.

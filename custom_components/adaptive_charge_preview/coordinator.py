@@ -307,7 +307,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if request.terminal and request.source_token:
                         self.suppressed_token = request.source_token
                         active = None
-                prediction = plan(now, departure, estimated, need.band_kwh if need.source_fresh else 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)), fallback_started=self.control.unpriced_started(request))
+                prediction = plan(now, departure, estimated, need.band_kwh if need.source_fresh else 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)), fallback_started=self.control.unpriced_started(request), continue_current=self.control.continuing_manual(request))
                 prediction_data = prediction.as_dict()
                 if "export_price_unknown_cost_estimate_incomplete" in price_warnings and prediction.expected_solar_kwh > 0:
                     prediction_data["cost"] = None
@@ -334,7 +334,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if planning_power is not None and request and self.control.owns(vehicle_id) and request.observe_connection(now, snapshot, trust_attachment=True) and meter is not None and request.meter_id == shared.get("meter_entity"):
                     remaining = request.consume_meter(meter)
                     if remaining is not None:
-                        prediction = plan(now, request.departure, remaining, 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)), fallback_started=self.control.unpriced_started(request))
+                        prediction = plan(now, request.departure, remaining, 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)), fallback_started=self.control.unpriced_started(request), continue_current=self.control.continuing_manual(request))
                         row.update(phase=request.phase, reason=request.reason, target_km=request.target_km, departure=request.departure, plan=prediction.as_dict(), eligible_for_boost=request.phase == "scheduled", would_control_mode=prediction.mode if request.phase == "scheduled" else "Green", session=request.as_dict())
             result["vehicles"][vehicle_id] = row
         result["active_vehicle"] = next((s.vehicle_id for s in self.sessions.values() if not s.terminal), None)

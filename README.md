@@ -25,7 +25,7 @@ Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTR
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.1.0b6`. Met beta's ingeschakeld biedt HACS ook
+downloaden en kies expliciet `v5.1.0b7`. Met beta's ingeschakeld biedt HACS ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie

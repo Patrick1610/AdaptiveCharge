@@ -365,6 +365,18 @@ class ChargerControl:
         recent = report_time is not None and -60 <= dt_util.utcnow().timestamp() - report_time <= 600
         return bool(selected and selected.state == option and feedback and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (feedback.attributes.get("effective_mode") == expected or stopped) and recent and (sent is None or report_time >= sent - 2 or stopped))
 
+    def continuing_manual(self, request: Any) -> bool:
+        """Preserve the start of our current block, including its start handshake."""
+        owned = bool(request and self.coordinator.sessions.get(request.vehicle_id) is request
+                    and self.enabled and self.owned_manual and self.owns(request.vehicle_id)
+                    and self._same_attachment() and not self._stop_requested and not self._cleanup_required
+                    and not self.fault and not self._external_mode and not self.foreign_reason()
+                    and (self.pending is None or self.pending.get("kind") == "manual"))
+        if not owned:
+            return False
+        reason = self.interlock()
+        return not reason or reason in TRANSIENT_INTERLOCKS
+
     def unpriced_started(self, request: Any) -> bool:
         """Keep one started fallback block contiguous, bound to its departure."""
         if not request or not self.owns(request.vehicle_id) or not self.grant or "unpriced_departure" not in self.grant:
