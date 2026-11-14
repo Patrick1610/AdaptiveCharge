@@ -35,8 +35,7 @@
           "charger_switch_entity": "Enphase start/stop switch",
           "control_feedback_entity": "Enphase preferred/effective mode feedback",
           "control_report_entity": "Enphase actual report timestamp",
-          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
-          "require_prices_for_control": "Require valid current prices before grid charging"
+          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)"
         }
       },
       "reconfigure": {
@@ -71,19 +70,18 @@
           "charger_switch_entity": "Enphase start/stop switch",
           "control_feedback_entity": "Enphase preferred/effective mode feedback",
           "control_report_entity": "Enphase actual report timestamp",
-          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
-          "require_prices_for_control": "Require valid current prices before grid charging"
+          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)"
         },
         "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor."
       }
     },
     "abort": {
-      "already_configured": "This charger already has a preview.",
-      "charger_identity_changed": "Add another charger as a new preview.",
+      "already_configured": "This charger is already configured.",
+      "charger_identity_changed": "Configure another charger as a new instance.",
       "finish_control_cleanup_first": "Finish the owned charge action and limit restoration before changing these bindings."
     },
     "error": {
-      "preview_source": "Select an existing source entity; preview output cannot be its own input."
+      "preview_source": "Select an existing source entity; AdaptiveCharge output cannot be its own input."
     }
   },
   "config_subentries": {
@@ -153,14 +151,14 @@
         "finish_control_cleanup_first": "Finish the owned charge action and limit restoration before changing these bindings."
       },
       "error": {
-        "preview_source": "Select an existing source entity; preview output cannot be its own input."
+        "preview_source": "Select an existing source entity; AdaptiveCharge output cannot be its own input."
       }
     }
   },
   "entity": {
     "sensor": {
       "preview": {
-        "name": "Preview",
+        "name": "Charge control",
         "state": {
           "idle": "No active request",
           "waiting_data": "Waiting for data",
@@ -179,6 +177,9 @@
           "control_enabled": "Control enabled",
           "stopping": "Finishing owned actions"
         }
+      },
+      "planning": {
+        "name": "Charge planning"
       }
     },
     "binary_sensor": {

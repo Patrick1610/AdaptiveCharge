@@ -71,28 +71,38 @@ def _practical(slots: list[_Slot], power: float, minimum: float, band: float) ->
             if block.end - block.start >= minimum - 0.01:
                 continue
             origins = [s for s in slots if s.chosen > 0 and block.start <= (s.start if s.chosen_start is None else s.chosen_start) < block.end]
-            candidates: list[tuple[float, float, _Slot, bool]] = []
+            candidates: list[tuple[float, float, _Slot, float, float]] = []
             for slot in slots:
-                if slot.chosen or slot.incremental_power <= 0:
+                if slot in origins or slot.incremental_power <= 0:
                     continue
+                selected_start = slot.start if slot.chosen_start is None else slot.chosen_start
+                free_parts = [(slot.start, selected_start), (selected_start + slot.chosen, slot.end)] if slot.chosen else [(slot.start, slot.end)]
                 for other in blocks:
                     if other == block:
                         continue
-                    if abs(slot.end - other.start) < 0.01:
-                        candidates.append((slot.buy, slot.start, slot, True))
-                    elif abs(slot.start - other.end) < 0.01:
-                        candidates.append((slot.buy, slot.start, slot, False))
+                    duration = block.additional_kwh * 3600 / slot.incremental_power
+                    for start, end in free_parts:
+                        if duration > end - start + 0.000001:
+                            continue
+                        if abs(end - other.start) < 0.01:
+                            placed = end - duration
+                        elif abs(start - other.end) < 0.01:
+                            placed = start
+                        else:
+                            continue
+                        if slot.chosen and not (abs(placed + duration - selected_start) < 0.01 or abs(placed - selected_start - slot.chosen) < 0.01):
+                            continue  # One slot cannot represent two separated occupied spans.
+                        candidates.append((slot.buy, start, slot, placed, duration))
             # Only a candidate that can absorb the entire fragment removes a
             # physical start; partial moves would create new fragments instead.
-            candidates = [c for c in candidates if (c[2].end - c[2].start) * c[2].incremental_power / 3600 + EPSILON_KWH >= block.additional_kwh]
             if candidates:
-                _, _, dest, before = min(candidates, key=lambda c: (c[0], c[1]))
-                duration = block.additional_kwh * 3600 / dest.incremental_power
+                _, _, dest, start, duration = min(candidates, key=lambda c: (c[0], c[1]))
                 for origin in origins:
                     origin.chosen = 0
                     origin.chosen_start = None
-                dest.chosen_start = dest.end - duration if before else None
-                dest.chosen = duration
+                old_start = dest.start if dest.chosen_start is None else dest.chosen_start
+                dest.chosen_start = min(old_start, start) if dest.chosen else start
+                dest.chosen += duration
                 moved = True
                 break
         if not moved:
@@ -109,7 +119,32 @@ def _practical(slots: list[_Slot], power: float, minimum: float, band: float) ->
     return result, omitted, warnings
 
 
-def plan(now: float, departure: float | None, needed: float, band: float, rows: list[Tariff], *, power: float = DEFAULT_POWER_KW, reserve_min: float = DEFAULT_RESERVE_MIN, minimum_min: float = DEFAULT_MIN_BLOCK_MIN) -> Plan:
+def deadline_fallback(now: float, departure: float | None, needed: float, power: float, warning: str = "prices_missing", *, started: bool = False, minimum_min: float = DEFAULT_MIN_BLOCK_MIN) -> Plan:
+    """One unpriced block ending at departure; tariff loss never cancels demand.
+
+    The ordinary price-plan reserve is deliberately not applied: three hours
+    needed for 06:15 means 03:15. Meter credits shrink the same allowance, and
+    source updates rebuild the economic plan without a new command.
+    """
+    if not all(isfinite(v) for v in (now, needed, power)) or power <= 0 or needed < 0 or departure is not None and not isfinite(departure):
+        raise ValueError("Invalid fallback planning inputs")
+    warnings = [warning, "unpriced_deadline_fallback"]
+    if needed <= EPSILON_KWH:
+        return Plan("Green", "energy_estimated_sufficient", needed, warnings=tuple(warnings))
+    if departure is None or departure <= now:
+        return Plan("Manual", "unpriced_direct_request", needed, warnings=tuple(warnings))
+    start = now if started else max(now, departure - needed / power * 3600)
+    end = min(departure, start + needed / power * 3600)
+    planned = power * (end - start) / 3600
+    if end - start < minimum_min * 60:
+        warnings.append("short_block_required_for_significant_deficit")
+    if planned + EPSILON_KWH < needed:
+        warnings.append("departure_energy_shortfall")
+    return Plan("Manual" if start <= now else "Green", "unpriced_deadline_fallback", needed,
+                (Window(start, end, planned, None, planned),), warnings=tuple(warnings), shortfall_kwh=max(0, needed-planned))
+
+
+def plan(now: float, departure: float | None, needed: float, band: float, rows: list[Tariff], *, power: float = DEFAULT_POWER_KW, reserve_min: float = DEFAULT_RESERVE_MIN, minimum_min: float = DEFAULT_MIN_BLOCK_MIN, fallback_started: bool = False) -> Plan:
     """Plan only the additional energy above autonomous Green, not solar control."""
     if not all(isfinite(v) for v in (now, needed, band, power, reserve_min, minimum_min)) or power <= 0 or needed < 0 or band < 0 or not 0 <= reserve_min <= 60 or not 1 <= minimum_min <= 30:
         raise ValueError("Invalid planning inputs")
@@ -124,30 +159,38 @@ def plan(now: float, departure: float | None, needed: float, band: float, rows: 
         return Plan("Manual", "direct_request", needed, warnings=("short_block_required_for_significant_deficit",) if needed / power * 3600 < minimum else ())
     if departure - now > MAX_HORIZON_SECONDS:
         return Plan("Green", "departure_outside_supported_horizon", needed, warnings=("departure_outside_48h",))
+    cutoff = departure - reserve_min * 60
+    coverage_end = max(cutoff, min(departure, now + 1))
+    def fallback(warning: str) -> Plan:
+        return deadline_fallback(now, departure, needed, power, warning, started=fallback_started, minimum_min=minimum_min)
+    try:
+        slots = _slots(rows, now, coverage_end, power)
+    except ValueError:
+        return fallback("invalid_or_overlapping_prices")
+    if not slots:
+        return fallback("prices_missing")
+    if abs(slots[0].start - now) > 0.01 or any(abs(a.end - b.start) > 0.01 for a, b in zip(slots, slots[1:])):
+        return fallback("price_coverage_gap")
+    if slots[-1].end < coverage_end - 0.01:
+        return fallback("price_coverage_partial")
     last_start = departure - reserve_min * 60 - needed / power * 3600
     if now >= last_start:
-        return Plan("Manual", "departure_urgency", needed)
-    cutoff = departure - reserve_min * 60
-    try:
-        slots = _slots(rows, now, cutoff, power)
-    except ValueError:
-        return Plan("Green", "invalid_prices_wait_until_latest_start", needed, warnings=("invalid_or_overlapping_prices",))
-    if not slots:
-        return Plan("Green", "prices_missing_wait_until_latest_start", needed, warnings=("prices_missing",))
-    if abs(slots[0].start - now) > 0.01 or any(abs(a.end - b.start) > 0.01 for a, b in zip(slots, slots[1:])):
-        return Plan("Green", "incomplete_prices_wait_until_latest_start", needed, warnings=("price_coverage_gap",))
-    partial = slots[-1].end < cutoff - 0.01
-    coverage_warnings = ["price_coverage_partial"] if partial else []
+        # The reserve may be consumed to meet the goal; known prices remain
+        # known even if there is insufficient time. This is not a feed outage.
+        end = min(departure, now + needed / power * 3600)
+        urgent = _slots(rows, now, end, power)
+        if not urgent or abs(urgent[0].start-now)>0.01 or abs(urgent[-1].end-end)>0.01 or any(abs(a.end-b.start)>0.01 for a,b in zip(urgent,urgent[1:])):
+            return fallback("price_coverage_partial")
+        for slot in urgent:
+            slot.chosen = slot.end - slot.start
+        windows = _windows(urgent, power)
+        solar = sum(s.solar * s.chosen / 3600 for s in urgent)
+        green_cost = sum(s.solar * s.chosen / 3600 * s.sell for s in urgent)
+        shortfall = max(0, needed - sum(w.kwh for w in windows))
+        warnings = ("departure_energy_shortfall",) if shortfall > EPSILON_KWH else ()
+        return Plan("Manual", "departure_urgency", needed, tuple(windows), solar, cost=green_cost+sum(w.cost for w in windows), warnings=warnings, green_cost=green_cost, shortfall_kwh=shortfall)
     solar = sum(s.solar * (s.end - s.start) / 3600 for s in slots)
-    incremental = max(0.0, needed - solar)
-    deferrable = max(0.0, cutoff - slots[-1].end) * power / 3600 if partial else 0.0
-    deferred = min(incremental, deferrable)
-    deferring = deferred > EPSILON_KWH
-    if deferring:
-        coverage_warnings.append("boost_deferred_to_unknown_prices")
-    else:
-        deferred = 0.0
-    left = incremental - deferred
+    left = max(0.0, needed - solar)
     for slot in sorted(slots, key=lambda s: (s.buy, s.start)):
         if slot.incremental_power <= 0:
             continue
@@ -158,10 +201,11 @@ def plan(now: float, departure: float | None, needed: float, band: float, rows: 
     for i, slot in enumerate(slots[:-1]):
         if 0 < slot.chosen < slot.end - slot.start and slots[i + 1].chosen and (i == 0 or not slots[i - 1].chosen):
             slot.chosen_start = slot.end - slot.chosen
-    if left > EPSILON_KWH:
-        return Plan("Green", "incomplete_prices_wait_until_latest_start", needed, expected_solar_kwh=min(needed, solar), warnings=tuple([*coverage_warnings, "insufficient_known_price_capacity"]), deferred_kwh=deferred)
     windows, omitted, warnings = _practical(slots, power, minimum, band)
-    warnings = [*coverage_warnings, *warnings]
+    if left > EPSILON_KWH:
+        # Defensive accounting for accumulated sub-centisecond coverage noise;
+        # continuous non-urgent coverage otherwise guarantees enough capacity.
+        warnings.append("departure_energy_shortfall")
     # Full required-energy cost: Green's foregone export plus additional import.
     solar_cost = sum(s.solar * (s.end - s.start) / 3600 * s.sell for s in slots)
     extra_cost = sum(s.buy * s.incremental_power * s.chosen / 3600 for s in slots if any(w.start <= (s.start if s.chosen_start is None else s.chosen_start) < w.end for w in windows))
@@ -170,5 +214,5 @@ def plan(now: float, departure: float | None, needed: float, band: float, rows: 
     mode = "Manual" if any(w.start <= now < w.end for w in windows) else "Green"
     reason = "selected_boost_window" if mode == "Manual" else "green_between_boost_windows"
     if not windows:
-        reason = "unknown_future_prices_defer_boost" if deferring else "small_remainder_within_tolerance" if omitted else "expected_green_sufficient"
-    return Plan(mode, reason, needed, tuple(windows), min(needed, solar), omitted, None if deferring else solar_cost + extra_cost, tuple(dict.fromkeys(warnings)), green_cost=None if deferring else solar_cost, deferred_kwh=deferred)
+        reason = "small_remainder_within_tolerance" if omitted else "expected_green_sufficient"
+    return Plan(mode, reason, needed, tuple(windows), min(needed, solar), omitted, solar_cost + extra_cost, tuple(dict.fromkeys(warnings)), green_cost=solar_cost, shortfall_kwh=left)

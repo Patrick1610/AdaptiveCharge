@@ -1,7 +1,7 @@
 """Shared contracts. Charger control is explicitly opt-in and defaults off."""
 
 DOMAIN = "adaptive_charge_preview"
-VERSION = "5.1.0b5"
+VERSION = "5.1.0b6"
 CONTROL_ENABLED = False
 STORAGE_VERSION = 1
 DEFAULT_POWER_KW = 11.0

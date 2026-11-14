@@ -35,8 +35,7 @@
           "charger_switch_entity": "Enphase start-/stopschakelaar",
           "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
           "control_report_entity": "Enphase echte rapporttijd",
-          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
-          "require_prices_for_control": "Geen netladen zonder bruikbare actuele prijzen"
+          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)"
         }
       },
       "reconfigure": {
@@ -71,19 +70,18 @@
           "charger_switch_entity": "Enphase start-/stopschakelaar",
           "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
           "control_report_entity": "Enphase echte rapporttijd",
-          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
-          "require_prices_for_control": "Geen netladen zonder bruikbare actuele prijzen"
+          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)"
         },
         "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet."
       }
     },
     "abort": {
-      "already_configured": "Deze laadpaal heeft al een preview.",
-      "charger_identity_changed": "Maak voor een andere laadpaal een nieuwe preview.",
+      "already_configured": "Deze laadpaal is al ingesteld.",
+      "charger_identity_changed": "Stel een andere laadpaal als nieuwe instantie in.",
       "finish_control_cleanup_first": "Rond eerst de eigen laadactie en limietherstel af voordat je deze bediening wijzigt."
     },
     "error": {
-      "preview_source": "Kies een bestaande bronentiteit; preview-uitvoer kan geen eigen invoer zijn."
+      "preview_source": "Kies een bestaande bronentiteit; AdaptiveCharge-uitvoer kan geen eigen invoer zijn."
     }
   },
   "config_subentries": {
@@ -153,14 +151,14 @@
         "finish_control_cleanup_first": "Rond eerst de eigen laadactie en limietherstel af voordat je deze bediening wijzigt."
       },
       "error": {
-        "preview_source": "Kies een bestaande bronentiteit; preview-uitvoer kan geen eigen invoer zijn."
+        "preview_source": "Kies een bestaande bronentiteit; AdaptiveCharge-uitvoer kan geen eigen invoer zijn."
       }
     }
   },
   "entity": {
     "sensor": {
       "preview": {
-        "name": "Preview",
+        "name": "Laadregeling",
         "state": {
           "idle": "Geen actieve opdracht",
           "waiting_data": "Wacht op gegevens",
@@ -179,6 +177,9 @@
           "control_enabled": "Besturing ingeschakeld",
           "stopping": "Eigen acties afronden"
         }
+      },
+      "planning": {
+        "name": "Laadplanning"
       }
     },
     "binary_sensor": {

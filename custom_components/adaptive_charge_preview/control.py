@@ -18,6 +18,7 @@ from homeassistant.helpers import entity_registry as er, device_registry as dr, 
 from homeassistant.util import dt as dt_util
 
 from .core.models import finite, timestamp
+from .core.planner import deadline_fallback
 from .const import DOMAIN
 from .sources import connection_identity, power_kw, price_feed_live, state, vehicle_snapshot
 
@@ -108,6 +109,12 @@ class ChargerControl:
             return
         self.enabled = data.get("enabled") is True
         self.grant = deepcopy(grant)
+        if self.grant and self.grant.get("unpriced_departure") is not None:
+            hint = timestamp(self.grant["unpriced_departure"])
+            if hint is None:
+                self.grant.pop("unpriced_departure", None)  # Discard the hint, not the valid request.
+            else:
+                self.grant["unpriced_departure"] = hint
         self.owned_manual = data.get("owned_manual") is True and grant is not None
         self.pending = deepcopy(pending)
         self.limit = deepcopy(limit)
@@ -358,6 +365,27 @@ class ChargerControl:
         recent = report_time is not None and -60 <= dt_util.utcnow().timestamp() - report_time <= 600
         return bool(selected and selected.state == option and feedback and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (feedback.attributes.get("effective_mode") == expected or stopped) and recent and (sent is None or report_time >= sent - 2 or stopped))
 
+    def unpriced_started(self, request: Any) -> bool:
+        """Keep one started fallback block contiguous, bound to its departure."""
+        if not request or not self.owns(request.vehicle_id) or not self.grant or "unpriced_departure" not in self.grant:
+            return False
+        previous = self.grant["unpriced_departure"]
+        if previous is None or request.departure is None:
+            return previous is request.departure
+        previous, current = finite(previous), finite(request.departure)
+        return previous is not None and current is not None and abs(previous-current) <= 60
+
+    def _unpriced_dispatch_due(self, now: float) -> bool:
+        request = self.coordinator.sessions.get(self.grant["vehicle_id"]) if self.grant else None
+        remaining = finite(request.remaining_kwh) if request else None
+        if request is None or request.terminal or remaining is None:
+            return False
+        try:
+            power = self.coordinator.planning_power(self.coordinator.profile(request.vehicle_id))
+        except ValueError:
+            return False
+        return deadline_fallback(now, request.departure, max(0, remaining), power, started=self.unpriced_started(request)).mode == "Manual"
+
     async def _call(self, domain: str, service: str, entity_id: str, **values: Any) -> None:
         negative = (domain, service) == ("switch", "turn_off") or domain == "select" and values.get("option") == "Green"
         obligation = next((item for item in [*self.dormant_limits, *([self.limit] if self.limit else [])] if domain == "number" and entity_id == item["entity_id"] and values.get("value") == item["original"] and item.get("restore_pending")), None)
@@ -384,8 +412,9 @@ class ChargerControl:
         positive = (domain, service) == ("switch", "turn_on") or domain == "select" and values.get("option") == "Manual" or domain == "number" and (source is None or finite(source.state) is None or values.get("value", 0) > finite(source.state))
         if positive and self._stop_requested:
             raise DispatchRefused("stop_precedes_positive_actuator_call")
-        if positive and self.config.get("require_prices_for_control", True) and not price_feed_live(self.hass, self.config, dt_util.utcnow().timestamp()):
-            raise DispatchRefused("prices_not_live")
+        if positive and not restoring_limit and not price_feed_live(self.hass, self.config, dt_util.utcnow().timestamp()):
+            if not self._unpriced_dispatch_due(dt_util.utcnow().timestamp()):
+                raise DispatchRefused("fallback_window_not_due")
         if domain == "number" and entity_id in self._external_limit_entities:
             raise DispatchRefused("external_limit_command")
         context = Context()
@@ -457,7 +486,7 @@ class ChargerControl:
         if self.hass.services.has_service("persistent_notification", "create"):
             audit = self.limit_audit
             extra = (f" Laadlimiet {audit['entity_id']}: AdaptiveCharge schreef {audit['written']}%; oorspronkelijke instelling {audit['original']}%. Automatisch herstel is overgedragen; controleer deze voertuiglimiet zelf." if audit and audit.get("retired_reason") else "")
-            message = {"physical_start_unconfirmed": "Een laadstart is aangevraagd, maar vers laadvermogen is nog niet bevestigd. De opdracht blijft bewaard; er wordt geen extra Start verstuurd. Controleer de auto en laadpaal.", "price_feed_stop_unconfirmed": "Enever is niet bruikbaar. De gevraagde stop van aanvullend laden is fysiek nog niet bevestigd. Controleer of de laadpaal nog Manual laadt. De opdracht blijft bewaard.", "foreign_controller_requires_new_start": "Een andere bediening heeft de laadpaal overgenomen. De oude opdracht blijft bewaard; een nieuwe eigen Start is nodig voor overname.", "external_mode_command_requires_new_start": "De laadmodus is door een andere bediening gewijzigd. De opdracht blijft bewaard; een nieuwe eigen Start is nodig voor overname."}.get(reason, "Geen automatische nieuwe laadstart. Controleer de besturingsstatus en het fysieke laadvermogen; een aangevraagde stop kan nog onbevestigd zijn.")
+            message = {"physical_start_unconfirmed": "Een laadstart is aangevraagd, maar vers laadvermogen is nog niet bevestigd. De opdracht blijft bewaard; er wordt geen extra Start verstuurd. Controleer de auto en laadpaal.", "foreign_controller_requires_new_start": "Een andere bediening heeft de laadpaal overgenomen. De oude opdracht blijft bewaard; een nieuwe eigen Start is nodig voor overname.", "external_mode_command_requires_new_start": "De laadmodus is door een andere bediening gewijzigd. De opdracht blijft bewaard; een nieuwe eigen Start is nodig voor overname."}.get(reason, "Geen automatische nieuwe laadstart. Controleer de besturingsstatus en het fysieke laadvermogen; een aangevraagde stop kan nog onbevestigd zijn.")
             await self.hass.services.async_call("persistent_notification", "create", {"notification_id": f"{DOMAIN}_{self.coordinator.entry.entry_id}", "title": "AdaptiveCharge vraagt aandacht", "message": message + extra}, blocking=True)
 
     async def _manual(self, now: float) -> None:
@@ -659,9 +688,6 @@ class ChargerControl:
         """Execute the current request, never a captured old timer payload."""
         await self.drain_events()
         await self._restore_dormant_limits()
-        prices_wait = self.config.get("require_prices_for_control", True) and not result.get("price_feed_valid")
-        if prices_wait and self.owned_manual:
-            self._cleanup_required = True
         if not self.enabled and not self.owned_manual and not self.limit:
             self.status = "disabled"
             return
@@ -816,9 +842,6 @@ class ChargerControl:
                 await self._green(now)
             except (ValueError, TimeoutError, HomeAssistantError):
                 self.status = "owned_stop_unconfirmed"
-            if prices_wait and self.owned_manual and self.pending and self.pending.get("attempts", 1) >= 3:
-                self.status = "price_feed_stop_unconfirmed"
-                await self._notify_fault("price_feed_stop_unconfirmed")
             if not self.owned_manual:
                 self._cleanup_required = False
                 self._stop_requested = False
@@ -828,7 +851,14 @@ class ChargerControl:
             await self.restore_limit()
             if self.limit:
                 return
-        boost = bool(self.enabled and not self._stop_requested and not restored_elapsed and not prices_wait and not self.fault and request and not request.terminal and row.get("eligible_for_boost") and row.get("would_control_mode") == "Manual")
+        boost = bool(self.enabled and not self._stop_requested and not restored_elapsed and not self.fault and request and not request.terminal and row.get("eligible_for_boost") and row.get("would_control_mode") == "Manual")
+        unpriced = (row.get("plan") or {}).get("reason", "").startswith("unpriced_")
+        if boost and unpriced and not self.unpriced_started(request):
+            self.grant["unpriced_departure"] = request.departure
+            await self.coordinator._save(immediate=True)
+        elif not unpriced and "unpriced_departure" in self.grant:
+            self.grant.pop("unpriced_departure")
+            await self.coordinator._save(immediate=True)
         try:
             if boost and await self._limit(row):
                 return
@@ -852,7 +882,7 @@ class ChargerControl:
                 self.status = str(exc)
                 await self.coordinator._save(immediate=True)
                 return
-            if str(exc) == "prices_not_live":
+            if str(exc) == "fallback_window_not_due":
                 if self._mode_confirmed("Green"):
                     self.owned_manual, self.pending = False, None
                     if self.grant:
@@ -862,7 +892,7 @@ class ChargerControl:
                         self.grant["start_watch_since"] = None
                 else:
                     self._cleanup_required = self.owned_manual
-                self.status = "waiting_prices"
+                self.status = "waiting_fallback_window"
                 await self.coordinator._save(immediate=True)
                 return
             # Persist a visible fault; never automatically resend a positive call.
@@ -871,8 +901,6 @@ class ChargerControl:
             await self.coordinator._save(immediate=True)
             await self._notify_fault()
         finally:
-            if prices_wait and not self.owned_manual:
-                self.status = "waiting_prices"
             if restored_elapsed and not self.owned_manual:
                 self.status = "restored_departure_elapsed_requires_start"
             self.schedule(result, now)

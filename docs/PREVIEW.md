@@ -64,11 +64,12 @@ laadregeling; een oude previewopdracht wordt niet aan het nieuwe apparaat doorge
   bijvoorbeeld `prices_today,prices_tomorrow` als attributenlijst en `time`/`price`
   als kolommen worden gekoppeld; het werkelijke
   15- of 60-minuteninterval is verplicht wanneer eindtijden ontbreken.
-- Gaten of tegenstrijdige prijzen worden niet opgevuld. Een gat binnen de bekende
-  reeks geeft Green en een waarschuwing. Bij een onbekende staart wordt energie die
-  nog in die staart past uitgesteld; alleen het niet-uitstelbare deel krijgt bekende
-  kwartieren. De gehele kostenschatting blijft dan onbekend. Uiterlijk starten wordt
-  afzonderlijk bewaakt op basis van benodigd vermogen en reserve.
+- Gaten of tegenstrijdige prijzen worden niet opgevuld. Sinds 5.1.0b6 geeft een
+  ontbrekende, ongeldige of onvolledige reeks één ongeprijsd blok tot vertrek,
+  zonder de gewone prijsplanreserve. Green blijft tot de start beschikbaar.
+  Een begonnen fallbackblok wordt niet door kleine meterbijstellingen opgeknipt.
+  Kosten blijven onbekend. Nieuwe prijzen vervangen dit blok automatisch door een
+  economische planning van dezelfde opdracht; zie [het actuele contract](CONTROL.md).
 - Prognose: bestaand `wh_period`-attribuut (Wh per uur), timestamp in de sensorstate,
   maximaal twee uur oud. Huisvermogen wordt eraf getrokken; W en kW worden genormaliseerd.
   De preview ververst geen bron. Zonder netto terugleverprijs en met verwachte zon

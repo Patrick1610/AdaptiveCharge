@@ -48,19 +48,24 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
   bedieningsbronnen worden geweigerd zolang de eigen laadactie of limietherstel
   loopt. Bij onvoorziene bronuitval probeert alleen de vastgelegde oude bediening
   na maximaal 120 seconden ontbrekende terugmelding begrensd negatief af te ronden; een nieuwe externe opdracht gaat altijd voor.
-- Voor Patricks installatie is een werkende Enever-feed verplicht voor Manual.
-  De bron moet beschikbaar zijn en geldige tariefintervallen voor het huidige
-  moment leveren. Ook vlak vóór een positieve serviceaanroep wordt dit herlezen.
-  Feeduitval draagt alleen het eigen Manual-laden terug over aan Green; zelfstandig
-  Green mag doorlopen. De opdracht en gebruikte energie blijven behouden en de
-  normale integratie beoordeelt hervatting zodra de feed terug is. Er komt geen
-  Codextaak om de feed te volgen.
+- Prijsuitval blokkeert laden niet. Bij ontbrekende, ongeldige of onvolledige
+  prijzen plant de integratie één aaneengesloten blok tot vertrek, zonder de
+  prijsplanreserve: drie uur nodig voor 06:15 betekent starten om 03:15. Tot dat
+  blok blijft Green beschikbaar. Een begonnen fallbackblok blijft aaneengesloten
+  als metercredits de benodigde tijd verkorten. Nieuwe prijzen herplannen dezelfde
+  opdracht automatisch; doel, generatie, gebruikte energie en Stop blijven gelden.
+  Kosten zijn onbekend, ook per venster; er worden geen prijzen verzonnen.
+  Vlak vóór een positieve serviceaanroep wordt bij feeduitval opnieuw getoetst of
+  het fallbackblok al mag starten. Een oude goedkope timer start dus niet te vroeg.
+  De vroegere instelling `require_prices_for_control` wordt genegeerd en wordt
+  niet meer aangeboden; een opgeslagen oude sleutel kan tot herconfiguratie blijven
+  staan. De bestaande energie-, voertuig- en eigendomsgrenzen blijven gelden.
 - Een slapende Tesla houdt zijn voertuiglimiet-herstelopdracht bewaard. Die
   blokkeert geen Start van de ID.3 en blijft aan de oorspronkelijke Tesla-writer
   gekoppeld. Een vervangen writer of onbevestigde terugmelding na een herstelwrite
   wordt gemeld met de oorspronkelijke en geschreven limiet; nooit stil overschreven.
-- Na publicatie/configuratie wordt de feed één keer gecontroleerd. Zonder bruikbare
-  feed blijft de fysieke proef ongestart tot Patricks bericht.
+- De native bronlisteners en timers herbeoordelen feedherstel zelfstandig; een
+  aanvullende Codextaak voor prijsbewaking is niet nodig.
 
 ## Tesla-proef, nog niet gestart
 
@@ -102,6 +107,48 @@ De besturingsstatus en foutcodes in attributen blijven technisch herkenbaar voor
 diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg.
 
 ## Oplevering 13–14 november 2026
+
+### Doorladen bij prijsuitval en korte vensters, 5.1.0b6
+
+De eigenaar verving op 14 november het eerdere verbod op Manual zonder Enever
+door het bovenstaande vertrekgerichte fallbackbeleid. Dit wijzigt de actuele
+besturing, niet de historische uitkomsten van eerdere proeven met de oude regel.
+De gewone economische planning blijft de goedkoopste bekende kwartieren kiezen.
+Losse restvensters onder de ingestelde drie minuten worden aan het goedkoopste
+geschikte aangrenzende kwartier gekoppeld, inclusief vrije ruimte binnen een
+gedeeltelijk gebruikt kwartier. Totale energie en de bijbehorende kosten blijven
+behouden. Zonder bestaand blok of voldoende aansluitcapaciteit blijft de bestaande
+tolerantie of zichtbare uitzondering voor een noodzakelijk kort blok gelden.
+
+### Normale bediening en planningssensoren
+
+De zichtbare regeling heet Laadregeling; de oude preview-identiteit blijft intern
+behouden om bestaande entiteiten en opgeslagen opdrachten zonder duplicaten bij
+te werken. Het installatiedomein `adaptive_charge_preview` is daarom een technische
+compatibiliteitsnaam, niet een uitgeschakelde of beperkte appvariant.
+
+Per auto komt één Laadplanning-sensor bij. Zijn numerieke staat is de resterende
+geplande Manual-laadduur in minuten. `quarters` bevat tijdzonebewuste UTC-waarden
+`start`/`end`, `charging`, `minutes` en `energy_kwh`, ook voor nulkwartieren tussen
+blokken. Verstreken stukken worden afgeknipt; de payload is begrensd op de bestaande
+48-uursplanningshorizon. De sommen sluiten aan op `scheduled_energy_kwh` en de
+sensorstaat. De sensor maakt geen opdracht en verzint geen toekomstige Green-energie.
+Zonder actieve opdracht is de staat nul en de kwartierenlijst leeg. Bij ontbrekende
+berekeningsgegevens is de duur onbekend, met de bestaande reden zichtbaar.
+De kwartierprojectie wijzigt de laadbesturing en energieboekhouding niet.
+
+`energy_kwh` en `scheduled_energy_kwh` zijn totale AC-laadenergie tijdens de
+Manual-vensters, inclusief de eventuele zonnebijdrage binnen zo'n venster. Zij zijn
+dus niet hetzelfde als uitsluitend extra netenergie (`additional_kwh`) of accutoename.
+Autonoom Green buiten de vensters is niet in deze projectie opgenomen.
+
+Onbekende vensterkosten blijven `None`. Sensorattributen en diagnostiek geven
+deze waarde ongewijzigd door. Het dashboard formatteert de totale kosten alleen
+als die numeriek zijn; de kwartiergrafiek gebruikt geplande kWh, geen verzonnen
+kwartierkosten. Een [native kaartvoorbeeld](../examples/planning-card.yaml) toont resterende tijd
+en een kwartiertabel. De standaardgrafiek toont historische waarden. Het optionele
+[ApexCharts-voorbeeld](../examples/planning-chart-apex.yaml) tekent toekomstige
+kwartieren rechtstreeks uit de attributen, zonder recorderhistorie.
 
 ### Bewerkbaar vermogensveld, 5.1.0b5
 

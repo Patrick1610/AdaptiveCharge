@@ -169,11 +169,11 @@ class Tariff:
 
 @dataclass(frozen=True)
 class Window:
-    """Wall kWh and incremental grid cost; Green cost is separate in Plan."""
+    """Wall kWh and incremental cost; None means an unpriced fallback window."""
     start: float
     end: float
     kwh: float
-    cost: float
+    cost: float | None
     additional_kwh: float = 0.0
 
 
@@ -181,10 +181,11 @@ class Window:
 class Plan:
     """Read-only advice. When cost is known: cost = green_cost + sum(w.cost).
 
-    Both cost fields are None on degraded paths. No cost identity is claimed
+    Plan and window costs are None on unpriced paths. No cost identity is claimed
     without complete cost inputs.
     On a selected plan, need = expected_solar_kwh + sum(w.additional_kwh)
-    + omitted_kwh + deferred_kwh; deferred energy has no known price yet.
+    + omitted_kwh + shortfall_kwh. deferred_kwh remains zero for stored-client
+    compatibility with older previews; new plans never defer unpriced demand.
     """
 
     mode: str
@@ -197,6 +198,7 @@ class Plan:
     warnings: tuple[str, ...] = ()
     green_cost: float | None = None
     deferred_kwh: float = 0.0
+    shortfall_kwh: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         """Expose a serializable read-only plan."""

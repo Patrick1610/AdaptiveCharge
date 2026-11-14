@@ -282,12 +282,12 @@ async def test_foreign_controller_yields_without_cleanup_and_never_blindly_resum
 
 
 @pytest.mark.asyncio
-async def test_missing_prices_blocks_trial_without_start_or_cancel(tmp_path):
+async def test_missing_prices_does_not_block_direct_request(tmp_path):
     hass,c,v,calls=await controlled(tmp_path,require_prices=True)
     try:
         await tick(c,3)
-        assert calls==[] and not c.sessions[v].terminal
-        assert c.control.status=="waiting_prices"
+        assert calls==[("mode","Manual"),("switch","on")]
+        assert not c.sessions[v].terminal and c.control.fault is None
     finally:
         await close(hass,c)
 
@@ -448,11 +448,12 @@ async def test_target_changes_during_delayed_app_preserve_used_meter_energy(tmp_
 async def test_valid_current_price_row_releases_waiting_explicit_request(tmp_path):
     hass,c,v,calls=await controlled(tmp_path,require_prices=True)
     try:
+        now=datetime.now(timezone.utc).timestamp()
+        await c.async_preview_action("set_target",v,{"departure":datetime.fromtimestamp(now+10800,timezone.utc).isoformat()})
         await tick(c)
         assert calls==[]
-        now=datetime.now(timezone.utc).timestamp()
         object.__setattr__(c.entry,"data",MappingProxyType({**c.entry.data,"price_entity":"sensor.prices"}))
-        hass.states.async_set("sensor.prices",0.25,{"data":[{"time":now-60,"end":now+900,"price":0.25}]})
+        hass.states.async_set("sensor.prices",0.25,{"data":[{"time":now-60,"end":now+14400,"price":0.25}]})
         result=await tick(c,3)
         assert result["price_feed_valid"]
         assert calls==[("mode","Manual"),("switch","on")]
@@ -1043,7 +1044,11 @@ def live_prices(hass,c):
 async def test_enever_loss_yields_owned_manual_but_permits_independent_green(tmp_path):
     hass,c,v,calls=await controlled(tmp_path,require_prices=True)
     try:
+        now=datetime.now(timezone.utc).timestamp()
+        await c.async_preview_action('set_target',v,{'departure':datetime.fromtimestamp(now+10800,timezone.utc).isoformat()})
         attrs=live_prices(hass,c)
+        attrs['data'][0]['end']=now+14400
+        hass.states.async_set('sensor.prices',0.25,attrs)
         await tick(c,2)
         anchor=c.sessions[v].anchor_meter
         hass.states.async_set('sensor.prices','unavailable',attrs)
@@ -1055,7 +1060,8 @@ async def test_enever_loss_yields_owned_manual_but_permits_independent_green(tmp
         hass.states.async_set('switch.ev_charger','on')  # Enphase's own solar control is allowed.
         hass.states.async_set('sensor.iq_energy',101,{'unit_of_measurement':'kWh'})
         await tick(c,3)
-        assert calls==before and c.control.status=='waiting_prices'
+        assert calls==before and c.control.fault is None
+        assert result['vehicles'][v]['plan']['reason']=='unpriced_deadline_fallback'
         hass.states.async_set('sensor.prices',0.25,attrs)
         await tick(c,3)
         assert c.control.owned_manual and c.control.fault is None
@@ -1069,7 +1075,11 @@ async def test_enever_loss_yields_owned_manual_but_permits_independent_green(tmp
 async def test_enever_is_rechecked_before_the_actual_manual_dispatch(tmp_path):
     hass,c,v,calls=await controlled(tmp_path,require_prices=True)
     try:
+        now=datetime.now(timezone.utc).timestamp()
+        await c.async_preview_action('set_target',v,{'departure':datetime.fromtimestamp(now+10800,timezone.utc).isoformat()})
         attrs=live_prices(hass,c)
+        attrs['data'][0]['end']=now+14400
+        hass.states.async_set('sensor.prices',0.25,attrs)
         fired=False
         async def interrupt(_data):
             nonlocal fired
@@ -1134,23 +1144,15 @@ async def test_limit_retirement_notice_is_not_consumed_by_a_sleeping_reload(tmp_
 
 
 @pytest.mark.asyncio
-async def test_unconfirmed_stop_without_prices_notifies_without_latching_request(tmp_path):
+async def test_price_outage_never_stops_an_urgent_request(tmp_path):
     hass,c,v,calls=await controlled(tmp_path,require_prices=True)
     try:
         attrs=live_prices(hass,c)
         await tick(c,2)
-        notices=[]
-        async def notify(call): notices.append(call.data['message'])
-        hass.services.async_register('persistent_notification','create',notify)
-        async def ignore(call): pass
-        hass.services.async_register('switch','turn_off',ignore)
+        before=list(calls)
         hass.states.async_set('sensor.prices','unavailable',attrs)
-        await tick(c)
-        for _ in range(2):
-            c.control.pending['last_attempt']-=31
-            await tick(c)
-        await tick(c,3)
-        assert len(notices)==1 and c.control.status=='price_feed_stop_unconfirmed'
+        await tick(c,4)
+        assert calls==before and c.control.owned_manual
         assert c.control.fault is None and not c.sessions[v].terminal
     finally:
         await close(hass,c)

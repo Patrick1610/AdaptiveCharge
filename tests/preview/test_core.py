@@ -101,7 +101,9 @@ def test_price_gaps_or_conflicts_do_not_create_prices(rows):
     early = plan(NOW, NOW + 10800, 5, 0.8, rows)
     urgent = plan(NOW + 10000, NOW + 10800, 5, 0.8, rows)
     assert early.mode == "Green" and early.warnings
-    assert urgent.mode == "Manual" and urgent.reason == "departure_urgency"
+    assert urgent.mode == "Manual" and urgent.reason == "unpriced_deadline_fallback"
+    assert len(early.windows)==1 and early.windows[0].end==NOW+10800
+    assert early.cost is None and early.windows[0].cost is None
 
 
 def test_direct_request_and_negative_prices():

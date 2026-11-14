@@ -41,8 +41,8 @@ async def test_full_setup_platforms_and_unload_are_read_only(tmp_path):
         assert e.state is ConfigEntryState.LOADED
         assert e.runtime_data.data["control_enabled"] is False
         registered=entity_registry.async_entries_for_config_entry(entity_registry.async_get(hass),e.entry_id)
-        assert len(registered)==9
-        assert sum(item.config_subentry_id is not None for item in registered)==6
+        assert len(registered)==10
+        assert sum(item.config_subentry_id is not None for item in registered)==7
         own_states=[s for s in hass.states.async_all() if "preview" in s.entity_id]
         assert own_states
         assert hass.services.has_service(DOMAIN,"start")
@@ -75,7 +75,7 @@ async def test_real_config_and_vehicle_subentry_flows(tmp_path):
         assert len(configured.subentries)==1
         assert configured.state is ConfigEntryState.LOADED
         registered=entity_registry.async_entries_for_config_entry(entity_registry.async_get(hass),configured.entry_id)
-        assert len(registered)==9 and sum(e.config_subentry_id is not None for e in registered)==6
+        assert len(registered)==10 and sum(e.config_subentry_id is not None for e in registered)==7
         subentry_id=next(iter(configured.subentries))
         own=next(e.entity_id for e in registered if e.domain=="sensor")
         rejected=await hass.config_entries.subentries.async_init((configured.entry_id,"vehicle"),context={"source":"user"},data={**vehicle,"soc_entity":own})

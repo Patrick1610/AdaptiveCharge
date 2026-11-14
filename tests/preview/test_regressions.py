@@ -90,7 +90,8 @@ def test_price_gap_does_not_misrepresent_green_as_grid_energy():
     rows=prices(solar=3)
     del rows[4]
     p=plan(NOW,NOW+10800,10,0.8,rows)
-    assert p.mode == "Green" and not p.windows and "price_coverage_gap" in p.warnings
+    assert p.mode == "Green" and len(p.windows)==1 and "price_coverage_gap" in p.warnings
+    assert p.expected_solar_kwh==0 and p.cost is None and p.windows[0].end==NOW+10800
 
 
 def test_total_omission_cannot_exceed_one_tolerance_band():
@@ -172,9 +173,11 @@ def test_stale_connection_mismatch_stops_accounting_without_cancelling():
     assert request.reason=="connection_identity_mismatch_unverified"
 
 
-def test_trailing_unknown_prices_allow_known_prefix_with_warning():
+def test_trailing_unknown_prices_schedule_one_unpriced_block():
     p=plan(NOW,NOW+10800,3,0.8,prices(count=6))
-    assert p.mode=="Green" and p.deferred_kwh==3 and "price_coverage_partial" in p.warnings
+    assert p.mode=="Green" and p.deferred_kwh==0 and "price_coverage_partial" in p.warnings
+    assert len(p.windows)==1 and p.windows[0].additional_kwh==pytest.approx(3)
+    assert p.windows[0].end==NOW+10800 and p.cost is None
 
 
 def test_inconsistent_anchor_is_rejected_but_past_departure_is_a_direct_request():
@@ -201,12 +204,12 @@ def test_foreign_identity_gap_never_debits_later_energy_on_reused_id():
     assert request.last_meter==100 and request.identity_gap
 
 
-def test_unknown_tail_defers_only_energy_that_can_fit_after_known_prices():
+def test_unknown_tail_uses_one_block_for_the_entire_remaining_allowance():
     p=plan(NOW,NOW+10800,8,0.8,prices(count=10))
-    assert p.deferred_kwh==pytest.approx(2.75)
-    assert sum(w.additional_kwh for w in p.windows)==pytest.approx(5.25)
+    assert p.deferred_kwh==0 and len(p.windows)==1
+    assert sum(w.additional_kwh for w in p.windows)==pytest.approx(8)
     assert p.cost is None and p.green_cost is None
-    assert p.mode=="Manual"
+    assert p.mode=="Green" and p.windows[0].end==NOW+10800
 
 
 @pytest.mark.parametrize("restored",[False,True])
@@ -235,9 +238,9 @@ def test_submillisecond_price_boundary_does_not_hide_cost_without_warning():
 
 
 def test_stalled_partial_price_feed_eventually_reaches_urgency():
-    assert plan(NOW,NOW+10800,3,0.8,prices(count=6)).deferred_kwh==3
+    assert len(plan(NOW,NOW+10800,3,0.8,prices(count=6)).windows)==1
     p=plan(NOW+10000,NOW+10800,3,0.8,prices(count=6))
-    assert p.mode=="Manual" and p.reason=="departure_urgency"
+    assert p.mode=="Manual" and p.reason=="unpriced_deadline_fallback"
 
 
 @pytest.mark.parametrize("fault",["meter_fault","identity_gap"])

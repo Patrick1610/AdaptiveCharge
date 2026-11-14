@@ -4,6 +4,17 @@ Deze beta bundelt planning rond een gedeelde laadpaal met afzonderlijke
 voertuigprofielen voor Tesla en Volkswagen ID.3. Enphase Green blijft de basis;
 de integratie plant aanvullend netladen naar een bereikdoel en vertrektijd.
 
+Zonder bruikbare prijzen plant hij één aaneengesloten blok dat eindigt bij vertrek.
+Drie uur laden voor 06:15 begint dan om 03:15, zonder extra prijsplanreserve.
+Terugkerende prijzen herplannen dezelfde opdracht; de energieboekhouding blijft staan.
+
+Elke auto heeft een **Laadplanning**-sensor: de staat is de resterende geplande
+laadduur in minuten; `quarters` bevat per kwartier de geplande minuten en kWh,
+inclusief nulkwartieren tussen blokken. Zie [het kaartvoorbeeld](examples/planning-card.yaml).
+Vervang daarin de voorbeeldentiteit door de werkelijke planningssensor van je auto.
+De kWh zijn de totale geplande AC-laadenergie tijdens Manual, inclusief eventuele
+zon in die vensters. Autonome Green-opbrengst buiten de vensters wordt niet voorspeld.
+
 **De hoofdschakelaar staat standaard uit.** Uit betekent alleen meerekenen.
 Met de hoofdschakelaar aan en een expliciete Start bestuurt de integratie de
 geselecteerde auto via de bestaande Enphase-/voertuigintegraties. De oude
@@ -14,7 +25,7 @@ Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTR
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.1.0b5`. Met beta's ingeschakeld biedt HACS ook
+downloaden en kies expliciet `v5.1.0b6`. Met beta's ingeschakeld biedt HACS ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie

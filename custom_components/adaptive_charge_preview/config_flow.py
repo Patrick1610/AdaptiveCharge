@@ -55,7 +55,7 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     """Shared input bindings and calculation defaults; no credentials/writers."""
     data = defaults or {}
     fields: dict[Any, Any] = {
-        vol.Required("name", default=data.get("name", "Enphase Preview")): str,
+        vol.Required("name", default=data.get("name", "Enphase")): str,
         vol.Required("meter_entity", default=data.get("meter_entity", vol.UNDEFINED)): entity(["sensor"]),
         vol.Required("power_entity", default=data.get("power_entity", vol.UNDEFINED)): entity(["sensor"]),
         vol.Required("plug_entity", default=data.get("plug_entity", vol.UNDEFINED)): entity(["binary_sensor"]),
@@ -67,7 +67,6 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     for key, default in (("connection_attribute", ""), ("price_attribute", "data"), ("price_time_key", "time"), ("import_price_key", "price"), ("export_price_key", "")):
         fields[vol.Required(key, default=data.get(key, default))] = str
     fields[vol.Required("maximum_command_kwh", default=data.get("maximum_command_kwh", 30))] = vol.All(vol.Coerce(float), vol.Range(min=0.1, max=100))
-    fields[vol.Required("require_prices_for_control", default=data.get("require_prices_for_control", True))] = bool
     return vol.Schema(fields)
 
 
