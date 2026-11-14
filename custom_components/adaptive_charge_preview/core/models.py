@@ -199,6 +199,14 @@ class Plan:
     green_cost: float | None = None
     deferred_kwh: float = 0.0
     shortfall_kwh: float = 0.0
+    green_windows: tuple[Window, ...] = ()
+    pause_windows: tuple[Window, ...] = ()
+    mean_import: float | None = None
+    price_ceiling: float | None = None
+    tariff_coverage_end: float | None = None
+    early_threshold_active: bool = False
+    mean_basis: str = "complete_local_days"
+    cost_scope: str = "autonomous_green_and_selected_import"
 
     def as_dict(self) -> dict[str, Any]:
         """Expose a serializable read-only plan."""

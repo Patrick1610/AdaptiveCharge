@@ -25,7 +25,10 @@
 - Never claim live commissioning from a published release or passing software tests.
 - The default-disabled path must issue no actuator services or source/helper writes.
   Only `control.py` may call the configured actuator allowlist after explicit
-  Master/Start authority and native-controller exclusion. Never change phases,
+  Master/Start authority and native-controller exclusion. The separately enabled
+  idle Green price filter may hold/release only its own attachment-bound Green
+  pause under Master authority; it never grants Manual or a vehicle limit write.
+  Never change phases,
   amperage, source values or another controller's helpers.
 - This beta is distributed as a custom repository, not submitted to the default
   HACS catalog. Its repository description/topics are currently absent; the

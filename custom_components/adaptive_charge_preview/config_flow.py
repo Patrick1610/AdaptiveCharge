@@ -60,13 +60,23 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         vol.Required("power_entity", default=data.get("power_entity", vol.UNDEFINED)): entity(["sensor"]),
         vol.Required("plug_entity", default=data.get("plug_entity", vol.UNDEFINED)): entity(["binary_sensor"]),
     }
-    for key, domains in {"connection_entity": ["sensor", "binary_sensor", "switch"], "mode_entity": ["select", "sensor"], "charging_entity": ["binary_sensor"], "price_entity": ["sensor"], "forecast_entity": ["sensor"], "house_entity": ["sensor"], "session_entity": ["input_text"], "active_entity": ["input_boolean"], "generation_entity": ["counter"], "pending_entity": ["input_text"], "legacy_master_entity": ["input_boolean"], "control_mode_entity": ["select"], "charger_switch_entity": ["switch"], "control_feedback_entity": ["sensor"], "control_report_entity": ["sensor"]}.items():
+    for key, domains in {"connection_entity": ["sensor", "binary_sensor", "switch"], "mode_entity": ["select", "sensor"], "charging_entity": ["binary_sensor"], "price_entity": ["sensor"], "forecast_entity": ["sensor"], "house_entity": ["sensor"], "session_entity": ["input_text"], "active_entity": ["input_boolean"], "generation_entity": ["counter"], "pending_entity": ["input_text"], "legacy_master_entity": ["input_boolean"], "control_mode_entity": ["select"], "charger_switch_entity": ["switch"], "control_feedback_entity": ["sensor"], "control_report_entity": ["sensor"], "capacity_entity": ["sensor"], "gateway_connectivity_entity": ["binary_sensor"], "bonus_export_ytd_entity": ["sensor"]}.items():
         fields[vol.Optional(key)] = entity(domains)
     for key, default, lower, upper in (("power_kw", 11, 1, 22), ("reserve_min", 15, 0, 60), ("minimum_min", 3, 1, 30), ("house_kw", 0.5, 0, 30), ("price_interval_min", 15, 15, 60)):
         fields[vol.Required(key, default=data.get(key, default))] = vol.All(vol.Coerce(float), vol.Range(min=lower, max=upper))
     for key, default in (("connection_attribute", ""), ("price_attribute", "data"), ("price_time_key", "time"), ("import_price_key", "price"), ("export_price_key", "")):
         fields[vol.Required(key, default=data.get(key, default))] = str
     fields[vol.Required("maximum_command_kwh", default=data.get("maximum_command_kwh", 30))] = vol.All(vol.Coerce(float), vol.Range(min=0.1, max=100))
+    fields[vol.Optional("fallback_power_entity")] = entity(["sensor"])
+    fields[vol.Optional("charger_connectivity_entity")] = entity(["binary_sensor"])
+    for key in ("economic_enabled", "idle_green_price_filter", "zonneplan_bonus_eligible", "charger_fault_recovery"):
+        fields[vol.Required(key, default=data.get(key,False))] = bool
+    fields[vol.Required("early_offset_cents", default=data.get("early_offset_cents",0))] = selector.NumberSelector(selector.NumberSelectorConfig(min=0,max=100,step=.1,mode=selector.NumberSelectorMode.BOX,unit_of_measurement="ct/kWh"))
+    fields[vol.Required("export_contract", default=data.get("export_contract","unknown"))] = vol.In(["unknown","column","zonneplan"])
+    for key,default,lower,upper in (("safe_power_kw",5.5,1,22),("nominal_current_a",16,6,80),("zonneplan_tax_eur_kwh",0,0,1),("zonneplan_import_fee_eur_kwh",.02,0,1),("zonneplan_export_fee_eur_kwh",.02,-1,1),("maximum_export_kw",22,1,100),("maximum_manual_hours",8,1,48)):
+        fields[vol.Required(key, default=data.get(key,default))] = vol.All(vol.Coerce(float),vol.Range(min=lower,max=upper))
+    fields[vol.Required("zonneplan_tax_valid_until", default=data.get("zonneplan_tax_valid_until",""))] = str
+    fields[vol.Required("bonus_export_year", default=data.get("bonus_export_year",0))] = vol.All(vol.Coerce(int),vol.Range(min=0,max=2200))
     return vol.Schema(fields)
 
 
@@ -83,6 +93,7 @@ def vehicle_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     fields[vol.Required("planning_power_kw", default=data.get("planning_power_kw", 0))] = PlanningPowerSelector(selector.NumberSelectorConfig(min=0, max=22, step=0.1, mode=selector.NumberSelectorMode.BOX))
     fields[vol.Required("allow_limit_raise", default=data.get("allow_limit_raise", False))] = bool
     fields[vol.Required("maximum_soc", default=data.get("maximum_soc", 100))] = vol.All(vol.Coerce(float), vol.Range(min=1, max=100))
+    fields[vol.Optional("current_limit_entity")] = entity(["number","sensor"])
     return vol.Schema(fields)
 
 

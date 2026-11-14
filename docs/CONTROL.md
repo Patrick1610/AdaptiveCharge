@@ -15,7 +15,32 @@ voor deze uitbreiding het eerdere verbod om besturing te bouwen. De huidige
 controller blijft de enige productwriter, met Jev en onafhankelijke Claude-review;
 er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonnen.
 
-## Contract
+## Aanvulling 5.2: economische planning en automatisch herstel
+
+De optionele B-regeling en de herstelkeuzes staan uitgewerkt in
+[ECONOMISCHE_PLANNING.md](ECONOMISCHE_PLANNING.md#inrichting-en-bewijs-voor-520b1).
+Zonder actieve opdracht is een economische Green-pauze afzonderlijk inschakelbaar.
+Met een opdracht vergelijkt de planner de bekende alternatieven vóór vertrek.
+Bij onvolledige tarieven geldt voor vroege inkoop het gewogen bekende gemiddelde
+minus een configureerbare centaftrek; noodzakelijke deadline-lading gaat voor.
+
+Bij ingeschakeld laadpaalherstel blokkeert oude voertuigdata het afmaken van een
+bewaard energiebudget niet. Een apart ingestelde EVSE-vermogensbron kan ontbrekend
+HomeWizardvermogen vervangen; diagnose vermeldt dat dit geen onafhankelijk bewijs
+is. Bij meteruitval telt geen fictieve levering mee, maar begrenst een afzonderlijke
+maximaal mogelijke Manual-levering het configureerbare veiligheidsplafond.
+Na een werkelijk nieuwe meting wordt dezelfde opdracht automatisch herbeoordeeld,
+met marge zodat hij vlak bij het plafond niet herhaald stopt en start.
+Een sensor-reload met kort `unavailable → off → on` wordt niet direct als kabel
+los opgevat; een echte `on → off` bij bereikbare laadpaal beëindigt wel onmiddellijk.
+
+De eindige nachtproef gebruikt alleen de openbare integratiebediening en één
+toegestane HA-herstart. Zijn receipt legt versie, aangesloten Tesla, begrensde SOC,
+doelen, eindtijd en iedere intentie vóór verzending vast. Hij schrijft geen
+laadpaalmodus, ampères, fasen, voertuigwaarden of eigen herstelacties. Uitkomsten
+worden pas na vergelijking met echte meetgegevens beoordeeld.
+
+## Oorspronkelijk contract en latere aanvullingen
 
 - Green is de basis; Enphase regelt zon, fasen en ampères. Alleen gepland of direct
   aanvullend laden wordt door AdaptiveCharge aangevraagd.
@@ -45,8 +70,9 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
   energieallocatie mag worden afgemaakt zonder een nieuwe VW-update. Ook een eerste
   schatting met geldige getallen kan begrensd worden gebruikt; doelbevestiging,
   nieuwe voortgangsallocatie en terugvalbewijs blijven afzonderlijk herkenbaar.
-- Meterfout, ontbrekende actuele kWh-meter of een andere bestuurder blokkeert extra
-  netladen, maar wist de opdracht niet. Geen nieuw energiebudget bij herstart,
+- Meterfout of een andere bestuurder blokkeert extra netladen, maar wist de
+  opdracht niet. Voor een tijdelijk ontbrekende meter geldt vanaf 5.2 de hierboven
+  beschreven begrensde herstelkeuze. Geen nieuw energiebudget bij herstart,
   herhaalde Start of doelwijziging. De verliesmarge blijft 15%, geen autokalibratie.
 - Bestaande native Master moet uit staan en native ACTIVE/SESSION/PENDING leeg;
   anders weigert de nieuwe uitvoerder overname. Hij schakelt de oude regeling niet

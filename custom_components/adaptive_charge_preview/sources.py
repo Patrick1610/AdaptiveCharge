@@ -158,6 +158,18 @@ def power_kw(hass: HomeAssistant, entity_id: str | None, now: float) -> dict[str
     return {"kw": value if valid else None, "received_at": m.received_at, "fresh": valid, "positive": bool(valid and value >= 0.2)}
 
 
+def physical_power(hass: HomeAssistant, config: dict[str,Any], now: float) -> dict[str,Any]:
+    """Prefer independent power, otherwise the explicitly bound EVSE reading."""
+    source = config.get("power_entity")
+    result = power_kw(hass,source,now)
+    fallback = config.get("fallback_power_entity")
+    using_fallback = bool(not result["fresh"] and fallback)
+    if using_fallback:
+        source = fallback
+        result = power_kw(hass,source,now)
+    return {**result,"entity_id":source,"fallback_used":using_fallback,"independent":not using_fallback}
+
+
 def local_time(value: Any, timezone: str) -> float | None:
     """Parse a helper/price time using HA's timezone, rejecting ambiguous DST."""
     if isinstance(value, datetime):
@@ -237,18 +249,57 @@ def price_rows(hass: HomeAssistant, config: dict[str, Any], now: float) -> tuple
         b = local_time(row.get("end"), hass.config.time_zone) if "end" in row else a + duration if a is not None else None
         buy = finite(row.get(config.get("import_price_key", "price")))
         sell = finite(row.get(export_key)) if export_key else 0.0
-        if a is None or b is None or buy is None or sell is None or b <= a:
+        if a is None or b is None or buy is None or b <= a:
             return [], ["invalid_price_rows"]
+        if sell is None:
+            sell = 0.0  # Placeholder only; the explicit warning disables export decisions.
+            warnings.append("export_price_unknown_cost_estimate_incomplete")
         key = a, b
         if key in seen:
-            if seen[key] != (buy, sell):
+            if seen[key][0] != buy:
                 return [], ["conflicting_price_rows"]
+            if seen[key][1] != sell:
+                warnings.append("export_price_unknown_cost_estimate_incomplete")
             continue
         seen[key] = buy, sell
         hour = int(a // 3600) * 3600
         solar = max(0.0, forecasts.get(float(hour), 0.0) - house)
         rows.append(Tariff(a, b, buy, sell, solar))
+    if config.get("export_contract") == "zonneplan":
+        from .tariffs import export_tariffs
+        rows, contract_warnings = export_tariffs(hass, rows, config, now)
+        warnings.extend(contract_warnings)
+        if not any(w in contract_warnings for w in ("export_contract_tax_unconfirmed", "export_contract_tax_expired")):
+            warnings = [w for w in warnings if w != "export_price_unknown_cost_estimate_incomplete"]
     return rows, warnings
+
+
+def planning_capacity(hass: HomeAssistant, charger: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    """Read normal/safe capacity and optional vehicle limits; never write amps."""
+    shared, cap = finite(charger.get("power_kw",11)), finite(profile.get("planning_power_kw",0))
+    safe = finite(charger.get("safe_power_kw",5.5))
+    if shared is None or not 1 <= shared <= 22 or cap is None or cap != 0 and not 1 <= cap <= 22 or safe is None or not 1 <= safe <= 22:
+        raise ValueError("planning_power_unavailable_or_invalid")
+    power, reason = shared, "configured_normal_power"
+    gateway = state(hass, charger.get("gateway_connectivity_entity"))
+    status = state(hass, charger.get("capacity_entity"))
+    safe_mode = bool(status and ("safe" in status.state.lower() or status.attributes.get("safe_mode") is True))
+    status_unknown = bool(charger.get("capacity_entity") and (status is None or status.state in {"unknown","unavailable"}))
+    if safe_mode or status_unknown or charger.get("gateway_connectivity_entity") and (gateway is None or gateway.state != "on"):
+        power, reason = min(power,safe), "safe_mode_or_gateway_unavailable"
+    if cap:
+        power, reason = min(power,cap), reason+":vehicle_planning_cap"
+    current = state(hass, profile.get("current_limit_entity"))
+    amps = finite(current.state) if current else None
+    nominal = finite(charger.get("nominal_current_a",16))
+    if current and current.attributes.get("unit_of_measurement") == "A" and amps is not None and 1 <= amps <= 80 and nominal is not None and 6 <= nominal <= 80:
+        power = min(power, shared*amps/nominal)
+        reason += ":observed_vehicle_current_limit"
+    elif profile.get("current_limit_entity"):
+        power = min(power,safe)
+        reason += ":vehicle_current_unknown_safe_power"
+    return {"power_kw":power, "reason":reason, "normal_kw":shared, "safe_kw":safe,
+            "vehicle_current_a":amps, "writes_current_or_phases":False}
 
 
 def price_feed_live(hass: HomeAssistant, config: dict[str, Any], now: float, rows: list[Tariff] | None = None, warnings: list[str] | None = None) -> bool:

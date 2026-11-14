@@ -35,7 +35,27 @@
           "charger_switch_entity": "Enphase start-/stopschakelaar",
           "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
           "control_report_entity": "Enphase echte rapporttijd",
-          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)"
+          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
+          "economic_enabled": "Economische planning en Green-pauze (B)",
+          "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
+          "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
+          "export_contract": "Teruglevercontract (unknown / complete kolom / zonneplan)",
+          "capacity_entity": "Laadpaalstatus met safe-mode-indicatie (alleen lezen)",
+          "gateway_connectivity_entity": "Gatewayverbinding (alleen lezen)",
+          "safe_power_kw": "Rekenvermogen bij safe mode of Gatewayuitval (kW)",
+          "nominal_current_a": "Stroom bij het normale volledige rekenvermogen (A)",
+          "zonneplan_tax_eur_kwh": "In de inkoop inbegrepen energiebelasting incl. btw (EUR/kWh)",
+          "zonneplan_tax_valid_until": "Inbegrepen energiebelasting geldig t/m (JJJJ-MM-DD)",
+          "zonneplan_import_fee_eur_kwh": "Al inbegrepen inkoopvergoeding incl. btw (EUR/kWh)",
+          "zonneplan_export_fee_eur_kwh": "Ontvangen terugleveropslag incl. btw (EUR/kWh)",
+          "zonneplan_bonus_eligible": "Contract heeft Zonnebonus bij daglicht (jaarteller nodig)",
+          "bonus_export_ytd_entity": "Werkelijke bonusrelevante teruglevering dit kalenderjaar (kWh)",
+          "bonus_export_year": "Bevestigd kalenderjaar van terugleverteller (0 = jaarattribuut entiteit)",
+          "maximum_export_kw": "Fysieke maximale teruglevering voor conservatieve bonusruimte (kW)",
+          "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
+          "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)",
+          "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
+          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)"
         }
       },
       "reconfigure": {
@@ -70,7 +90,27 @@
           "charger_switch_entity": "Enphase start-/stopschakelaar",
           "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
           "control_report_entity": "Enphase echte rapporttijd",
-          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)"
+          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
+          "economic_enabled": "Economische planning en Green-pauze (B)",
+          "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
+          "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
+          "export_contract": "Teruglevercontract (unknown / complete kolom / zonneplan)",
+          "capacity_entity": "Laadpaalstatus met safe-mode-indicatie (alleen lezen)",
+          "gateway_connectivity_entity": "Gatewayverbinding (alleen lezen)",
+          "safe_power_kw": "Rekenvermogen bij safe mode of Gatewayuitval (kW)",
+          "nominal_current_a": "Stroom bij het normale volledige rekenvermogen (A)",
+          "zonneplan_tax_eur_kwh": "In de inkoop inbegrepen energiebelasting incl. btw (EUR/kWh)",
+          "zonneplan_tax_valid_until": "Inbegrepen energiebelasting geldig t/m (JJJJ-MM-DD)",
+          "zonneplan_import_fee_eur_kwh": "Al inbegrepen inkoopvergoeding incl. btw (EUR/kWh)",
+          "zonneplan_export_fee_eur_kwh": "Ontvangen terugleveropslag incl. btw (EUR/kWh)",
+          "zonneplan_bonus_eligible": "Contract heeft Zonnebonus bij daglicht (jaarteller nodig)",
+          "bonus_export_ytd_entity": "Werkelijke bonusrelevante teruglevering dit kalenderjaar (kWh)",
+          "bonus_export_year": "Bevestigd kalenderjaar van terugleverteller (0 = jaarattribuut entiteit)",
+          "maximum_export_kw": "Fysieke maximale teruglevering voor conservatieve bonusruimte (kW)",
+          "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
+          "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)",
+          "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
+          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)"
         },
         "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet."
       }
@@ -115,7 +155,8 @@
             "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
             "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
             "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening",
-            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)"
+            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)",
+            "current_limit_entity": "Actuele stroomlimiet van de auto (A, alleen lezen)"
           }
         },
         "reconfigure": {
@@ -140,7 +181,8 @@
             "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
             "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
             "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening",
-            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)"
+            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)",
+            "current_limit_entity": "Actuele stroomlimiet van de auto (A, alleen lezen)"
           },
           "description": "Vertraagde appgegevens wissen geen opdracht. Een bestaande fysieke aansluiting en energieboekhouding blijven bruikbaar. Echte meettijd blijft apart zichtbaar. ID.3-limieten worden nooit geschreven."
         }

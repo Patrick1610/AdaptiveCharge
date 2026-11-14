@@ -17,12 +17,14 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, STORAGE_VERSION
+from .const import DOMAIN, STORAGE_VERSION, VERSION
 from .core.models import VehicleConfig, demand, finite
 from .core.planner import plan
+from .core.economics import economic_plan, idle_green_policy
 from .core.session import Session
 from .control import ChargerControl
-from .sources import local_time, measurement, meter_kwh, power_kw, price_feed_live, state, validate_source_bindings, vehicle_snapshot
+from .sources import local_time, measurement, meter_kwh, physical_power, price_feed_live, state, validate_source_bindings, vehicle_snapshot, planning_capacity
+from .tariffs import export_is_known
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +45,12 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_saved: str | None = None
         self._delay_pending = False
         self.control = ChargerControl(self)
+        self._unplug_edges: list[float] = []
+        self.references: dict[str,tuple] = {}
+        self._gateway_online: bool | None = None
+        self._connection_gaps: list[float] = []
+        self._uncertain_unplug_at: float | None = None
+        self.reference_times: dict[str,float] = {}
 
     @property
     def profiles(self) -> dict[str, dict[str, Any]]:
@@ -60,6 +68,12 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not isinstance(stored.get(key, {}), dict):
                 stored[key] = {}
         self.values = {k: v for k, v in stored.get("values", {}).items() if k in self.profiles and isinstance(v, dict)}
+        references = stored.get("references",{})
+        if isinstance(references,dict):
+            self.references = {k:tuple(v) for k,v in references.items() if k in self.profiles and isinstance(v,(list,tuple)) and len(v)==5 and all(finite(x) is not None for x in v)}
+        times = stored.get("reference_times",{})
+        if isinstance(times,dict):
+            self.reference_times = {k:float(v) for k,v in times.items() if k in self.profiles and finite(v) is not None and float(v)>0}
         generation = stored.get("generation", 0)
         self.generation = generation if type(generation) is int and generation >= 0 else 0
         self.suppressed_token = stored.get("suppressed_token") if isinstance(stored.get("suppressed_token"), str) else None
@@ -82,10 +96,26 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         source_ids = {str(v) for cfg in [dict(self.entry.data), *self.profiles.values()] for k, v in cfg.items() if k.endswith("_entity") and v}
         if source_ids:
             self._unsub = async_track_state_change_event(self.hass, source_ids, self._source_changed)
+        gateway = state(self.hass,self.entry.data.get("charger_connectivity_entity"))
+        self._gateway_online = gateway.state == "on" if gateway else None
         self.control.start_listeners()
 
     @callback
     def _source_changed(self, _event: Any) -> None:
+        old, new = _event.data.get("old_state"), _event.data.get("new_state")
+        gateway = state(self.hass,self.entry.data.get("charger_connectivity_entity"))
+        if _event.data.get("entity_id") == self.entry.data.get("charger_connectivity_entity"):
+            self._gateway_online = new.state == "on" if new else False
+        online = not self.entry.data.get("charger_connectivity_entity") or self._gateway_online is not False and gateway and gateway.state == "on"
+        if _event.data.get("entity_id") == self.entry.data.get("plug_entity") and old and new:
+            if new.state == "on":
+                self._uncertain_unplug_at = None
+            elif new.state == "off" and old.state == "on" and online:
+                self._unplug_edges.append(new.last_updated.timestamp())
+            elif new.state in {"off","unknown","unavailable"}:
+                self._connection_gaps.append(new.last_updated.timestamp())
+                if new.state == "off" and online:
+                    self._uncertain_unplug_at = new.last_updated.timestamp()
         self.hass.async_create_task(self.async_request_refresh(), name="adaptive_charge_preview refresh")
 
     async def async_shutdown(self) -> None:
@@ -129,12 +159,17 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return VehicleConfig(vehicle_id, profile["name"], profile["kind"], float(profile.get("droop_pp", 1)), float(profile.get("margin", 0.15)), profile.get("limit_writer_entity"))
 
     def planning_power(self, profile: dict[str, Any]) -> float:
-        """Apply an optional vehicle planning cap without changing charger current."""
-        shared = finite(self.entry.data.get("power_kw", 11))
-        vehicle = finite(profile.get("planning_power_kw", 0))
-        if shared is None or not 1 <= shared <= 22 or vehicle is None or vehicle != 0 and not 1 <= vehicle <= 22:
-            raise ValueError("planning_power_unavailable_or_invalid")
-        return min(shared, vehicle) if vehicle else shared
+        """Use the same observed capacity in planning, urgency and dispatch."""
+        return planning_capacity(self.hass,dict(self.entry.data),profile)["power_kw"]
+
+    def _plan(self, now: float, departure: float | None, needed: float, band: float, rows: list, power: float, request: Any, export_known: bool) -> Any:
+        shared = self.entry.data
+        args = dict(power=power,reserve_min=float(shared.get("reserve_min",15)),minimum_min=float(shared.get("minimum_min",3)),
+                    fallback_started=self.control.unpriced_started(request),continue_current=self.control.continuing_manual(request))
+        if shared.get("economic_enabled"):
+            return economic_plan(now,departure,needed,band,rows,**args,timezone=self.hass.config.time_zone,
+                                 early_offset_cents=float(shared.get("early_offset_cents",0)),export_known=export_known)
+        return plan(now,departure,needed,band,rows,**args)
 
     def _native(self) -> tuple[dict[str, Any] | None, str | None]:
         """Unknown JSON is not an explicit cancellation; empty JSON is."""
@@ -170,7 +205,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return data
 
     def _store_data(self) -> dict[str, Any]:
-        return {"values": deepcopy(self.values), "sessions": {k: s.as_dict() for k, s in self.sessions.items()}, "generation": self.generation, "suppressed_token": self.suppressed_token, "control": self.control.as_dict()}
+        return {"values": deepcopy(self.values), "sessions": {k: s.as_dict() for k, s in self.sessions.items()}, "references":deepcopy(self.references), "reference_times":deepcopy(self.reference_times), "generation": self.generation, "suppressed_token": self.suppressed_token, "control": self.control.as_dict()}
 
     async def _save(self, *, immediate: bool = False) -> None:
         """Bound routine persistence to 60 seconds; do not re-arm its timer."""
@@ -185,7 +220,9 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.control.drain_events()
             result = await self._observe()
             await self.control.step(result, dt_util.utcnow().timestamp())
-            result.update(control_enabled=self.control.enabled, read_only=not self.control.enabled and not self.control.owned_manual and not self.control.has_limits, control_status=self.control.status, control_fault=self.control.fault, control_pending=deepcopy(self.control.pending), limit_audit=deepcopy(self.control.limit_audit))
+            result.update(control_enabled=self.control.enabled, read_only=not self.control.enabled and not self.control.owned_manual and not self.control.has_limits and not self.control.green_hold, control_status=self.control.status, control_fault=self.control.fault, control_pending=deepcopy(self.control.pending), limit_audit=deepcopy(self.control.limit_audit),economic_pause=deepcopy(self.control.green_hold),economic_pause_audit=deepcopy(self.control.pause_audit),idle_green_blocked=self.control.idle_blocked,command_generation=self.generation,integration_version=VERSION,
+                          unmetered_exposure_upper_kwh=(self.control.grant or {}).get("unmetered_exposure_kwh",0),
+                          owned_manual=self.control.owned_manual,limit_cleanup_pending=self.control.has_limits)
             for row in result["vehicles"].values():
                 row["control_enabled"] = self.control.enabled
                 if self.control.owns(row["vehicle_id"]):
@@ -210,6 +247,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.control.owns(vehicle_id, terminal=True):
             self.control._stop_requested = True
         async with self._lock:
+            self.control.block_idle_for_connection()
             request = self.sessions.get(vehicle_id)
             if request:
                 request.stop(reason)
@@ -230,7 +268,26 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.values = {k: v for k, v in self.values.items() if k in profiles}
         shared = dict(self.entry.data)
         rows, price_warnings = price_rows(self.hass, shared, now)
+        export_known = export_is_known(price_warnings)
+        if self._uncertain_unplug_at is not None and now-self._uncertain_unplug_at >= 5:
+            plug_now = state(self.hass,shared.get("plug_entity"))
+            charger_now = state(self.hass,shared.get("charger_connectivity_entity"))
+            if plug_now and plug_now.state == "off" and (not shared.get("charger_connectivity_entity") or charger_now and charger_now.state == "on"):
+                self._unplug_edges.append(self._uncertain_unplug_at)
+                self._uncertain_unplug_at = None
+        for gap in self._connection_gaps:
+            for request in self.sessions.values():
+                if not request.terminal and gap >= request.started_at-1:
+                    request.connection_gap_since = request.connection_gap_since or gap
+        self._connection_gaps.clear()
+        for edge in self._unplug_edges:
+            for request in self.sessions.values():
+                if not request.terminal and edge >= request.started_at-1:
+                    request.stop("physical_charger_unplug_edge")
+            self.control.physical_unplug_observed()
+        self._unplug_edges.clear()
         meter = meter_kwh(self.hass, shared.get("meter_entity"), now)
+        meter_observation = measurement(self.hass,shared.get("meter_entity"))
         native, native_token = self._native()
         native_candidates = [v for v, p in profiles.items() if native and native.get("v") == p["kind"]]
         active = next((s for s in self.sessions.values() if not s.terminal), None)
@@ -238,13 +295,18 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if native == {} or native_token is not None and native_token != active.source_token:
                 active.stop("observed_native_request_ended_or_replaced")
                 active = None
-        result: dict[str, Any] = {"control_enabled": False, "read_only": True, "updated_at": dt_util.utcnow().isoformat(), "vehicles": {}, "physical": power_kw(self.hass, shared.get("power_entity"), now), "meter_kwh": meter, "native_session": native, "native_token": native_token}
+        result: dict[str, Any] = {"control_enabled": False, "read_only": True, "updated_at": dt_util.utcnow().isoformat(), "vehicles": {}, "physical": physical_power(self.hass, shared, now), "meter_kwh": meter, "native_session": native, "native_token": native_token}
         result["price_feed_valid"] = price_feed_live(self.hass, shared, now, rows, price_warnings)
+        result["meter_observed_at"] = meter_observation.received_at
+        result["economic_policy"] = idle_green_policy(rows,now,self.hass.config.time_zone,
+            enabled=bool(shared.get("economic_enabled") and shared.get("idle_green_price_filter")),export_known=export_known)
+        result["economic_policy"]["warnings"] = list(price_warnings)
         for vehicle_id in self.profiles:
             profile = self.profile(vehicle_id)
             snapshot = vehicle_snapshot(self.hass, profile, shared)
             row: dict[str, Any] = {
                 "vehicle_id": vehicle_id, "name": profile["name"],
+                "maximum_soc":profile.get("maximum_soc",100),
                 "observations": asdict(snapshot), "control_enabled": False,
                 "eligible_for_boost": False, "would_control_mode": "Green",
                 "plan_provisional": True, "plan": None,
@@ -253,6 +315,27 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             request = self.sessions.get(vehicle_id)
             if request and not request.terminal:
+                gateway = state(self.hass,shared.get("charger_connectivity_entity"))
+                if shared.get("charger_fault_recovery") and shared.get("charger_connectivity_entity") and (not gateway or gateway.state != "on") and self.control.owns(vehicle_id):
+                    # An offline EVSE's cached false/token change is not an
+                    # observed cable removal. Preserve the allowance and wait.
+                    snapshot = replace(snapshot,connected=None,shared_connected=None,connection_id=None,connection_measured_at=None)
+                    row["connection_recovery"] = "gateway_unavailable_request_preserved"
+                if request.connection_gap_since is not None and snapshot.shared_connected is True:
+                    if snapshot.connection_id == request.connection_id or snapshot.connected is True and snapshot.home is not False and snapshot.soc.measured_at is not None and snapshot.soc.measured_at >= request.connection_gap_since:
+                        request.connection_gap_since = None
+                    else:
+                        snapshot = replace(snapshot,connected=None,shared_connected=None,connection_id=None,connection_measured_at=None)
+                        row["connection_recovery"] = "attachment_gap_waiting_vehicle_evidence_request_preserved"
+                if (shared.get("charger_fault_recovery") and self.control.owns(vehicle_id) and snapshot.shared_connected is True
+                        and snapshot.connected is True and snapshot.home is not False and snapshot.connection_id
+                        and request.connection_id != snapshot.connection_id
+                        and not any(vehicle_snapshot(self.hass,self.profile(other),shared).connected is True for other in profiles if other != vehicle_id)):
+                    request.refresh_charger_token(snapshot.connection_id)
+                    self.control.refresh_attachment_token(snapshot.connection_id)
+                if self._uncertain_unplug_at is not None and snapshot.shared_connected is False:
+                    snapshot = replace(snapshot,connected=None,shared_connected=None,connection_id=None,connection_measured_at=None)
+                    row["connection_recovery"] = "unqualified_off_waiting_persistence"
                 request.observe_connection(now, snapshot, trust_attachment=self.control.owns(vehicle_id))
                 if request.terminal:
                     if native and native.get("v") == profile["kind"]:
@@ -264,6 +347,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 planning_power = self.planning_power(profile)
                 row["planning_power_kw"] = planning_power
+                row["planning_capacity"] = planning_capacity(self.hass,shared,profile)
                 departure = self.departure(profile)
                 row["departure"] = departure
                 if request and not request.terminal and request.departure != departure:
@@ -274,16 +358,23 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 calculation = snapshot
                 try:
                     need = demand(cfg, calculation, target, now)
+                    if need.source_fresh:
+                        self.references[vehicle_id] = (snapshot.soc.value,snapshot.battery_kwh.value,snapshot.range_km.value,snapshot.limit_soc.value,snapshot.soh.value)
+                        if need.measured_at is not None:
+                            self.reference_times[vehicle_id] = need.measured_at
                 except ValueError:
-                    if not request or not self.control.owns(vehicle_id) or request.reference_values is None:
+                    reference = request.reference_values if request and request.reference_values is not None else self.references.get(vehicle_id)
+                    if not request or not self.control.owns(vehicle_id) or reference is None:
                         raise
-                    reference = request.reference_values
                     replacements = {key: replace(getattr(snapshot, key), value=reference[i], unit=unit, measured_at=None) for i,(key,unit) in enumerate((("soc","%"),("battery_kwh","kWh"),("range_km","km"),("limit_soc","%"),("soh","%")))}
                     if snapshot.limit_soc.unit == "%" and finite(snapshot.limit_soc.value) is not None and 0 < snapshot.limit_soc.value <= 100:
                         replacements["limit_soc"] = snapshot.limit_soc
                     calculation = replace(snapshot, **replacements)
                     need = demand(cfg, calculation, target, now)
                     row["calculation_from_saved_reference"] = True
+                    captured = request.reference_measured_at or self.reference_times.get(vehicle_id)
+                    row["saved_reference_measured_at"] = captured
+                    row["saved_reference_age_seconds"] = max(0,now-captured) if captured is not None else None
                 if native and len(native_candidates) == 1 and native_token != self.suppressed_token and not active and native.get("v") == profile["kind"] and snapshot.connected is True:
                     self.generation += 1
                     active = Session(vehicle_id, self.generation, snapshot.connection_id, now, target, departure, source_token=native_token)
@@ -301,13 +392,16 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             old_need = demand(cfg, replace(calculation, limit_soc=replace(calculation.limit_soc, value=old_limit)), target, now)
                             request.anchor_need += need.needed_kwh - old_need.needed_kwh
                             request.anchor_signature = (*request.anchor_signature[:3], calculation.limit_soc.value)
-                    estimated_value = request.update(now, calculation, need, meter, cfg.droop_pp, meter_id=shared.get("meter_entity"), allow_estimated=controlled)
+                    accounting_meter = meter if meter is not None else request.last_meter if controlled and shared.get("charger_fault_recovery") else None
+                    if meter is None and accounting_meter is not None:
+                        row["meter_credit_delayed"] = True
+                    estimated_value = request.update(now, calculation, need, accounting_meter, cfg.droop_pp, meter_id=shared.get("meter_entity"), allow_estimated=controlled)
                     if estimated_value is not None:
                         estimated = estimated_value
                     if request.terminal and request.source_token:
                         self.suppressed_token = request.source_token
                         active = None
-                prediction = plan(now, departure, estimated, need.band_kwh if need.source_fresh else 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)), fallback_started=self.control.unpriced_started(request), continue_current=self.control.continuing_manual(request))
+                prediction = self._plan(now,departure,estimated,need.band_kwh if need.source_fresh else 0,rows,planning_power,request,export_known)
                 prediction_data = prediction.as_dict()
                 if "export_price_unknown_cost_estimate_incomplete" in price_warnings and prediction.expected_solar_kwh > 0:
                     prediction_data["cost"] = None
@@ -320,7 +414,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 elif request and not request.terminal and phase == "scheduled" and prediction.mode == "Manual":
                     phase, reason = "would_boost", prediction.reason
                 eligible = bool(request and not request.terminal and (need.source_fresh or self.control.owns(vehicle_id)) and estimated_value is not None and phase in {"scheduled", "would_boost"}) if request else False
-                row.update({"target_km": target, "departure": departure, "demand": asdict(need), "plan": prediction_data, "plan_provisional": not need.source_fresh, "eligible_for_boost": eligible, "would_control_mode": prediction.mode if eligible else "Green", "phase": phase, "reason": reason, "session": request.as_dict() if request else None, "warnings": list(dict.fromkeys([*need.warnings, *price_warnings, *prediction.warnings]))})
+                row.update({"target_km": target, "departure": departure, "demand": asdict(need), "plan": prediction_data, "plan_provisional": not need.source_fresh or prediction.early_threshold_active, "eligible_for_boost": eligible, "would_control_mode": prediction.mode if eligible else "Green", "phase": phase, "reason": reason, "session": request.as_dict() if request else None, "warnings": list(dict.fromkeys([*need.warnings, *price_warnings, *prediction.warnings]))})
                 if len(native_candidates) > 1 and vehicle_id in native_candidates:
                     row["warnings"].append("native_vehicle_identity_ambiguous")
                 native_plan = state(self.hass, profile.get("native_plan_entity"))
@@ -334,7 +428,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if planning_power is not None and request and self.control.owns(vehicle_id) and request.observe_connection(now, snapshot, trust_attachment=True) and meter is not None and request.meter_id == shared.get("meter_entity"):
                     remaining = request.consume_meter(meter)
                     if remaining is not None:
-                        prediction = plan(now, request.departure, remaining, 0, rows, power=planning_power, reserve_min=float(shared.get("reserve_min", 15)), minimum_min=float(shared.get("minimum_min", 3)), fallback_started=self.control.unpriced_started(request), continue_current=self.control.continuing_manual(request))
+                        prediction = self._plan(now,request.departure,remaining,0,rows,planning_power,request,export_known)
                         row.update(phase=request.phase, reason=request.reason, target_km=request.target_km, departure=request.departure, plan=prediction.as_dict(), eligible_for_boost=request.phase == "scheduled", would_control_mode=prediction.mode if request.phase == "scheduled" else "Green", session=request.as_dict())
             result["vehicles"][vehicle_id] = row
         result["active_vehicle"] = next((s.vehicle_id for s in self.sessions.values() if not s.terminal), None)
@@ -395,7 +489,11 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if not request.terminal:
                             request.stop("replaced_by_preview_request")
                     self.sessions[vehicle_id] = Session(vehicle_id, self.generation, snapshot.connection_id, dt_util.utcnow().timestamp(), target, departure)
+                    self.sessions[vehicle_id].reference_values = existing.reference_values if existing and existing.reference_values else self.references.get(vehicle_id)
+                    self.sessions[vehicle_id].reference_measured_at = existing.reference_measured_at if existing else self.reference_times.get(vehicle_id)
             elif action == "stop":
+                if not any(not s.terminal for s in self.sessions.values()) or self.control.owns(vehicle_id,terminal=True):
+                    self.control.block_idle_for_connection()
                 request = self.sessions.get(vehicle_id)
                 native, token = self._native()
                 if native and native.get("v") == self.profiles[vehicle_id]["kind"]:

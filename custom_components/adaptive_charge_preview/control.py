@@ -21,7 +21,7 @@ from homeassistant.util import dt as dt_util
 from .core.models import finite, timestamp
 from .core.planner import deadline_fallback
 from .const import DOMAIN
-from .sources import connection_identity, power_kw, price_feed_live, state, vehicle_snapshot
+from .sources import connection_identity, physical_power, price_feed_live, state, vehicle_snapshot
 
 if TYPE_CHECKING:
     from .coordinator import PreviewCoordinator
@@ -32,7 +32,7 @@ CONTROL_INTERVAL = 10
 DEFAULT_COMMAND_KWH = 30.0
 MAX_MANUAL_SECONDS = 8 * 3600
 START_SETTLE_SECONDS = 120
-BINDING_KEYS = ("control_mode_entity", "charger_switch_entity", "control_feedback_entity", "control_report_entity", "meter_entity", "power_entity", "plug_entity", "connection_entity", "connection_attribute", "legacy_master_entity", "session_entity", "active_entity", "pending_entity", "generation_entity")
+BINDING_KEYS = ("control_mode_entity", "charger_switch_entity", "control_feedback_entity", "control_report_entity", "meter_entity", "power_entity", "fallback_power_entity", "plug_entity", "connection_entity", "connection_attribute", "legacy_master_entity", "session_entity", "active_entity", "pending_entity", "generation_entity")
 VEHICLE_BINDING_KEYS = ("kind", "cable_entity", "vehicle_charge_switch_entity", "limit_writer_entity")
 TRANSIENT_INTERLOCKS = {"waiting_legacy_request_state", "waiting_legacy_controller_state", "control_bindings_incomplete", "waiting_actuator_source"}
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +74,11 @@ class ChargerControl:
         self.limit_audit: dict[str, Any] | None = None
         self._interlock_since: float | None = None
         self._connection_unknown_since: float | None = None
+        self.green_hold: dict[str, Any] | None = None
+        self.idle_blocked = False
+        self._charger_outage = False
+        self.pause_audit: dict[str,Any] | None = None
+        self._green_interrupt = False
 
     @property
     def config(self) -> dict[str, Any]:
@@ -95,6 +100,7 @@ class ChargerControl:
         if grant is not None and grant.get("start_watch_since") is not None and not number(grant["start_watch_since"]):
             self.fault = "invalid_stored_control_authority"
             return
+        invalid_exposure = bool(grant is not None and any(k in grant and (not number(grant[k]) or grant[k] < 0) for k in ("unmetered_exposure_kwh", "cap_checked_at", "last_known_used_kwh", "exposure_fault_report_at")))
         pending, limit = data.get("pending"), data.get("limit")
         if pending is not None and (not isinstance(pending, dict) or pending.get("kind") not in {"manual", "stop", "green"} or not number(pending.get("sent")) or pending["sent"] <= 0 or "mode_ack_at" in pending and not number(pending["mode_ack_at"]) or type(pending.get("attempts", 1)) is not int or not 1 <= pending.get("attempts", 1) <= 3 or not number(pending.get("last_attempt", pending["sent"])) or type(pending.get("recovery", False)) is not bool or pending.get("recovery") and pending["kind"] != "manual"):
             self.fault = "invalid_stored_control_operation"
@@ -109,8 +115,23 @@ class ChargerControl:
         if len({item["vehicle_id"] for item in all_limits}) != len(all_limits):
             self.fault = "conflicting_stored_limit_ownership"
             return
-        self.enabled = data.get("enabled") is True
+        hold = data.get("green_hold")
+        invalid_hold = False
+        if hold is not None:
+            if not isinstance(hold,dict) or not isinstance(hold.get("connection_id"),str) or not hold["connection_id"] or not isinstance(hold.get("binding"),dict) or set(hold["binding"]) != set(BINDING_KEYS) or hold.get("stage") not in {"pausing","paused","resume_mode","resume_switch"} or not number(hold.get("sent")) or type(hold.get("attempts",1)) is not int or not 1 <= hold.get("attempts",1) <= 3 or not number(hold.get("last_attempt",hold["sent"])) or pending is not None or data.get("owned_manual") is True or hold.get("pre_pause_on") is not True or type(hold.get("off_confirmed")) is not bool:
+                invalid_hold = True
+            elif type(hold.get("off_dispatched")) is not bool or hold.get("off_confirmed") and not hold.get("off_dispatched"):
+                invalid_hold = True
+            else:
+                self.green_hold = deepcopy(hold)
+        self.enabled = data.get("enabled") is True and not invalid_hold and not invalid_exposure
+        self.idle_blocked = data.get("idle_blocked") is True
+        self._charger_outage = data.get("charger_outage") is True
         self.grant = deepcopy(grant)
+        if self.grant:
+            self.grant["binding"].setdefault("fallback_power_entity",None)
+            if "cap_checked_at" in self.grant:
+                self.grant["cap_checked_at"] = dt_util.utcnow().timestamp()
         if self.grant and self.grant.get("unpriced_departure") is not None:
             hint = timestamp(self.grant["unpriced_departure"])
             if hint is None:
@@ -123,6 +144,15 @@ class ChargerControl:
         self.dormant_limits = deepcopy(dormant)
         self._cleanup_connection = data.get("cleanup_connection") if isinstance(data.get("cleanup_connection"), str) else None
         self.fault = data.get("fault") if isinstance(data.get("fault"), str) else None
+        if invalid_hold:
+            self.fault = "invalid_stored_green_pause"
+        elif invalid_exposure:
+            self.fault = "invalid_stored_exposure_bound"
+        self.pause_audit = deepcopy(data.get("pause_audit")) if isinstance(data.get("pause_audit"),dict) else None
+        if invalid_hold:
+            self.pause_audit = {"retired_reason":"invalid_stored_green_pause", "rejected_hold":deepcopy(hold),
+                                "charger_may_be_off":True,"retired_at":dt_util.utcnow().timestamp()}
+        self._green_interrupt = self.idle_blocked or data.get("green_interrupt") is True
         self._restored = grant is not None
         self._cleanup_required = data.get("cleanup_required") is True
         self._interlock_fault = data.get("interlock_fault") if isinstance(data.get("interlock_fault"), str) else None
@@ -132,7 +162,37 @@ class ChargerControl:
 
     def as_dict(self) -> dict[str, Any]:
         """Return the persisted authority and bounded asynchronous operation."""
-        return {"version": 1, "enabled": self.enabled, "grant": deepcopy(self.grant), "owned_manual": self.owned_manual, "pending": deepcopy(self.pending), "limit": deepcopy(self.limit), "dormant_limits": deepcopy(self.dormant_limits), "fault": self.fault, "cleanup_connection": self._cleanup_connection, "cleanup_required": self._cleanup_required, "interlock_fault": self._interlock_fault, "limit_audit": deepcopy(self.limit_audit), "interlock_since": self._interlock_since, "connection_unknown_since": self._connection_unknown_since}
+        return {"version": 1, "enabled": self.enabled, "grant": deepcopy(self.grant), "owned_manual": self.owned_manual, "pending": deepcopy(self.pending), "limit": deepcopy(self.limit), "dormant_limits": deepcopy(self.dormant_limits), "fault": self.fault, "cleanup_connection": self._cleanup_connection, "cleanup_required": self._cleanup_required, "interlock_fault": self._interlock_fault, "limit_audit": deepcopy(self.limit_audit), "interlock_since": self._interlock_since, "connection_unknown_since": self._connection_unknown_since, "green_hold":deepcopy(self.green_hold), "idle_blocked":self.idle_blocked, "charger_outage":self._charger_outage,"pause_audit":deepcopy(self.pause_audit),"green_interrupt":self._green_interrupt}
+
+    def block_idle_for_connection(self) -> None:
+        """Explicit Stop also prevents an idle economic pause from resuming."""
+        self.idle_blocked = True
+        self._green_interrupt = True
+        if self.green_hold:
+            self.green_hold["retire_reason"] = "explicit_stop_preserved"
+
+    def physical_unplug_observed(self) -> None:
+        """End the old command, retain the charger's own Green cleanup debt."""
+        if self.green_hold:
+            self.green_hold.update(release_required=True,release_reason="physical_unplug")
+        self.idle_blocked = False
+        self._green_interrupt = False
+
+    async def _retire_green_pause(self, reason: str, *, notify: bool = False) -> None:
+        if self.green_hold:
+            self.pause_audit = {**deepcopy(self.green_hold),"retired_reason":reason,"retired_at":dt_util.utcnow().timestamp()}
+            self.green_hold = None
+            self.status = reason
+            await self.coordinator._save(immediate=True)
+            if notify:
+                await self._notify_fault(reason)
+
+    def refresh_attachment_token(self, token: str) -> None:
+        """The coordinator corroborated continuity; retain generation and budget."""
+        if self.grant:
+            self.grant["connection_id"] = token
+        if self.green_hold:
+            self.green_hold["connection_id"] = token
 
     @property
     def has_limits(self) -> bool:
@@ -145,7 +205,7 @@ class ChargerControl:
 
     @callback
     def _wake(self, _now: datetime) -> None:
-        if not self._closed and (self.enabled or self.owned_manual or self.pending):
+        if not self._closed and (self.enabled or self.owned_manual or self.pending or self.green_hold):
             self.hass.async_create_task(self.coordinator.async_request_refresh())
 
     def _targets(self, service_data: dict[str, Any], entity_id: str | None) -> bool:
@@ -175,6 +235,13 @@ class ChargerControl:
             return
         data = event.data
         service_data = data.get("service_data") or {}
+        charger_target = self._targets(service_data,self.config.get("charger_switch_entity"))
+        mode_target = self._targets(service_data,self.config.get("control_mode_entity"))
+        idle_override = self.config.get("economic_enabled") and ((data.get("domain") == "switch" and charger_target and event.context.user_id) or (data.get("domain") == "select" and data.get("service") == "select_option" and mode_target))
+        if idle_override and (self.green_hold or not self.grant):
+            self._green_interrupt = True  # Interrupt only; mutate authority under the lock.
+            self._events.append({"kind":"idle_override"})
+            self.hass.async_create_task(self._apply_service_events())
         affected = [item["entity_id"] for item in [*self.dormant_limits, *([self.limit] if self.limit else [])] if data.get("domain") == "number" and self._targets(service_data, item["entity_id"])]
         if affected:
             self._external_limit_entities.update(affected)
@@ -206,6 +273,11 @@ class ChargerControl:
         """Run under the coordinator lock; callbacks never mutate authority."""
         while self._events:
             event = self._events.pop(0)
+            if event["kind"] == "idle_override":
+                self.block_idle_for_connection()
+                await self._retire_green_pause("explicit_foreign_green_control_preserved",notify=True)
+                await self.coordinator._save(immediate=True)
+                continue
             if event["kind"] == "limit":
                 for item in [*self.dormant_limits, *([self.limit] if self.limit else [])]:
                     if item["entity_id"] in event["entities"]:
@@ -244,6 +316,8 @@ class ChargerControl:
         return {**{k: cfg.get(k) for k in BINDING_KEYS}, "vehicle": {k: profile.get(k) for k in VEHICLE_BINDING_KEYS}}
 
     def binding_change_blocked(self, data: dict[str, Any], vehicle_id: str | None = None) -> bool:
+        if self.green_hold and vehicle_id is None and any(data.get(k) != self.green_hold["binding"].get(k) for k in BINDING_KEYS):
+            return True
         if not self.grant or not (self.owned_manual or self.pending or self.limit):
             return False
         old = self.grant["binding"]
@@ -337,6 +411,8 @@ class ChargerControl:
         self._stop_requested = False
         self._restored = False
         self._external_mode = False
+        self.idle_blocked = False
+        self._green_interrupt = False
         self._external_limit_entities.discard(self.coordinator.profile(vehicle_id).get("limit_writer_entity"))
 
     async def authorize(self, vehicle_id: str) -> None:
@@ -362,17 +438,26 @@ class ChargerControl:
         report_time = timestamp(reported.state) if reported else None
         expected = "MANUAL_CHARGING" if option == "Manual" else "GREEN_CHARGING"
         switch = state(self.hass, cfg.get("charger_switch_entity"))
-        power = power_kw(self.hass, cfg.get("power_entity"), dt_util.utcnow().timestamp())
+        power = physical_power(self.hass, cfg, dt_util.utcnow().timestamp())
         stopped = switch and switch.state == "off" and power["fresh"] and not power["positive"]
         recent = report_time is not None and -60 <= dt_util.utcnow().timestamp() - report_time <= 600
-        return bool(selected and selected.state == option and feedback and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (feedback.attributes.get("effective_mode") == expected or stopped) and recent and (sent is None or report_time >= sent - 2 or stopped))
+        if self.config.get("charger_fault_recovery"):
+            # Stable cached mode is enough to send a new mode intent. Its
+            # acknowledgment remains separate from proof of physical charging.
+            changed_feedback = sent is not None and feedback and feedback.last_updated.timestamp() >= sent-2
+            fresh_power = sent is not None and power["fresh"] and power["received_at"] >= sent-2
+            recent = recent or sent is None or bool(changed_feedback or fresh_power)
+        acknowledged = sent is None or report_time is not None and report_time >= sent-2 or stopped
+        if self.config.get("charger_fault_recovery") and sent is not None:
+            acknowledged = acknowledged or bool(feedback and feedback.last_updated.timestamp() >= sent-2 and feedback.attributes.get("effective_mode") == expected) or bool(power["fresh"] and power["received_at"] >= sent-2 and power["positive"])
+        return bool(selected and selected.state == option and feedback and feedback.state not in {"unknown","unavailable"} and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (feedback.attributes.get("effective_mode") == expected or stopped) and recent and acknowledged)
 
     def _running_manual_readback(self, now: float) -> bool:
         """Observe continuing Manual; this is not acknowledgment of a new write."""
         cfg = self.grant["binding"]
         selected = state(self.hass, cfg.get("control_mode_entity"))
         feedback = state(self.hass, cfg.get("control_feedback_entity"))
-        power = power_kw(self.hass, cfg.get("power_entity"), now)
+        power = physical_power(self.hass, cfg, now)
         return bool(power["fresh"] and power["positive"]
                     and (self.pending is None or power["received_at"] > self.pending["sent"])
                     and selected and selected.state == "Manual"
@@ -419,6 +504,11 @@ class ChargerControl:
         obligation = next((item for item in [*self.dormant_limits, *([self.limit] if self.limit else [])] if domain == "number" and entity_id == item["entity_id"] and values.get("value") == item["original"] and item.get("restore_pending")), None)
         restoring_limit = obligation is not None
         cfg = self.grant["binding"] if negative and self.owned_manual and self.grant else self.config
+        holding = bool(self.green_hold and (self.green_hold["connection_id"] == self._connection_id() or self.green_hold.get("release_required")) and self.green_hold["binding"] == {k:self.config.get(k) for k in BINDING_KEYS})
+        if self.green_hold and not self.owned_manual and self.green_hold["binding"] != {k:self.config.get(k) for k in BINDING_KEYS}:
+            raise DispatchRefused("economic_pause_binding_changed")
+        green_resuming = bool(holding and self.green_hold.get("stage") == "resume_switch" and self.green_hold.get("pre_pause_on") is True and self.green_hold.get("off_confirmed") is True and not self.idle_blocked and not self._green_interrupt and
+                              self._mode_confirmed("Green") and domain == "switch" and service == "turn_on" and entity_id == cfg.get("charger_switch_entity"))
         profile = obligation["vehicle_binding"] if restoring_limit else self.coordinator.profiles.get(self.grant["vehicle_id"], {}) if self.grant else {}
         allowed = domain == "select" and service == "select_option" and entity_id == cfg.get("control_mode_entity") and values.get("option") in {"Green", "Manual"}
         allowed |= domain == "switch" and service in {"turn_on", "turn_off"} and entity_id == cfg.get("charger_switch_entity")
@@ -429,18 +519,20 @@ class ChargerControl:
         reason = self.foreign_reason() or ("external_mode_command" if self._external_mode and not restoring_limit else None)
         if reason:
             raise DispatchRefused(reason)
-        if not negative and not restoring_limit and (reason := self.interlock()):
+        if not negative and not restoring_limit and (reason := self.interlock(check_grant=not green_resuming)):
             raise DispatchRefused(reason)
         cleanup = negative and self.owned_manual and self.grant
-        if not self._same_attachment() and not cleanup and not restoring_limit:
+        if not self._same_attachment() and not cleanup and not restoring_limit and not (holding and (negative or green_resuming)):
             raise DispatchRefused("attachment_changed_before_actuator_call")
         source = state(self.hass, entity_id)
         if negative and (source is None or source.state in {"unknown", "unavailable"} or not self.hass.services.has_service(domain, service)):
             raise DispatchRefused("waiting_actuator_source")
         positive = (domain, service) == ("switch", "turn_on") or domain == "select" and values.get("option") == "Manual" or domain == "number" and (source is None or finite(source.state) is None or values.get("value", 0) > finite(source.state))
-        if positive and self._stop_requested:
+        if positive and not restoring_limit and not green_resuming and not (self.grant and self.owns(self.grant["vehicle_id"])):
+            raise DispatchRefused("positive_call_requires_active_request")
+        if positive and self._stop_requested and not green_resuming:
             raise DispatchRefused("stop_precedes_positive_actuator_call")
-        if positive and not restoring_limit and not price_feed_live(self.hass, self.config, dt_util.utcnow().timestamp()):
+        if positive and not restoring_limit and not green_resuming and not price_feed_live(self.hass, self.config, dt_util.utcnow().timestamp()):
             if not self._unpriced_dispatch_due(dt_util.utcnow().timestamp()):
                 raise DispatchRefused("fallback_window_not_due")
         if domain == "number" and entity_id in self._external_limit_entities:
@@ -449,6 +541,9 @@ class ChargerControl:
         self._contexts.add(context.id)
         if len(self._contexts) > 100:
             self._contexts = {context.id}
+        if self.green_hold and service == "turn_off" and entity_id == cfg.get("charger_switch_entity"):
+            self.green_hold.update(off_dispatched=True,off_context=context.id)
+            await self.coordinator._save(immediate=True)
         async with asyncio.timeout(SERVICE_TIMEOUT):
             await self.hass.services.async_call(domain, service, {"entity_id": entity_id, **values}, blocking=True, context=context)
 
@@ -471,7 +566,7 @@ class ChargerControl:
         sent = self.pending["sent"]
         if self.pending["kind"] == "stop":
             switch = state(self.hass, cfg["charger_switch_entity"])
-            power = power_kw(self.hass, cfg.get("power_entity"), now)
+            power = physical_power(self.hass, cfg, now)
             if not (switch and switch.state == "off" and power["fresh"] and not power["positive"] and power["received_at"] >= sent - 2):
                 self.status = "waiting_physical_stop"
                 await self._retry_negative("switch", "turn_off", cfg["charger_switch_entity"], now)
@@ -517,6 +612,10 @@ class ChargerControl:
             audit = self.limit_audit
             extra = (f" Laadlimiet {audit['entity_id']}: AdaptiveCharge schreef {audit['written']}%; oorspronkelijke instelling {audit['original']}%. Automatisch herstel is overgedragen; controleer deze voertuiglimiet zelf." if audit and audit.get("retired_reason") else "")
             message = {"physical_start_unconfirmed": "Een laadstart is aangevraagd, maar vers laadvermogen is nog niet bevestigd. De opdracht blijft bewaard; er wordt geen extra Start verstuurd. Controleer de auto en laadpaal.", "foreign_controller_requires_new_start": "Een andere bediening heeft de laadpaal overgenomen. De oude opdracht blijft bewaard; een nieuwe eigen Start is nodig voor overname.", "external_mode_command_requires_new_start": "De laadmodus is door een andere bediening gewijzigd. De opdracht blijft bewaard; een nieuwe eigen Start is nodig voor overname."}.get(reason, "Geen automatische nieuwe laadstart. Controleer de besturingsstatus en het fysieke laadvermogen; een aangevraagde stop kan nog onbevestigd zijn.")
+            if reason == "explicit_stop_preserved":
+                message = f"De laadopdracht is gestopt. De eerder door AdaptiveCharge gepauzeerde laadschakelaar {self.config.get('charger_switch_entity')} blijft uit. Ook Green hervat pas als je de schakelaar weer aanzet of de auto opnieuw aansluit."
+            if reason == "invalid_stored_green_pause":
+                message = "De bewaarde economische pauze is ongeldig. De laadschakelaar kan nog uit staan; besturing blijft uit tot je deze toestand controleert."
             await self.hass.services.async_call("persistent_notification", "create", {"notification_id": f"{DOMAIN}_{self.coordinator.entry.entry_id}", "title": "AdaptiveCharge vraagt aandacht", "message": message + extra}, blocking=True)
 
     async def _manual(self, now: float) -> None:
@@ -524,7 +623,7 @@ class ChargerControl:
         if self.owned_manual and self.pending is None:
             since = self.grant.get("start_watch_since") if self.grant else None
             if since is not None:
-                power = power_kw(self.hass, cfg.get("power_entity"), now)
+                power = physical_power(self.hass, cfg, now)
                 if power["fresh"] and power["positive"] and power["received_at"] > since:
                     self.grant["start_watch_since"] = None
                     await self.coordinator._save(immediate=True)
@@ -569,7 +668,7 @@ class ChargerControl:
                     self.pending["vehicle_start_sent"] = False
                     await self.coordinator._save(immediate=True)
                     raise
-            power = power_kw(self.hass, cfg.get("power_entity"), now)
+            power = physical_power(self.hass, cfg, now)
             if power["fresh"] and power["positive"]:
                 self.pending = None
                 self.grant["start_watch_since"] = None
@@ -607,6 +706,8 @@ class ChargerControl:
         """Optional Tesla capability; never infer an allowed raise from a field."""
         if not self.grant:
             return False
+        if row.get("calculation_from_saved_reference"):
+            return False  # A blind fallback may finish a budget, never raise a car setting.
         profile = self.coordinator.profile(self.grant["vehicle_id"])
         writer = profile.get("limit_writer_entity")
         if profile.get("kind") != "tesla" or not profile.get("allow_limit_raise", False) or not writer:
@@ -710,24 +811,216 @@ class ChargerControl:
         if not self.enabled or not self.grant:
             return
         row = result.get("vehicles", {}).get(self.grant["vehicle_id"], {})
-        times = [w[k] for w in (row.get("plan") or {}).get("windows", []) for k in ("start", "end") if isinstance(w.get(k), (int, float)) and w[k] > now + 0.01]
+        times = [w[k] for group in ("windows","green_windows","pause_windows") for w in (row.get("plan") or {}).get(group, []) for k in ("start", "end") if isinstance(w.get(k), (int, float)) and w[k] > now + 0.01]
         if times:
             self._timer = async_track_point_in_utc_time(self.hass, self._wake, datetime.fromtimestamp(min(times), timezone.utc))
+
+    async def _economic_green_step(self, result: dict[str, Any], now: float, *, releasing: bool = False) -> bool:
+        """Manage a proven own OFF and its durable baseline-Green cleanup debt.
+
+        OFF must have been ours (pre-state ON, dispatched OFF, confirmed readback).
+        A real unplug ends the request, not the charger's cleanup obligation. That
+        obligation may restore only Green on the same pinned charger, never Manual.
+        Explicit Stop/foreign control supersedes it and leaves an audited handoff.
+        """
+        active = result.get("active_vehicle")
+        row = result.get("vehicles",{}).get(active,{}) if active else {}
+        owned = bool(active and self.owns(active) and row.get("eligible_for_boost"))
+        desired = bool(not releasing and not self.fault and self.enabled and self.config.get("economic_enabled") and not self.idle_blocked and
+                       (owned and row.get("would_control_mode") == "Pause" or not active and result.get("economic_policy",{}).get("pause")))
+        hold = self.green_hold
+        if hold and (self.foreign_reason() or self._external_mode or self.idle_blocked or self._green_interrupt):
+            reason = hold.get("retire_reason") or "green_pause_transferred_to_foreign_controller"
+            await self._retire_green_pause(reason,notify=True)
+            return False
+        if self.owned_manual:
+            return False
+        if owned and row.get("would_control_mode") == "Manual" and hold:
+            await self._retire_green_pause("pause_transferred_to_explicit_owned_manual")
+            return False  # The Start-bound Manual executor now owes the cleanup.
+        if hold and hold["connection_id"] != self._connection_id():
+            hold.update(release_required=True,release_reason="charger_token_changed")
+        if hold and hold.get("release_required"):
+            desired = False
+        if hold and hold.get("stage") in {"resume_mode","resume_switch"}:
+            desired = False  # Finish the one owned cleanup before considering another pause.
+        if not desired and hold is None:
+            return False
+        if hold and hold["binding"] != {k:self.config.get(k) for k in BINDING_KEYS}:
+            self.status = "economic_pause_binding_changed_cleanup_retained"
+            await self._notify_fault(self.status)
+            return True
+        if self.interlock(check_grant=False) or self.foreign_reason():
+            self.status = "economic_pause_waiting_controller_sources"
+            return True
+        plug = state(self.hass,self.config.get("plug_entity"))
+        if not plug or plug.state != "on" or not self._connection_id():
+            self.status = "own_green_cleanup_waiting_attachment" if hold else "economic_pause_waiting_attachment"
+            return True
+        switch = state(self.hass,self.config.get("charger_switch_entity"))
+        try:
+            if hold is None:
+                # The switch is actual charging, not an enable-permission flag.
+                # An already OFF car/app must never be adopted and turned ON later.
+                before_power = result.get("physical",{})
+                if not switch or switch.state != "on" or not before_power.get("fresh") or not before_power.get("positive") or not self._mode_confirmed("Green"):
+                    self.status = "economic_pause_no_running_green_to_own"
+                    return False
+                hold = {"connection_id":self._connection_id(),"binding":{k:self.config.get(k) for k in BINDING_KEYS},
+                        "stage":"pausing","sent":now,"attempts":1,"last_attempt":now,
+                        "pre_pause_on":True,"pre_pause_power_kw":before_power.get("kw"),"pre_pause_power_at":before_power.get("received_at"),
+                        "off_dispatched":False,"off_confirmed":False,"release_required":False}
+                self.green_hold = hold
+                await self.coordinator._save(immediate=True)
+                if self.green_hold is not hold or self._green_interrupt:
+                    return True
+                await self._call("switch","turn_off",self.config["charger_switch_entity"])
+                self.status = "economic_green_pause_requested"
+                return True
+            physical = result.get("physical",{})
+            post_off = bool(hold.get("off_dispatched") and switch and switch.state == "off" and switch.last_reported.timestamp() >= hold["sent"]-2
+                            and physical.get("fresh") and not physical.get("positive") and physical.get("received_at",0) >= hold["sent"]-2)
+            if not hold["off_confirmed"] and post_off:
+                hold.update(off_confirmed=True,stage="paused")
+                await self.coordinator._save(immediate=True)
+                if self.green_hold is not hold or self._green_interrupt:
+                    return True
+            if desired:
+                if hold["off_confirmed"]:
+                    if switch and switch.state == "on":
+                        self.idle_blocked = True
+                        await self._retire_green_pause("economic_pause_unexpected_on_preserved",notify=True)
+                    else:
+                        self.status = "economic_green_paused"
+                else:
+                    self.status = "economic_green_pause_unconfirmed"
+                    if now-hold.get("last_attempt",hold["sent"]) >= 30 and hold.get("attempts",1)<3:
+                        hold["last_attempt"],hold["attempts"] = now,hold.get("attempts",1)+1
+                        await self.coordinator._save(immediate=True)
+                        if self.green_hold is hold and not self._green_interrupt:
+                            await self._call("switch","turn_off",self.config["charger_switch_entity"])
+                return True
+            if switch and switch.state == "on" and self._mode_confirmed("Green"):
+                await self._retire_green_pause("green_baseline_restored_readback")
+                return True  # No positive write is needed if baseline is already back.
+            if not hold["off_confirmed"]:
+                self.status = "own_green_cleanup_off_not_confirmed"
+                if now-hold["sent"] > FEEDBACK_TIMEOUT:
+                    await self._notify_fault(self.status)
+                return True  # Preserve the debt; never adopt an unproven OFF.
+            if hold["stage"] not in {"resume_mode","resume_switch"}:
+                hold.update(stage="resume_mode",sent=now)
+                await self.coordinator._save(immediate=True)
+                if self.green_hold is not hold or self._green_interrupt:
+                    return True
+                await self._call("select","select_option",self.config["control_mode_entity"],option="Green")
+                self.status = "economic_green_resume_mode"
+                return True
+            if hold["stage"] == "resume_mode":
+                if not self._mode_confirmed("Green",hold["sent"]):
+                    self.status = "economic_green_resume_waiting_feedback"
+                    return True
+                hold.update(stage="resume_switch",sent=now)
+                await self.coordinator._save(immediate=True)
+                if self.green_hold is not hold or self._green_interrupt:
+                    return True
+                await self._call("switch","turn_on",self.config["charger_switch_entity"])
+                self.status = "economic_green_resume_requested"
+                return True
+            if switch and switch.state == "on" and self._mode_confirmed("Green"):
+                await self._retire_green_pause("economic_green_resumed_confirmed")
+            else:
+                self.status = "economic_green_resume_unconfirmed"
+                if now-hold["sent"] > FEEDBACK_TIMEOUT:
+                    await self._notify_fault(self.status)
+            return True
+        except (ValueError,TimeoutError,HomeAssistantError) as exc:
+            self.status = f"own_green_cleanup_retained:{type(exc).__name__}"
+            await self.coordinator._save(immediate=True)
+            return True
+
+    def _assess_caps(self, result: dict[str,Any], now: float) -> None:
+        """Bound unmetered exposure without inventing delivered-energy credit.
+
+        A missing vehicle update is irrelevant to this guard. When the meter is
+        missing, maximum possible Manual energy advances a separate safety bound.
+        The real goal ledger remains unchanged until actual measurements return.
+        """
+        if not self.grant or not self.owns(self.grant["vehicle_id"],terminal=True):
+            return
+        if self.fault == "invalid_stored_exposure_bound":
+            return  # Retain valid limit/negative cleanup obligations, never repair authority silently.
+        grant = self.grant
+        request = self.coordinator.sessions.get(grant["vehicle_id"])
+        if request is None:
+            return
+        if not self.owned_manual and request.terminal and self.fault != "unmetered_energy_exposure_cap":
+            return  # Idle terminal grants must not churn the persistent store.
+        origin = request.origin_meter if request.origin_meter is not None else request.anchor_meter
+        used = max(0,request.last_meter-origin) if request.last_meter is not None and origin is not None else 0.0
+        rate = finite(self.config.get("power_kw",22))
+        rate = rate if rate is not None and 1 <= rate <= 22 else 22
+        previous = finite(grant.get("cap_checked_at"))
+        exposure = finite(grant.get("unmetered_exposure_kwh")) or 0.0
+        if result.get("meter_kwh") is not None:
+            reported = finite(result.get("meter_observed_at")) or now
+            since = max(reported,finite(grant.get("manual_since")) or now)
+            exposure = rate*max(0,now-since)/3600 if self.owned_manual else 0.0
+            grant["last_known_used_kwh"] = used
+            if (self.fault == "unmetered_energy_exposure_cap" and reported > grant.get("exposure_fault_report_at",0)
+                    and used + rate*600/3600 < grant["max_kwh"]):
+                self.fault = None  # Recovered real accounting automatically reassesses the same request.
+        elif self.owned_manual:
+            exposure += rate*max(0,now-(previous if previous is not None else now))/3600
+        if self.owned_manual or exposure or grant.get("unmetered_exposure_kwh"):
+            grant["unmetered_exposure_kwh"],grant["cap_checked_at"] = exposure,now
+        bounded_used = max(used,(finite(grant.get("last_known_used_kwh")) or used)+exposure)
+        seconds = grant.get("manual_seconds",0)+max(0,now-grant["manual_since"]) if grant.get("manual_since") is not None else grant.get("manual_seconds",0)
+        hours = finite(self.config.get("maximum_manual_hours",MAX_MANUAL_SECONDS/3600))
+        maximum = hours*3600 if hours is not None and 1 <= hours <= 48 else MAX_MANUAL_SECONDS
+        if not request.terminal or self.owned_manual or self.pending:
+            if used >= grant["max_kwh"] or seconds >= maximum:
+                self.fault = "command_energy_or_manual_time_cap"
+            elif bounded_used >= grant["max_kwh"]:
+                if self.fault != "unmetered_energy_exposure_cap":
+                    grant["exposure_fault_report_at"] = finite(result.get("meter_observed_at")) or now
+                self.fault = "unmetered_energy_exposure_cap"
 
     async def step(self, result: dict[str, Any], now: float) -> None:
         """Execute the current request, never a captured old timer payload."""
         await self.drain_events()
         await self._restore_dormant_limits()
+        if self.fault == "invalid_stored_green_pause":
+            await self._notify_fault()
+        self._assess_caps(result,now)
+        request = self.coordinator.sessions.get(self.grant["vehicle_id"]) if self.grant else None
+        if self.limit and not self.owned_manual and self.pending is None and (not self.enabled or request is None or request.terminal or self.fault):
+            try:
+                await self.restore_limit()
+            except (ValueError, TimeoutError, HomeAssistantError):
+                self.status = "waiting_limit_restore_readback"
+        if await self._economic_green_step(result,now):
+            self.schedule(result,now)
+            return
+        if self.config.get("charger_fault_recovery") and self.grant and self.owns(self.grant["vehicle_id"]):
+            gateway = state(self.hass,self.config.get("charger_connectivity_entity"))
+            missing = bool(self.config.get("charger_connectivity_entity") and (not gateway or gateway.state != "on"))
+            missing |= any((s := state(self.hass,self.config.get(key))) is None or s.state in {"unknown","unavailable"} for key in ("control_mode_entity","control_feedback_entity","control_report_entity"))
+            if missing and not self._stop_requested and not self.fault:
+                if not self._charger_outage:
+                    self._charger_outage = True
+                    await self.coordinator._save(immediate=True)
+                self.status = "charger_gateway_recovery_waiting"
+                return
+            if self._charger_outage and not missing:
+                self._charger_outage = False
+                self._restored = True
+                if self.pending and self.pending.get("kind") == "manual":
+                    self.pending = None
+                await self.coordinator._save(immediate=True)
         if not self.enabled and not self.owned_manual and not self.limit:
             self.status = "disabled"
             return
-        if self.grant and self.owns(self.grant["vehicle_id"], terminal=True):
-            request = self.coordinator.sessions.get(self.grant["vehicle_id"])
-            origin = request.origin_meter if request and request.origin_meter is not None else request.anchor_meter if request else None
-            used = max(0, request.last_meter - origin) if request and request.last_meter is not None and origin is not None else 0
-            seconds = self.grant.get("manual_seconds", 0) + (max(0, now - self.grant["manual_since"]) if self.grant.get("manual_since") is not None else 0)
-            if request and (not request.terminal or self.owned_manual or self.pending) and (used >= self.grant["max_kwh"] or seconds >= MAX_MANUAL_SECONDS):
-                self.fault = "command_energy_or_manual_time_cap"
         if self.grant and (self._external_mode or self.foreign_reason()):
             before = self.as_dict()
             self.fault = "foreign_controller_requires_new_start" if not self._external_mode else "external_mode_command_requires_new_start"
@@ -774,7 +1067,10 @@ class ChargerControl:
                 if self.status != "owned_stop_unconfirmed":
                     self.status = reason
             elif self.limit:
-                await self.restore_limit()
+                try:
+                    await self.restore_limit()
+                except (ValueError, TimeoutError, HomeAssistantError):
+                    self.status = "waiting_limit_restore_readback"
             return
         self._interlock_since = None
         if self._interlock_fault and not self.owned_manual and not self.limit and not self.pending:
@@ -806,6 +1102,18 @@ class ChargerControl:
             return
         if self._connection_id() is not None:
             self._connection_unknown_since = None
+        if request and not request.terminal and request.connection_gap_since is not None:
+            # Keep the logical request, but do not carry its Manual intent onto
+            # an attachment that became unobservable. Return owned Manual to
+            # baseline while same-vehicle evidence recovers automatically.
+            if self.owned_manual:
+                try:
+                    await self._green(now)
+                except (ValueError,TimeoutError,HomeAssistantError):
+                    self.status = "owned_stop_unconfirmed"
+                    return
+            self.status = "attachment_recovery_waiting_vehicle_evidence_request_preserved"
+            return
         if not self._same_attachment():
             current = self._connection_id()
             if not current:
@@ -982,13 +1290,15 @@ class ChargerControl:
                         await self.restore_limit()
                 else:
                     try:
+                        if self.green_hold:
+                            await self._economic_green_step({"active_vehicle":None},dt_util.utcnow().timestamp(),releasing=True)
                         await self._green(dt_util.utcnow().timestamp())
                         if not self.owned_manual:
                             await self.restore_limit()
                     except (ValueError, TimeoutError, HomeAssistantError):
                         self.status = "owned_stop_unconfirmed"
                 await self.coordinator._save(immediate=True)
-            if not self.owned_manual and (not self.limit or not self.limit.get("restore_pending")):
+            if not self.owned_manual and not self.green_hold and (not self.limit or not self.limit.get("restore_pending")):
                 break
             if asyncio.get_running_loop().time() >= deadline:
                 async with self.coordinator._lock:

@@ -34,6 +34,8 @@ def planning_attributes(row: dict[str, Any], now: float | None) -> dict[str, Any
         result["remaining_minutes"] = None
         return result
     result["reason"] = prediction.get("reason")
+    for key in ("mean_import","price_ceiling","tariff_coverage_end","early_threshold_active","green_windows","pause_windows","mean_basis","cost_scope"):
+        result[key] = prediction.get(key)
     raw = prediction.get("windows") or []
     if not isinstance(raw, (list,tuple)):
         result["remaining_minutes"] = None
@@ -83,5 +85,9 @@ def planning_attributes(row: dict[str, Any], now: float | None) -> dict[str, Any
             minutes += overlap/60
             energy += overlap*rate
         result["quarters"].append({"start":iso(start),"end":iso(end),"charging":minutes>0,
-                                   "minutes":minutes,"energy_kwh":energy})
+                                   "minutes":minutes,"energy_kwh":energy,
+                                   "charging_scope":"scheduled_manual_only",
+                                   "autonomous_green_allowed":not any(w["start"]<end and w["end"]>start for w in prediction.get("pause_windows",[])),
+                                   "economic_pause_minutes":sum(max(0,min(w["end"],end)-max(w["start"],start))/60 for w in prediction.get("pause_windows",[])),
+                                   "forecast_green_minutes":sum(max(0,min(w["end"],end)-max(w["start"],start))/60 for w in prediction.get("green_windows",[]))})
     return result

@@ -1,8 +1,14 @@
-# AdaptiveCharge 5.1 — uitschakelbare laadbesturing
+# AdaptiveCharge 5.2 — laadplanning en economische Green-keuze
 
 Deze beta bundelt planning rond een gedeelde laadpaal met afzonderlijke
 voertuigprofielen voor Tesla en Volkswagen ID.3. Enphase Green blijft de basis;
 de integratie plant aanvullend netladen naar een bereikdoel en vertrektijd.
+De optionele economische regeling vergelijkt Green met later inkopen. Zonder
+opdracht kan een afzonderlijke filter Green pauzeren wanneer netto terugleveren
+meer oplevert dan het tijdgewogen gemiddelde van de complete bekende dagen.
+Bij een vertrek buiten de bekende tarieven kiest vroege inkoop alleen kwartieren
+onder dat gemiddelde minus een instelbare centaftrek. Noodzakelijk deadline-laden
+houdt voorrang. Zie [economische planning](docs/ECONOMISCHE_PLANNING.md).
 
 Zonder bruikbare prijzen plant hij één aaneengesloten blok dat eindigt bij vertrek.
 Drie uur laden voor 06:15 begint dan om 03:15, zonder extra prijsplanreserve.
@@ -13,7 +19,9 @@ laadduur in minuten; `quarters` bevat per kwartier de geplande minuten en kWh,
 inclusief nulkwartieren tussen blokken. Zie [het kaartvoorbeeld](examples/planning-card.yaml).
 Vervang daarin de voorbeeldentiteit door de werkelijke planningssensor van je auto.
 De kWh zijn de totale geplande AC-laadenergie tijdens Manual, inclusief eventuele
-zon in die vensters. Autonome Green-opbrengst buiten de vensters wordt niet voorspeld.
+zon in die vensters. De economische planner toont daarnaast apart toegewezen
+Green-energie en pauzes. Deze toewijzing is geen voorspelling van alle autonome
+Green-opbrengst: Enphase kan meer overschot benutten dan het nog benodigde budget.
 
 **De hoofdschakelaar staat standaard uit.** Uit betekent alleen meerekenen.
 Met de hoofdschakelaar aan en een expliciete Start bestuurt de integratie de
@@ -25,7 +33,7 @@ Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTR
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.1.0b8`. Met beta's ingeschakeld biedt HACS ook
+downloaden en kies expliciet `v5.2.0b1`. Met beta's ingeschakeld biedt HACS ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie

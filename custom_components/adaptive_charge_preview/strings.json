@@ -35,7 +35,27 @@
           "charger_switch_entity": "Enphase start/stop switch",
           "control_feedback_entity": "Enphase preferred/effective mode feedback",
           "control_report_entity": "Enphase actual report timestamp",
-          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)"
+          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
+          "economic_enabled": "Economic planning and Green pause (B)",
+          "idle_green_price_filter": "Also use the Green price filter without a request",
+          "early_offset_cents": "Early import: cents/kWh below the weighted day mean",
+          "export_contract": "Export contract (unknown / complete column / Zonneplan)",
+          "capacity_entity": "Charger status including safe-mode indication (read only)",
+          "gateway_connectivity_entity": "Gateway connectivity (read only)",
+          "safe_power_kw": "Planning power during safe mode or Gateway outage (kW)",
+          "nominal_current_a": "Current corresponding to normal full planning power (A)",
+          "zonneplan_tax_eur_kwh": "Energy tax already included in import, incl. VAT (EUR/kWh)",
+          "zonneplan_tax_valid_until": "Included energy tax valid through (YYYY-MM-DD)",
+          "zonneplan_import_fee_eur_kwh": "Import fee already included, incl. VAT (EUR/kWh)",
+          "zonneplan_export_fee_eur_kwh": "Export fee received, incl. VAT (EUR/kWh)",
+          "zonneplan_bonus_eligible": "Contract eligible for daylight Zonnebonus (requires annual counter)",
+          "bonus_export_ytd_entity": "Actual bonus-relevant exported energy this calendar year (kWh)",
+          "bonus_export_year": "Confirmed calendar year of the export counter (0 = entity year attribute)",
+          "maximum_export_kw": "Physical maximum export for conservative bonus headroom (kW)",
+          "charger_fault_recovery": "Preserve request across charger/Gateway faults and token refresh",
+          "maximum_manual_hours": "Maximum total Manual time per request (hours)",
+          "fallback_power_entity": "Fallback charger power when the independent source is unavailable (W/kW)",
+          "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)"
         }
       },
       "reconfigure": {
@@ -70,7 +90,27 @@
           "charger_switch_entity": "Enphase start/stop switch",
           "control_feedback_entity": "Enphase preferred/effective mode feedback",
           "control_report_entity": "Enphase actual report timestamp",
-          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)"
+          "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
+          "economic_enabled": "Economic planning and Green pause (B)",
+          "idle_green_price_filter": "Also use the Green price filter without a request",
+          "early_offset_cents": "Early import: cents/kWh below the weighted day mean",
+          "export_contract": "Export contract (unknown / complete column / Zonneplan)",
+          "capacity_entity": "Charger status including safe-mode indication (read only)",
+          "gateway_connectivity_entity": "Gateway connectivity (read only)",
+          "safe_power_kw": "Planning power during safe mode or Gateway outage (kW)",
+          "nominal_current_a": "Current corresponding to normal full planning power (A)",
+          "zonneplan_tax_eur_kwh": "Energy tax already included in import, incl. VAT (EUR/kWh)",
+          "zonneplan_tax_valid_until": "Included energy tax valid through (YYYY-MM-DD)",
+          "zonneplan_import_fee_eur_kwh": "Import fee already included, incl. VAT (EUR/kWh)",
+          "zonneplan_export_fee_eur_kwh": "Export fee received, incl. VAT (EUR/kWh)",
+          "zonneplan_bonus_eligible": "Contract eligible for daylight Zonnebonus (requires annual counter)",
+          "bonus_export_ytd_entity": "Actual bonus-relevant exported energy this calendar year (kWh)",
+          "bonus_export_year": "Confirmed calendar year of the export counter (0 = entity year attribute)",
+          "maximum_export_kw": "Physical maximum export for conservative bonus headroom (kW)",
+          "charger_fault_recovery": "Preserve request across charger/Gateway faults and token refresh",
+          "maximum_manual_hours": "Maximum total Manual time per request (hours)",
+          "fallback_power_entity": "Fallback charger power when the independent source is unavailable (W/kW)",
+          "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)"
         },
         "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor."
       }
@@ -115,7 +155,8 @@
             "allow_limit_raise": "Allow temporary Tesla limit raise",
             "maximum_soc": "Ceiling for temporary limit raises (%)",
             "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
-            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)",
+            "current_limit_entity": "Current vehicle current limit (A, read only)"
           }
         },
         "reconfigure": {
@@ -140,7 +181,8 @@
             "allow_limit_raise": "Allow temporary Tesla limit raise",
             "maximum_soc": "Ceiling for temporary limit raises (%)",
             "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
-            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)",
+            "current_limit_entity": "Current vehicle current limit (A, read only)"
           },
           "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written."
         }

@@ -37,6 +37,22 @@ class Session:
     tolerated_soc: float | None = None
     origin_meter: float | None = None
     reference_values: tuple[float | None, ...] | None = None
+    connection_aliases: tuple[str, ...] = ()
+    connection_gap_since: float | None = None
+    anchor_provisional: bool = False
+    reference_measured_at: float | None = None
+
+    def refresh_charger_token(self, connection_id: str) -> None:
+        """Record a device-token refresh without resetting logical ownership.
+
+        The HA shell must first corroborate the same vehicle and attachment and
+        process actual unplug edges. This method alone grants no such evidence.
+        """
+        if self.terminal or not isinstance(connection_id,str) or not connection_id:
+            raise ValueError("Cannot refresh an inactive attachment")
+        if self.connection_id and self.connection_id != connection_id:
+            self.connection_aliases = (*self.connection_aliases[-7:],self.connection_id)
+            self.connection_id = connection_id
 
     def stop(self, reason: str = "explicit_preview_stop") -> None:
         """Revoke the local preview command only; Green is independent."""
@@ -96,6 +112,13 @@ class Session:
             self.meter_fault = True
             self.phase, self.reason = "blocked", "meter_identity_changed"
             return None
+        if demand.confirmed and finite(meter) is None:
+            # A fresh independent vehicle goal can stop Manual even while the
+            # charger meter is temporarily unavailable. It grants no new energy.
+            self.confirmed_soc = self.confirmed_soc if self.confirmed_soc is not None else snapshot.soc.value
+            self.tolerated_soc, self.below_since = None, None
+            self.phase, self.reason, self.remaining_kwh = "watching","vehicle_goal_confirmed",0.0
+            return 0.0
         meter = finite(meter)
         if meter is None or meter < 0:
             self.phase, self.reason = "waiting_data", "energy_meter_invalid"
@@ -129,9 +152,18 @@ class Session:
                 self.anchor_soc = snapshot.soc.value
                 self.anchor_signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
                 self.reference_values = (*self.anchor_signature, snapshot.soh.value)
+                self.anchor_provisional = True
+                self.reference_measured_at = demand.measured_at
             return self.consume_meter(meter)
         self.reference_values = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value, snapshot.soh.value)
+        self.reference_measured_at = demand.measured_at
         soc = snapshot.soc.value
+        if self.anchor_provisional and demand.measured_at is not None and demand.measured_at >= self.started_at:
+            # The first actual post-Start capture can correct an initial estimate
+            # downward too. Repeating the same capture cannot replenish it again.
+            self.anchor_meter, self.anchor_need, self.anchor_soc = meter,demand.needed_kwh,soc
+            self.anchor_signature = (soc,snapshot.battery_kwh.value,snapshot.range_km.value,snapshot.limit_soc.value)
+            self.anchor_provisional = False
         if demand.confirmed:
             if self.confirmed_soc is None:
                 self.confirmed_soc = soc
@@ -235,16 +267,21 @@ class Session:
         number = lambda value: type(value) in (int, float) and finite(value) is not None
         if not isinstance(session.vehicle_id, str) or not session.vehicle_id or type(session.generation) is not int or session.generation < 1 or not number(session.target_km) or not 0 < session.target_km <= 2000 or not number(session.started_at) or session.started_at <= 0:
             raise ValueError("Invalid stored command")
+        if not isinstance(session.connection_aliases,(list,tuple)) or len(session.connection_aliases)>8 or any(not isinstance(x,str) or not x for x in session.connection_aliases):
+            raise ValueError("Invalid attachment aliases")
+        session.connection_aliases = tuple(session.connection_aliases)
+        if type(session.anchor_provisional) is not bool:
+            raise ValueError("Invalid provisional anchor flag")
         if type(session.terminal) is not bool or type(session.meter_fault) is not bool or type(session.identity_gap) is not bool or session.phase not in {"idle", "waiting_data", "blocked", "watching", "within_tolerance", "scheduled", "verifying"} or not isinstance(session.reason, str):
             raise ValueError("Invalid stored command state")
         for key in ("connection_id", "source_token", "meter_id"):
             if getattr(session, key) is not None and not isinstance(getattr(session, key), str):
                 raise ValueError("Invalid stored identity")
-        for key in ("departure", "anchor_meter", "last_meter", "anchor_need", "anchor_soc", "confirmed_soc", "tolerated_soc", "below_since", "remaining_kwh", "origin_meter"):
+        for key in ("departure", "anchor_meter", "last_meter", "anchor_need", "anchor_soc", "confirmed_soc", "tolerated_soc", "below_since", "remaining_kwh", "origin_meter", "connection_gap_since", "reference_measured_at"):
             value = getattr(session, key)
             if value is not None and not number(value):
                 raise ValueError("Non-finite stored command value")
-        if any(getattr(session, key) is not None and getattr(session, key) < 0 for key in ("departure", "anchor_meter", "last_meter", "below_since", "origin_meter")) or any(getattr(session, key) is not None and not 0 <= getattr(session, key) <= 100 for key in ("anchor_soc", "confirmed_soc", "tolerated_soc")):
+        if any(getattr(session, key) is not None and getattr(session, key) < 0 for key in ("departure", "anchor_meter", "last_meter", "below_since", "origin_meter", "connection_gap_since", "reference_measured_at")) or any(getattr(session, key) is not None and not 0 <= getattr(session, key) <= 100 for key in ("anchor_soc", "confirmed_soc", "tolerated_soc")):
             raise ValueError("Stored command value out of range")
         if (session.anchor_meter is None) != (session.anchor_need is None) or session.anchor_meter is not None and session.last_meter is not None and session.last_meter < session.anchor_meter:
             raise ValueError("Inconsistent stored energy anchor")
