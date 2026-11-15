@@ -43,7 +43,6 @@
           "capacity_entity": "Charger status including safe-mode indication (read only)",
           "gateway_connectivity_entity": "Gateway connectivity (read only)",
           "safe_power_kw": "Planning power during safe mode or Gateway outage (kW)",
-          "nominal_current_a": "Current corresponding to normal full planning power (A)",
           "zonneplan_tax_eur_kwh": "Energy tax already included in import, incl. VAT (EUR/kWh)",
           "zonneplan_tax_valid_until": "Included energy tax valid through (YYYY-MM-DD)",
           "zonneplan_import_fee_eur_kwh": "Import fee already included, incl. VAT (EUR/kWh)",
@@ -98,7 +97,6 @@
           "capacity_entity": "Charger status including safe-mode indication (read only)",
           "gateway_connectivity_entity": "Gateway connectivity (read only)",
           "safe_power_kw": "Planning power during safe mode or Gateway outage (kW)",
-          "nominal_current_a": "Current corresponding to normal full planning power (A)",
           "zonneplan_tax_eur_kwh": "Energy tax already included in import, incl. VAT (EUR/kWh)",
           "zonneplan_tax_valid_until": "Included energy tax valid through (YYYY-MM-DD)",
           "zonneplan_import_fee_eur_kwh": "Import fee already included, incl. VAT (EUR/kWh)",
@@ -155,8 +153,7 @@
             "allow_limit_raise": "Allow temporary Tesla limit raise",
             "maximum_soc": "Ceiling for temporary limit raises (%)",
             "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
-            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)",
-            "current_limit_entity": "Current vehicle current limit (A, read only)"
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
           }
         },
         "reconfigure": {
@@ -181,8 +178,7 @@
             "allow_limit_raise": "Allow temporary Tesla limit raise",
             "maximum_soc": "Ceiling for temporary limit raises (%)",
             "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
-            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)",
-            "current_limit_entity": "Current vehicle current limit (A, read only)"
+            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
           },
           "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written."
         }

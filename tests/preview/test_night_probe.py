@@ -184,7 +184,8 @@ async def test_probe_contract_matches_real_ha_registration_and_real_entities(tmp
         descriptions=[{'domain':'adaptive_charge_preview','services':{name:{'fields':{str(k):{} for k in s.schema.schema}} for name,s in services.items()}}]
         record={'root':PreviewSensor(c).extra_state_attributes,'row':PreviewSensor(c,v).extra_state_attributes}
         contract(record,descriptions,settings(Clock()))
-        assert record['root']['integration_version']=='5.2.0b1'
+        from custom_components.adaptive_charge_preview.const import VERSION
+        assert record['root']['integration_version']==VERSION
     finally:
         await close(hass,c)
 

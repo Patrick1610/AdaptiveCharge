@@ -275,31 +275,27 @@ def price_rows(hass: HomeAssistant, config: dict[str, Any], now: float) -> tuple
 
 
 def planning_capacity(hass: HomeAssistant, charger: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    """Read normal/safe capacity and optional vehicle limits; never write amps."""
+    """Use charger normal/safe capacity; vehicle pilot current is not a forecast."""
     shared, cap = finite(charger.get("power_kw",11)), finite(profile.get("planning_power_kw",0))
     safe = finite(charger.get("safe_power_kw",5.5))
     if shared is None or not 1 <= shared <= 22 or cap is None or cap != 0 and not 1 <= cap <= 22 or safe is None or not 1 <= safe <= 22:
         raise ValueError("planning_power_unavailable_or_invalid")
     power, reason = shared, "configured_normal_power"
+    capacity_source = "enphase_normal"
     gateway = state(hass, charger.get("gateway_connectivity_entity"))
     status = state(hass, charger.get("capacity_entity"))
     safe_mode = bool(status and ("safe" in status.state.lower() or status.attributes.get("safe_mode") is True))
     status_unknown = bool(charger.get("capacity_entity") and (status is None or status.state in {"unknown","unavailable"}))
     if safe_mode or status_unknown or charger.get("gateway_connectivity_entity") and (gateway is None or gateway.state != "on"):
         power, reason = min(power,safe), "safe_mode_or_gateway_unavailable"
+        capacity_source = "enphase_safe"
     if cap:
+        if cap < power:
+            capacity_source = "vehicle_planning_cap"
         power, reason = min(power,cap), reason+":vehicle_planning_cap"
-    current = state(hass, profile.get("current_limit_entity"))
-    amps = finite(current.state) if current else None
-    nominal = finite(charger.get("nominal_current_a",16))
-    if current and current.attributes.get("unit_of_measurement") == "A" and amps is not None and 1 <= amps <= 80 and nominal is not None and 6 <= nominal <= 80:
-        power = min(power, shared*amps/nominal)
-        reason += ":observed_vehicle_current_limit"
-    elif profile.get("current_limit_entity"):
-        power = min(power,safe)
-        reason += ":vehicle_current_unknown_safe_power"
     return {"power_kw":power, "reason":reason, "normal_kw":shared, "safe_kw":safe,
-            "vehicle_current_a":amps, "writes_current_or_phases":False}
+            "capacity_source":capacity_source, "vehicle_current_used":False,
+            "writes_current_or_phases":False}
 
 
 def price_feed_live(hass: HomeAssistant, config: dict[str, Any], now: float, rows: list[Tariff] | None = None, warnings: list[str] | None = None) -> bool:

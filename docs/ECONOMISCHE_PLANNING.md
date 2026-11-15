@@ -1,7 +1,9 @@
 # Voorstel: Zonneplan en economisch laden met zonnestroom
 
-Status: ontwerp voor de door Patrick gevraagde uitbreiding van 14 november 2026;
-in ontwikkeling voor 5.2.0b1; nog niet in HA geïnstalleerd of fysiek geaccepteerd.
+Status: uitwerking van de door Patrick gevraagde uitbreiding van 14 november 2026.
+5.2.0b1 is gepubliceerd en in HA geïnstalleerd; de fysieke nachtproef loopt.
+5.2.0b2 corrigeert de daarbij gevonden terugkoppeling van voertuigstroom naar
+de planning. De volledige fysieke acceptatie staat nog open.
 De aanpak voor onbekende verre tarieven is aangescherpt na Patricks expliciete
 opdracht: een instelbare aftrek in cent/kWh onder het bekende gewogen gemiddelde,
 met voorrang voor een haalbaar vertrekdoel. Dit document vervangt geen
@@ -522,9 +524,22 @@ de optimalisatie/raming en worden nooit een blokkade voor noodzakelijk laden.
   Een ontbrekende bonusjaarteller geeft een zichtbare berekening met de basiswaarde;
   geen verzonnen bonus. De 10%-bonus vereist positieve basis, daglicht, jaarbinding
   en aantoonbare ruimte binnen de 7.500 kWh, met een conservatieve fysieke grens.
-- Gedeeld normaal/safe vermogen en een optionele afgelezen voertuigstroomlimiet
-  wijzigen alleen de planning. Geen fase-/ampèreschrijven. Een ontbrekende
-  stroomlimiet gebruikt het conservatieve safe-rekenvermogen, geen laadverbod.
+- Enphase is de automatische bron voor de planningscapaciteit: het ingestelde
+  normale vermogen, of het safe-vermogen bij safe mode/ontbrekende Gatewaystatus.
+  Vanaf 5.2.0b2 is de Tesla-pilotstroom geen capaciteitsbron meer. De eigenaar heeft
+  deze vereenvoudiging expliciet gekozen nadat 5/16 A-terugmeldingen tijdens de
+  nachtproef een verkeerde urgentie en herhaald schakelen veroorzaakten.
+  HomeWizard blijft de fysieke meting en de energiemeter blijft de boekhouding;
+  laag Green-vermogen verlaagt geen voorspelde Manual-capaciteit. Geen fase- of
+  ampèreschrijven. Een bewust vast lager planningsvermogen per auto blijft mogelijk.
+  De oude stroombronvelden zijn niet meer instelbaar en achtergebleven waarden
+  worden genegeerd. `capacity_source` en `vehicle_current_used` tonen de bronkeuze.
+  Tijdens eigen Manual geeft minimaal twee minuten en drie verschillende verse
+  HomeWizard-metingen onder 70% van de rekencapaciteit een zichtbare waarschuwing.
+  `delivery` toont daarbij wanneer het resterende budget klaar zou zijn als vanaf
+  nu onafgebroken met die waargenomen snelheid wordt geladen. Dat is een
+  voorwaardelijke vergelijking met vertrek, geen nieuwe planning. Deze diagnose
+  verandert geen vermogen, venster, opdracht of actuator en blokkeert niets.
 - Een bewaard budget blijft bruikbaar bij appuitval. Een laatst bekende referentie
   kan een nieuwe expliciete Start ondersteunen; die berekening blijft voorlopig.
   Bij meteruitval blijft de bestaande ruimte bestaan; ontbrekende meterwaarden

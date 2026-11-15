@@ -73,7 +73,7 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         fields[vol.Required(key, default=data.get(key,False))] = bool
     fields[vol.Required("early_offset_cents", default=data.get("early_offset_cents",0))] = selector.NumberSelector(selector.NumberSelectorConfig(min=0,max=100,step=.1,mode=selector.NumberSelectorMode.BOX,unit_of_measurement="ct/kWh"))
     fields[vol.Required("export_contract", default=data.get("export_contract","unknown"))] = vol.In(["unknown","column","zonneplan"])
-    for key,default,lower,upper in (("safe_power_kw",5.5,1,22),("nominal_current_a",16,6,80),("zonneplan_tax_eur_kwh",0,0,1),("zonneplan_import_fee_eur_kwh",.02,0,1),("zonneplan_export_fee_eur_kwh",.02,-1,1),("maximum_export_kw",22,1,100),("maximum_manual_hours",8,1,48)):
+    for key,default,lower,upper in (("safe_power_kw",5.5,1,22),("zonneplan_tax_eur_kwh",0,0,1),("zonneplan_import_fee_eur_kwh",.02,0,1),("zonneplan_export_fee_eur_kwh",.02,-1,1),("maximum_export_kw",22,1,100),("maximum_manual_hours",8,1,48)):
         fields[vol.Required(key, default=data.get(key,default))] = vol.All(vol.Coerce(float),vol.Range(min=lower,max=upper))
     fields[vol.Required("zonneplan_tax_valid_until", default=data.get("zonneplan_tax_valid_until",""))] = str
     fields[vol.Required("bonus_export_year", default=data.get("bonus_export_year",0))] = vol.All(vol.Coerce(int),vol.Range(min=0,max=2200))
@@ -93,7 +93,6 @@ def vehicle_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     fields[vol.Required("planning_power_kw", default=data.get("planning_power_kw", 0))] = PlanningPowerSelector(selector.NumberSelectorConfig(min=0, max=22, step=0.1, mode=selector.NumberSelectorMode.BOX))
     fields[vol.Required("allow_limit_raise", default=data.get("allow_limit_raise", False))] = bool
     fields[vol.Required("maximum_soc", default=data.get("maximum_soc", 100))] = vol.All(vol.Coerce(float), vol.Range(min=1, max=100))
-    fields[vol.Optional("current_limit_entity")] = entity(["number","sensor"])
     return vol.Schema(fields)
 
 

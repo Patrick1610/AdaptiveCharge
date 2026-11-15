@@ -51,6 +51,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._connection_gaps: list[float] = []
         self._uncertain_unplug_at: float | None = None
         self.reference_times: dict[str,float] = {}
+        self._delivery_low: dict[str,dict[str,Any]] = {}
 
     @property
     def profiles(self) -> dict[str, dict[str, Any]]:
@@ -93,7 +94,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if len(active) > 1:
             for request in active:
                 request.stop("conflicting_stored_requests")
-        source_ids = {str(v) for cfg in [dict(self.entry.data), *self.profiles.values()] for k, v in cfg.items() if k.endswith("_entity") and v}
+        source_ids = {str(v) for cfg in [dict(self.entry.data), *self.profiles.values()] for k, v in cfg.items() if k.endswith("_entity") and k != "current_limit_entity" and v}
         if source_ids:
             self._unsub = async_track_state_change_event(self.hass, source_ids, self._source_changed)
         gateway = state(self.hass,self.entry.data.get("charger_connectivity_entity"))
@@ -229,8 +230,42 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     row["executor_status"] = self.control.status
                     if row.get("phase") == "would_boost" and self.control.enabled:
                         row["phase"] = "charging" if result["physical"]["positive"] and self.control.owned_manual and self.control.pending is None else "paused"
+            self._delivery_diagnostics(result,dt_util.utcnow().timestamp())
             await self._save()
             return result
+
+    def _delivery_diagnostics(self, result: dict[str,Any], now: float) -> None:
+        """Warn about sustained under-delivery; never alter plans or authority."""
+        physical = result["physical"]
+        switch = state(self.hass,self.entry.data.get("charger_switch_entity"))
+        for vehicle_id,row in result["vehicles"].items():
+            expected, actual = finite(row.get("planning_power_kw")), finite(physical.get("kw"))
+            received = finite(physical.get("received_at"))
+            applicable = bool(self.control.owns(vehicle_id) and self.control.owned_manual
+                and self.control.pending is None and row.get("would_control_mode") == "Manual"
+                and switch and switch.state == "on" and physical.get("fresh") and physical.get("independent")
+                and expected is not None and expected > 0 and actual is not None and received is not None)
+            if not applicable or actual >= expected*.7:
+                self._delivery_low.pop(vehicle_id,None)
+                row["delivery"] = {"state":"on_rate" if applicable else "not_observed"}
+                continue
+            previous = self._delivery_low.get(vehicle_id)
+            if previous is None or now < previous["since"]:
+                previous = {"since":now,"last_report":received,"samples":1}
+                self._delivery_low[vehicle_id] = previous
+            elif received > previous["last_report"]:
+                previous.update(last_report=received,samples=previous["samples"]+1)
+            warning = previous["samples"] >= 3 and now-previous["since"] >= 120
+            remaining = finite((row.get("session") or {}).get("remaining_kwh"))
+            departure = finite(row.get("departure"))
+            finish = now+max(0,remaining)/actual*3600 if remaining is not None and actual > .05 else None
+            row["delivery"] = {"state":"below_capacity" if warning else "observing",
+                "observed_kw":actual,"planning_kw":expected,"since":previous["since"],
+                "distinct_samples":previous["samples"],
+                "continuous_finish_at_observed_rate":dt_util.utc_from_timestamp(finish).isoformat() if finish is not None else None,
+                "departure_lateness_seconds":max(0,finish-departure) if finish is not None and departure is not None else None}
+            if warning:
+                row["warnings"].append("delivered_power_below_planning_capacity")
 
     async def async_set_control_enabled(self, enabled: bool) -> None:
         """Persist the master; enabling alone cannot adopt a preview request."""
@@ -345,9 +380,10 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     active = None
             planning_power = None
             try:
-                planning_power = self.planning_power(profile)
+                capacity = planning_capacity(self.hass,shared,profile)
+                planning_power = capacity["power_kw"]
                 row["planning_power_kw"] = planning_power
-                row["planning_capacity"] = planning_capacity(self.hass,shared,profile)
+                row["planning_capacity"] = capacity
                 departure = self.departure(profile)
                 row["departure"] = departure
                 if request and not request.terminal and request.departure != departure:

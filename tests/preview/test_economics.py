@@ -232,7 +232,7 @@ async def test_device_token_refresh_keeps_request_but_observed_fast_unplug_ends_
 
 
 @pytest.mark.asyncio
-async def test_safe_capacity_and_actual_vehicle_limit_are_read_only(tmp_path):
+async def test_safe_capacity_is_used_and_legacy_vehicle_current_is_ignored(tmp_path):
     hass,c,v,calls=await controlled(tmp_path)
     try:
         cfg={**c.entry.data,"power_kw":11,"safe_power_kw":5.5,"gateway_connectivity_entity":"binary_sensor.gateway"}
@@ -242,7 +242,7 @@ async def test_safe_capacity_and_actual_vehicle_limit_are_read_only(tmp_path):
         assert planning_capacity(hass,cfg,{})["power_kw"]==5.5
         hass.states.async_set("binary_sensor.gateway","on")
         hass.states.async_set("number.car_amps",8,{"unit_of_measurement":"A"})
-        assert planning_capacity(hass,cfg,{"current_limit_entity":"number.car_amps"})["power_kw"]==5.5
+        assert planning_capacity(hass,cfg,{"current_limit_entity":"number.car_amps"})["power_kw"]==11
         assert calls==[]
     finally:
         await close(hass,c)
