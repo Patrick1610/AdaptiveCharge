@@ -52,7 +52,7 @@ def contract(record: dict, descriptions: list, settings: dict) -> None:
     """Validate real public entity and action contracts before the first Start."""
     root, row = record["root"], record["row"]
     required = {"integration_version","control_enabled","command_generation","active_vehicle",
-                "physical","meter_kwh","control_pending","owned_manual","limit_cleanup_pending"}
+                "physical","meter_kwh","control_pending","owned_manual","limit_cleanup_pending","economic_pause","control_status"}
     if not required <= root.keys() or not {"phase","session","demand","observations","maximum_soc"} <= row.keys():
         raise ValueError("Incomplete real integration attribute contract")
     if (type(root["control_enabled"]) is not bool or type(root["command_generation"]) is not int
@@ -82,7 +82,7 @@ def run(h, settings: dict, directory: str | Path, *, clock=time.time, sleep=time
     if settings["version"] != "5.2.0b1" or not 80 <= settings["final_soc"] <= settings["authorised_maximum_soc"] <= 90:
         raise ValueError("Unexpected reviewed version or charge bound")
     post_stop_seconds = settings["post_stop_seconds"]
-    if not isinstance(post_stop_seconds,int) or not 0 <= post_stop_seconds <= 600:
+    if not isinstance(post_stop_seconds,int) or not 30 <= post_stop_seconds <= 600:
         raise ValueError("Post-stop read-only allowance must be explicitly bounded")
     output = Path(directory)
     output.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,9 @@ def run(h, settings: dict, directory: str | Path, *, clock=time.time, sleep=time
     try:
         latest = snapshot(h, settings)
         log(latest)
-        contract(latest,h.request("services"),settings)
+        descriptions=h.request("services")
+        receipt["reported_service_contract"]=next((d for d in descriptions if d.get("domain")==DOMAIN),{})
+        contract(latest,descriptions,settings)
         root, row = latest["root"], latest["row"]
         if root.get("integration_version") != settings["version"] or not root.get("control_enabled"):
             raise ValueError("Reviewed version/Master not loaded")
@@ -144,7 +146,7 @@ def run(h, settings: dict, directory: str | Path, *, clock=time.time, sleep=time
         previous_generation = root.get("command_generation")
         if not isinstance(previous_generation, int):
             raise ValueError("No command-generation binding")
-        short_soc = min(soc + 4, 78)
+        short_soc = min(floor(soc) + 4, 78)
         short_departure = start + 30 * 60
         call("start", target(short_soc, short_departure))
         receipt["phase"] = "waiting_start_readback"
@@ -192,6 +194,10 @@ def run(h, settings: dict, directory: str | Path, *, clock=time.time, sleep=time
                 return receipt
             requested_soc = row.get("demand",{}).get("requested_soc")
             if isinstance(requested_soc,(int,float)) and requested_soc > settings["authorised_maximum_soc"]:
+                if not same_target(session,expected):
+                    receipt["phase"] = "relinquished_changed_target_or_departure"
+                    save()
+                    return receipt
                 raise ValueError("Derived target exceeds the authorized SOC band")
             if clock() > settling_until and not same_target(session,expected):
                 receipt["phase"] = "relinquished_changed_target_or_departure"
@@ -225,7 +231,7 @@ def run(h, settings: dict, directory: str | Path, *, clock=time.time, sleep=time
                 phase, phase_since = "raised", clock()
                 settling_until = clock()+60
             elif phase == "raised" and clock()-phase_since >= 120:
-                call("set_target", target(max(soc+2, short_soc-1), short_departure))
+                call("set_target", target(max(floor(soc)+2, short_soc-1), short_departure))
                 phase, phase_since = "lowered", clock()
                 settling_until = clock()+60
             elif phase == "lowered" and (row.get("phase") in {"watching", "within_tolerance", "verifying"} or clock()-phase_since >= 1200):
@@ -244,17 +250,39 @@ def run(h, settings: dict, directory: str | Path, *, clock=time.time, sleep=time
                 receipt["observations"].append({"kind":"upper_soc_readback", "utc":clock()})
                 break
             sleep(min(30, max(0, end-clock())))
-        latest = snapshot(h, settings)  # Never act from an old pre-outage snapshot.
+        observation_end=end+post_stop_seconds
+        while True:
+            try:
+                latest = snapshot(h, settings)  # Never act from an old pre-outage snapshot.
+                break
+            except Exception as exc:
+                receipt["last_read_error"]=type(exc).__name__
+                receipt["phase"]="finite_end_waiting_readback_request_not_stopped"
+                save()
+                if clock()>=observation_end:
+                    receipt["phase"]="finite_end_unreadable_request_left_to_integration"
+                    save()
+                    return receipt
+                sleep(min(30,observation_end-clock()))
         log(latest)
         final_session = latest["row"].get("session") or {}
         unchanged = same_target(final_session,expected)
         if own(final_session, receipt["binding"]) and unchanged and latest["root"].get("control_enabled"):
-            call("stop")
             receipt["phase"] = "finite_end_stop_requested"
-            observation_end=end+post_stop_seconds
+            save()
+            try:
+                call("stop")
+            except Exception as exc:
+                receipt["stop_return_uncertain"]=type(exc).__name__
+                save()  # Still observe the one intent; never send a second Stop.
             while clock()<observation_end:
                 sleep(min(30,observation_end-clock()))
-                post = snapshot(h, settings)
+                try:
+                    post = snapshot(h, settings)
+                except Exception as exc:
+                    receipt["last_read_error"]=type(exc).__name__
+                    save()
+                    continue
                 log(post)
                 if not (post["row"].get("session") or {}).get("terminal"):
                     receipt["phase"] = "post_stop_foreign_request_preserved"

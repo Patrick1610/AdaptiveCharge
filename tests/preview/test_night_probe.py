@@ -26,7 +26,7 @@ class HA:
         self.actions, self.reads = [], 0
         self.root = {"integration_version":"5.2.0b1", "control_enabled":True,
                      "command_generation":4, "active_vehicle":None, "physical":{},"control_pending":None,
-                     "owned_manual":False,"limit_cleanup_pending":False}
+                     "owned_manual":False,"limit_cleanup_pending":False,"economic_pause":None,"control_status":"green_confirmed"}
         self.row = {"vehicle_id":"T", "observations":{"connected":True,"soc":{"value":49}},
                     "demand":{"full_range_km":450}, "maximum_soc":90,"session":{"terminal":True}, "phase":"idle"}
         self.changed = datetime.fromtimestamp(clock.time()-100,timezone.utc).isoformat()
@@ -187,3 +187,81 @@ async def test_probe_contract_matches_real_ha_registration_and_real_entities(tmp
         assert record['root']['integration_version']=='5.2.0b1'
     finally:
         await close(hass,c)
+
+
+@pytest.mark.asyncio
+async def test_real_api_service_descriptions_include_all_probe_fields(tmp_path):
+    from homeassistant.helpers.service import async_get_all_descriptions
+    from custom_components.adaptive_charge_preview.const import DOMAIN
+    from .test_lifecycle import make_hass
+    from .test_ha import entry
+    hass=await make_hass(tmp_path)
+    e=entry()
+    try:
+        await hass.config_entries.async_add(e)
+        await hass.async_block_till_done()
+        descriptions=await async_get_all_descriptions(hass)
+        # This is the services.yaml-backed provider used by /api/services.
+        for action in ('start','set_target','stop'):
+            expected={'vehicle_id','entry_id'}|({'target_range_km','departure'} if action!='stop' else set())
+            assert expected<=descriptions[DOMAIN][action]['fields'].keys()
+    finally:
+        await hass.config_entries.async_unload(e.entry_id)
+        await hass.async_stop()
+
+
+def test_zero_post_stop_allowance_is_rejected_before_any_action(tmp_path):
+    clock=Clock()
+    h=HA(clock)
+    with pytest.raises(ValueError):
+        run(h,{**settings(clock),'post_stop_seconds':0},tmp_path,clock=clock.time,sleep=clock.sleep)
+    assert not h.actions
+
+
+def test_transient_entity_absence_after_stop_preserves_the_one_stop_intent(tmp_path):
+    clock=Clock()
+    class PostStopHA(HA):
+        def request(self,path,data=None,method=None):
+            result=super().request(path,data,method)
+            if path.endswith('/stop'):
+                self.absent_until=self.clock.time()+90
+            return result
+    h=PostStopHA(clock,powered=False)
+    result=run(h,settings(clock),tmp_path,clock=clock.time,sleep=clock.sleep)
+    assert result['phase']=='finished_requires_history_assessment'
+    assert sum(p.endswith('/stop') for p,_ in h.actions)==1
+    assert result['last_read_error']=='LookupError'
+
+
+def test_restart_grace_expiry_never_sends_a_second_start(tmp_path):
+    clock=Clock()
+    h=HA(clock)
+    h.restart_setup_seconds=900
+    result=run(h,settings(clock),tmp_path,clock=clock.time,sleep=clock.sleep)
+    assert result['phase']=='blocked_no_retry'
+    assert [p.rsplit('/',1)[-1] for p,_ in h.actions]==['start','restart']
+
+
+def test_user_raised_out_of_band_target_relinquishes(tmp_path):
+    clock=Clock()
+    class RaisedHA(HA):
+        def request(self,path,data=None,method=None):
+            if path=='states' and self.reads==6:
+                self.row['session']['target_km']=999
+                self.row['demand']['requested_soc']=99
+            return super().request(path,data,method)
+    h=RaisedHA(clock)
+    result=run(h,settings(clock),tmp_path,clock=clock.time,sleep=clock.sleep)
+    assert result['phase']=='relinquished_changed_target_or_departure'
+    assert len(h.actions)==1
+
+
+def test_fractional_start_soc_has_integral_bounded_intermediate_targets(tmp_path):
+    from math import ceil
+    clock=Clock()
+    h=HA(clock)
+    h.row['observations']['soc']['value']=49.5
+    result=run(h,settings(clock),tmp_path,clock=clock.time,sleep=clock.sleep)
+    assert result['phase']=='finished_requires_history_assessment'
+    targets=[ceil(100*d['target_range_km']/450) for p,d in h.actions if p.endswith(('/start','/set_target'))]
+    assert targets==[53,55,52,85]
