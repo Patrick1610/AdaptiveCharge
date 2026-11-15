@@ -17,6 +17,77 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
 
 ## Aanvulling 5.2: economische planning en automatisch herstel
 
+### Afronding vóór het dynamische contract op 18 november 2026
+
+Patrick meldde op 15 november dat het dynamische contract op woensdag 18 november
+ingaat en dat nog twee nachten met de Tesla beschikbaar zijn voor gerichte proeven.
+Een betrouwbaar vertrekdoel heeft voorrang op prijswinst. De ochtenddeadlines en
+het benodigde minimum zijn bij Patrick uitgevraagd; de live proef wordt pas aan
+die gegevens en een werkelijk aangesloten Tesla gebonden.
+
+De ID.3-proef op 15 november bereikte gemelde 80%, maar de regeling bleef Manual
+houden met circa 1,98 kWh resterend budget. Dat is geen geslaagde doelstopacceptatie.
+De fysieke laadblokken en de kleine doelwijzigings-/Stop-proeven blijven afzonderlijk
+bewijs. Het vervolg naar 80% verbruikte laadruimte zonder de open proefgevallen
+gericht te sluiten. Voor volgende proeven zijn kleine doelen vlak boven de actuele
+SOC/range verplicht; 80–90% is alleen de geautoriseerde bovengrens en niet vanzelf
+een laatste proefstap. Een eventuele praktische eindlading krijgt een afzonderlijk
+doel, een vertrekdeadline en voldoende gereserveerde tijd.
+
+De gerichte 5.2.0b3-correctie onderscheidt doelbewijs van de energieschatting.
+Voor de ID.3 kan een verse SOC het doel bevestigen zonder een capturetijd op de
+accu-energiesensor. Voor de Tesla zijn daarvoor verse, samenhangende SOC en range
+nodig. Werkelijke terugval wordt op diezelfde relevante voertuigvelden beoordeeld;
+de bestaande vijf minuten en terugvalband blijven gelden. Resterende kWh worden
+bij ontbrekende accu-energie geschat met de bewaarde verhouding, niet gepresenteerd
+als een nieuwe accu-energiemeting. Ontvangsttijd wordt geen voertuigmeettijd.
+Teruggedateerde of ontbrekende doelmetingen geven geen doelbevestiging of nieuwe
+voortgangsallocatie; een bewaard laadbudget blijft uitvoerbaar. Dezelfde capture
+en dezelfde SOC mogen geen herhaalde energieallocatie geven. Stop, ontkoppeling,
+meteridentiteit en bestaande energie-/tijdgrenzen blijven voorgaan.
+
+Een oude energiereferentie krijgt geen nieuwe harde vervaldatum. Doelgrenzen komen
+uit afzonderlijk geldige actuele instellingen/referentievelden; bij ontbrekende
+doelreferentie blijft het bestaande begrensde budget gelden, zonder een doelstop
+te verzinnen. De bewaarde kWh-verhouding blijft een expliciet herkenbare schatting,
+met plausibiliteitscontrole en de bestaande opdrachtplafonds. Voor een rollback
+van b3 naar b2 moet eerst expliciet Stop worden uitgevoerd en eigen Manual/pending
+afgerond zijn: b2 kent de nieuwe opgeslagen doelobservatievelden niet. Een downgrade
+van een nog actieve b3-opdracht is daarom geen ondersteunde herstelroute.
+
+Een andere meterentiteit kiezen tijdens een actieve opdracht vergrendelt bewust
+een meterfout; daarvoor zijn expliciet Stop en een nieuwe Start nodig.
+
+Eigen testrun van b3 op 15 november: 1.339 tests geslaagd, niet door de reviewer
+uitgevoerd. Onafhankelijke kritieke review: GO, met nul open kritieke/hoge/
+middelzware bevindingen. Dit is
+geen fysieke nachtacceptatie. Open lage aandachtspunten zijn onder meer een
+stijgende doelgrens zonder SOC-daling tijdens bewaking, doel-/limietdelta's uit
+een opgeslagen referentie tijdens bronuitval, en de brede plausibiliteitsband
+van de geschatte accucapaciteit. Ongeldige verhoudingen blokkeren nieuwe
+energieallocatie maar missen nog een afzonderlijk doelobservatiediagnosticum;
+ID.3-range/SOH blijven referentievelden waarvan de meettijd niet wordt beoordeeld,
+ook als die is meegeleverd. Deze beperkingen zijn geen
+bewijs van een geslaagde fysieke doelstop of natuurlijke terugval.
+
+| Moment | Gerichte acceptatie | Uitkomst moet aantonen |
+| --- | --- | --- |
+| Software vóór nacht 1 | Werkelijk incident replayen; gedeeltelijke bronuitval; oude/nieuwe timestamps; Stop/ontkoppeling | Geen eindeloze Manual na bevestigd doel; geen nieuw budget door ontvangst of dezelfde capture; geen onnodige laadblokkade |
+| Eerste beschikbare Tesla-nacht | Klein bereikdoel; timerstart; verhogen/verlagen binnen dezelfde opdracht; echte doelstop; bewaking; expliciete Stop | Plan én fysieke laadblokken; zelfde energieboekhouding; geen oude timerhervatting; doelstop onderscheiden van energieguard/tolerantie |
+| Overdag na nacht 1 | Werkelijke afwijkingen herstellen en onafhankelijk reviewen | Alleen geteste kandidaat via de bestaande release-/updateprocedure |
+| Tweede beschikbare nacht | Gewone vertrekopdracht zonder tussentijdse operatorcorrecties; resterende kritieke herstelgevallen | Benodigd doel vóór vertrek; normale pauzes en herstel zonder verloren opdracht; Stop/ontkoppeling blijven beëindigend |
+| Voor 18 november | Definitieve versie en inrichting vastzetten; rapport met open beperkingen | Geen volledig functioneel akkoord zolang een vertrek- of doelstopfout openstaat |
+
+Natuurlijke terugval telt alleen mee na echte accudaling; als die niet optreedt,
+blijft die fysieke proef open. Prijsuitval mag het vertrekdoel niet blokkeren:
+het bestaande aaneengesloten blok tot vertrek blijft de terugvalroute. Vóór een
+nachtproef wordt de benodigde eindlading doorgerekend, zodat de kleine proeven
+niet de benodigde vertrektijd of energie opsouperen. Geen tweede controller,
+geen geforceerde fase-/ampèreactie en geen gesimuleerde live voertuigdata.
+
+De actuele kandidaat- en fysieke resultaten worden per stap vastgelegd; bovenstaande
+tabel is een uitvoerplan, geen vooraf verleende testuitslag of voltooiingsclaim.
+
 De optionele B-regeling en de herstelkeuzes staan uitgewerkt in
 [ECONOMISCHE_PLANNING.md](ECONOMISCHE_PLANNING.md#inrichting-en-bewijs-voor-520b1).
 Zonder actieve opdracht is een economische Green-pauze afzonderlijk inschakelbaar.

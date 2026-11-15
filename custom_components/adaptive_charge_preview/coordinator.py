@@ -18,7 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, STORAGE_VERSION, VERSION
-from .core.models import VehicleConfig, demand, finite
+from .core.models import VehicleConfig, demand, finite, observe_goal
 from .core.planner import plan
 from .core.economics import economic_plan, idle_green_policy
 from .core.session import Session
@@ -417,6 +417,10 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.sessions[vehicle_id] = active
                 request = self.sessions.get(vehicle_id)
                 estimated = need.needed_kwh
+                reference = request.reference_values if request else None
+                per_pp = reference[1] / reference[0] * (1 + cfg.margin) if not need.source_fresh and reference and reference[0] > 0 else None
+                goal = observe_goal(cfg, snapshot, need, now, estimated_per_pp=per_pp)
+                row["goal_observation"] = asdict(goal) if goal is not None else None
                 if request and not request.terminal:
                     controlled = self.control.owns(vehicle_id)
                     if request.target_km != target or request.departure != departure:
@@ -431,7 +435,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     accounting_meter = meter if meter is not None else request.last_meter if controlled and shared.get("charger_fault_recovery") else None
                     if meter is None and accounting_meter is not None:
                         row["meter_credit_delayed"] = True
-                    estimated_value = request.update(now, calculation, need, accounting_meter, cfg.droop_pp, meter_id=shared.get("meter_entity"), allow_estimated=controlled)
+                    estimated_value = request.update(now, calculation, need, accounting_meter, cfg.droop_pp, meter_id=shared.get("meter_entity"), allow_estimated=controlled, goal=goal)
                     if estimated_value is not None:
                         estimated = estimated_value
                     if request.terminal and request.source_token:

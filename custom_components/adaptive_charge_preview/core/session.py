@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from ..const import DWELL_SECONDS, MAX_EVSE_AGE, MAX_CLOCK_SKEW
-from .models import Demand, VehicleSnapshot, finite
+from .models import Demand, GoalObservation, VehicleSnapshot, finite
 
 
 @dataclass
@@ -41,6 +41,8 @@ class Session:
     connection_gap_since: float | None = None
     anchor_provisional: bool = False
     reference_measured_at: float | None = None
+    goal_observed_at: float | None = None
+    goal_applied_at: float | None = None
 
     def refresh_charger_token(self, connection_id: str) -> None:
         """Record a device-token refresh without resetting logical ownership.
@@ -98,7 +100,7 @@ class Session:
             return False
         return True
 
-    def update(self, now: float, snapshot: VehicleSnapshot, demand: Demand, meter: float | None, droop_pp: float, *, meter_id: str | None = None, allow_estimated: bool = False) -> float | None:
+    def update(self, now: float, snapshot: VehicleSnapshot, demand: Demand, meter: float | None, droop_pp: float, *, meter_id: str | None = None, allow_estimated: bool = False, goal: GoalObservation | None = None) -> float | None:
         """Evaluate connection, budget and goal without issuing a command."""
         if not self.observe_connection(now, snapshot, trust_attachment=allow_estimated):
             return None
@@ -112,13 +114,22 @@ class Session:
             self.meter_fault = True
             self.phase, self.reason = "blocked", "meter_identity_changed"
             return None
-        if demand.confirmed and finite(meter) is None:
-            # A fresh independent vehicle goal can stop Manual even while the
-            # charger meter is temporarily unavailable. It grants no new energy.
-            self.confirmed_soc = self.confirmed_soc if self.confirmed_soc is not None else snapshot.soc.value
-            self.tolerated_soc, self.below_since = None, None
-            self.phase, self.reason, self.remaining_kwh = "watching","vehicle_goal_confirmed",0.0
-            return 0.0
+        self.meter_id = meter_id
+        if goal is None and demand.source_fresh:
+            goal = GoalObservation(snapshot.soc.value, demand.confirmed, demand.needed_kwh, demand.measured_at)
+        previous_goal_at = self.goal_observed_at
+        backdated = bool(goal and previous_goal_at is not None and goal.measured_at < previous_goal_at)
+        if backdated:
+            goal = None
+        if demand.source_fresh and not backdated:
+            self.reference_values = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value, snapshot.soh.value)
+            self.reference_measured_at = demand.measured_at
+        if goal is not None:
+            self.goal_observed_at = goal.measured_at
+        if goal is not None and goal.reached and finite(meter) is None:
+            # Goal evidence needs only the actual goal fields, not a capture
+            # timestamp on the battery-energy estimate or a working AC meter.
+            return self._confirm_goal(goal)
         meter = finite(meter)
         if meter is None or meter < 0:
             self.phase, self.reason = "waiting_data", "energy_meter_invalid"
@@ -128,11 +139,49 @@ class Session:
             self.meter_fault = True
             self.phase, self.reason = "blocked", "energy_meter_regressed"
             return None
-        self.meter_id = meter_id
         self.last_meter = meter
         if self.origin_meter is None:
             self.origin_meter = self.anchor_meter if self.anchor_meter is not None else meter
-        if not demand.source_fresh:
+        if goal is not None and goal.reached:
+            return self._confirm_goal(goal)
+        reference_soc = self.confirmed_soc if self.confirmed_soc is not None else self.tolerated_soc
+        if reference_soc is not None:
+            waiting_phase = "watching" if self.confirmed_soc is not None else "within_tolerance"
+            self.phase = waiting_phase
+            self.remaining_kwh = 0.0
+            if goal is None:
+                self.reason = "preserved_goal_watch_waiting_vehicle"
+                self.below_since = None
+                return 0.0
+            if not demand.source_fresh and not allow_estimated:
+                self.reason, self.below_since = "preserved_goal_watch_waiting_vehicle", None
+                return 0.0
+            if reference_soc - goal.soc < droop_pp - 0.000001:
+                self.reason, self.below_since = "below_goal_within_return_band", None
+                return 0.0
+            self.below_since = self.below_since if self.below_since is not None else now
+            if now - self.below_since < DWELL_SECONDS:
+                self.reason = "return_band_dwell"
+                return 0.0
+            self.confirmed_soc, self.tolerated_soc, self.below_since = None, None, None
+            self.anchor_meter, self.anchor_need, self.anchor_soc = meter, goal.estimated_need_kwh, goal.soc
+            self.anchor_signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
+            self.goal_applied_at = goal.measured_at
+            self.anchor_provisional = False
+            return self.consume_meter(meter)
+        if (allow_estimated and not demand.source_fresh and goal is not None and self.anchor_meter is not None
+                and goal.measured_at >= self.started_at
+                and (self.goal_applied_at is None or goal.measured_at > self.goal_applied_at)
+                and (self.anchor_provisional or self.anchor_soc is not None and goal.soc > self.anchor_soc)):
+            # One first qualified SOC can correct the initial estimate. Later
+            # allocations require actual SOC progress; repeating a capture or
+            # receiving the same SOC cannot replenish the allowance.
+            self.anchor_meter, self.anchor_need, self.anchor_soc = meter, goal.estimated_need_kwh, goal.soc
+            self.anchor_signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
+            self.goal_applied_at = goal.measured_at
+            self.anchor_provisional = False
+            return self.consume_meter(meter)
+        if not demand.source_fresh or backdated:
             if not allow_estimated:
                 self.phase, self.reason = "waiting_data", "vehicle_measurement_stale_or_time_unknown"
                 self.below_since = None
@@ -148,15 +197,15 @@ class Session:
                 if not 10 <= snapshot.battery_kwh.value / snapshot.soc.value * 100 <= 150:
                     self.phase, self.reason = "waiting_data", "initial_battery_estimate_incoherent"
                     return None
-                self.anchor_meter, self.anchor_need = meter, demand.needed_kwh
-                self.anchor_soc = snapshot.soc.value
+                self.anchor_meter = meter
+                self.anchor_need = goal.estimated_need_kwh if goal is not None else demand.needed_kwh
+                self.anchor_soc = goal.soc if goal is not None else snapshot.soc.value
+                self.goal_applied_at = goal.measured_at if goal is not None else self.goal_applied_at
                 self.anchor_signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
                 self.reference_values = (*self.anchor_signature, snapshot.soh.value)
                 self.anchor_provisional = True
                 self.reference_measured_at = demand.measured_at
             return self.consume_meter(meter)
-        self.reference_values = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value, snapshot.soh.value)
-        self.reference_measured_at = demand.measured_at
         soc = snapshot.soc.value
         if self.anchor_provisional and demand.measured_at is not None and demand.measured_at >= self.started_at:
             # The first actual post-Start capture can correct an initial estimate
@@ -164,29 +213,6 @@ class Session:
             self.anchor_meter, self.anchor_need, self.anchor_soc = meter,demand.needed_kwh,soc
             self.anchor_signature = (soc,snapshot.battery_kwh.value,snapshot.range_km.value,snapshot.limit_soc.value)
             self.anchor_provisional = False
-        if demand.confirmed:
-            if self.confirmed_soc is None:
-                self.confirmed_soc = soc
-            self.tolerated_soc = None
-            self.phase, self.reason = "watching", "vehicle_goal_confirmed"
-            self.below_since = None
-            self.remaining_kwh = 0
-            return 0.0
-        reference_soc = self.confirmed_soc if self.confirmed_soc is not None else self.tolerated_soc
-        if reference_soc is not None:
-            waiting_phase = "watching" if self.confirmed_soc is not None else "within_tolerance"
-            if soc is None or reference_soc - soc < droop_pp - 0.000001:
-                self.phase, self.reason = waiting_phase, "below_goal_within_return_band"
-                self.below_since = None
-                return 0.0
-            self.below_since = self.below_since if self.below_since is not None else now
-            if now - self.below_since < DWELL_SECONDS:
-                self.phase, self.reason = waiting_phase, "return_band_dwell"
-                return 0.0
-            self.confirmed_soc, self.tolerated_soc, self.below_since = None, None, None
-            self.anchor_meter, self.anchor_need = meter, demand.needed_kwh
-            self.anchor_soc = soc
-            self.anchor_signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
         signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
         if self.anchor_meter is None:
             self.anchor_meter, self.anchor_need = meter, demand.needed_kwh
@@ -200,7 +226,17 @@ class Session:
         self.remaining_kwh = remaining  # Retain negative credit internally.
         self.phase = "verifying" if remaining <= 0 else "scheduled"
         self.reason = "energy_guard_waiting_vehicle" if remaining <= 0 else "request_preserved"
+        if goal is not None:
+            self.goal_applied_at = goal.measured_at
         return max(0.0, remaining)
+
+    def _confirm_goal(self, goal: GoalObservation) -> float:
+        """Retain the first qualified goal SOC for subsequent return-band checks."""
+        self.confirmed_soc = self.confirmed_soc if self.confirmed_soc is not None else goal.soc
+        self.goal_applied_at = goal.measured_at
+        self.tolerated_soc, self.below_since = None, None
+        self.phase, self.reason, self.remaining_kwh = "watching", "vehicle_goal_confirmed", 0.0
+        return 0.0
 
     def consume_meter(self, meter: float) -> float | None:
         """Use the saved allowance when vehicle data is temporarily absent."""
@@ -277,11 +313,11 @@ class Session:
         for key in ("connection_id", "source_token", "meter_id"):
             if getattr(session, key) is not None and not isinstance(getattr(session, key), str):
                 raise ValueError("Invalid stored identity")
-        for key in ("departure", "anchor_meter", "last_meter", "anchor_need", "anchor_soc", "confirmed_soc", "tolerated_soc", "below_since", "remaining_kwh", "origin_meter", "connection_gap_since", "reference_measured_at"):
+        for key in ("departure", "anchor_meter", "last_meter", "anchor_need", "anchor_soc", "confirmed_soc", "tolerated_soc", "below_since", "remaining_kwh", "origin_meter", "connection_gap_since", "reference_measured_at", "goal_observed_at", "goal_applied_at"):
             value = getattr(session, key)
             if value is not None and not number(value):
                 raise ValueError("Non-finite stored command value")
-        if any(getattr(session, key) is not None and getattr(session, key) < 0 for key in ("departure", "anchor_meter", "last_meter", "below_since", "origin_meter", "connection_gap_since", "reference_measured_at")) or any(getattr(session, key) is not None and not 0 <= getattr(session, key) <= 100 for key in ("anchor_soc", "confirmed_soc", "tolerated_soc")):
+        if any(getattr(session, key) is not None and getattr(session, key) < 0 for key in ("departure", "anchor_meter", "last_meter", "below_since", "origin_meter", "connection_gap_since", "reference_measured_at", "goal_observed_at", "goal_applied_at")) or any(getattr(session, key) is not None and not 0 <= getattr(session, key) <= 100 for key in ("anchor_soc", "confirmed_soc", "tolerated_soc")):
             raise ValueError("Stored command value out of range")
         if (session.anchor_meter is None) != (session.anchor_need is None) or session.anchor_meter is not None and session.last_meter is not None and session.last_meter < session.anchor_meter:
             raise ValueError("Inconsistent stored energy anchor")

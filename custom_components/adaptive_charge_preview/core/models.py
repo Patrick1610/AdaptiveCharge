@@ -109,6 +109,70 @@ class Demand:
     warnings: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class GoalObservation:
+    """Source-timed goal evidence; residual energy remains an estimate.
+
+    VW needs SOC; Tesla needs SOC and remaining range. Battery energy is not a
+    prerequisite for observing either goal or a real SOC decline.
+    """
+
+    soc: float
+    reached: bool
+    estimated_need_kwh: float
+    measured_at: float
+    effective_soc: float | None = None
+    full_range_km: float | None = None
+    threshold_source: str = "complete_demand"
+    energy_reference: str = "complete_demand"
+
+
+def observe_goal(config: VehicleConfig, snapshot: VehicleSnapshot, need: Demand, now: float, *, estimated_per_pp: float | None = None) -> GoalObservation | None:
+    """Assess the actual goal fields independently of energy-source freshness."""
+    soc = snapshot.soc
+    fields = (soc, snapshot.range_km) if config.kind == "tesla" else (soc,)
+    if (soc.unit != "%" or finite(soc.value) is None or not all(m.fresh(now) for m in fields)
+            or not 0 < soc.value <= 100):
+        return None
+    times = [m.measured_at for m in fields]
+    if max(times) - min(times) > MAX_COHERENCE_SPREAD:
+        return None
+    limit = snapshot.limit_soc
+    if limit.unit != "%" or finite(limit.value) is None or not 0 < limit.value <= 100:
+        return None
+    if config.kind == "tesla":
+        if snapshot.range_km.unit != "km" or finite(snapshot.range_km.value) is None or snapshot.range_km.value <= 0:
+            return None
+        full_range = snapshot.range_km.value * 100 / soc.value
+    else:
+        if (snapshot.range_km.unit != "km" or snapshot.soh.unit != "%"
+                or finite(snapshot.range_km.value) is None or finite(snapshot.soh.value) is None
+                or snapshot.range_km.value <= 0 or not 0 < snapshot.soh.value <= 100):
+            return None
+        full_range = snapshot.range_km.value * snapshot.soh.value / 100
+    if not 50 <= full_range <= 2000:
+        return None
+    effective_soc = min(100, ceil(100 * need.requested_km / full_range), limit.value)
+    per_pp = need.band_kwh / config.droop_pp if estimated_per_pp is None else estimated_per_pp
+    # Age alone never expires a stored allowance. Bound every estimated new
+    # allocation by a plausible pack ratio; freshness belongs to the live goal.
+    if config.kind == "tesla":
+        target = min(need.requested_km, full_range * effective_soc / 100)
+        deficit_pp = max(0.0, target - snapshot.range_km.value) * 100 / full_range
+        reached = snapshot.range_km.value >= target
+    else:
+        deficit_pp = max(0.0, effective_soc - soc.value)
+        reached = soc.value >= effective_soc
+    ratio_valid = finite(per_pp) is not None and 10 <= per_pp / (1 + config.margin) * 100 <= 150
+    if not reached and not ratio_valid:
+        return None
+    remaining = 0.0 if reached else deficit_pp * per_pp
+    return GoalObservation(soc.value, reached, remaining, min(times), effective_soc,
+                           full_range, "live_vehicle_reference",
+                           "not_needed_for_reached_goal" if reached else
+                           "saved_capacity_ratio" if estimated_per_pp is not None else "current_energy_estimate")
+
+
 def demand(config: VehicleConfig, snapshot: VehicleSnapshot, target: float, now: float) -> Demand:
     """Preserve Tesla range and ID.3 SOC semantics without modifying either car."""
     soc, energy, range_km, limit = (m.value for m in (snapshot.soc, snapshot.battery_kwh, snapshot.range_km, snapshot.limit_soc))
