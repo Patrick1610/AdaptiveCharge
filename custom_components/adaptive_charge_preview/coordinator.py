@@ -18,7 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, STORAGE_VERSION, VERSION
-from .core.models import VehicleConfig, demand, finite, observe_goal
+from .core.models import VehicleConfig, demand, finite, observe_goal, valid_ac_capacity_ratio
 from .core.planner import plan
 from .core.economics import economic_plan, idle_green_policy
 from .core.session import Session
@@ -346,6 +346,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "eligible_for_boost": False, "would_control_mode": "Green",
                 "plan_provisional": True, "plan": None,
                 "target_km": None, "departure": None,
+                "goal_and_budget_aligned": False, "estimated_ac_kwh_per_soc_point": None,
                 "value_sources": {"target": "preview_override" if "target_km" in profile else "bound_helper", "departure": "preview_override" if "departure" in profile else "bound_helper"},
             }
             request = self.sessions.get(vehicle_id)
@@ -416,11 +417,23 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     active = Session(vehicle_id, self.generation, snapshot.connection_id, now, target, departure, source_token=native_token)
                     self.sessions[vehicle_id] = active
                 request = self.sessions.get(vehicle_id)
-                estimated = need.needed_kwh
                 reference = request.reference_values if request else None
                 per_pp = reference[1] / reference[0] * (1 + cfg.margin) if not need.source_fresh and reference and reference[0] > 0 else None
                 goal = observe_goal(cfg, snapshot, need, now, estimated_per_pp=per_pp)
                 row["goal_observation"] = asdict(goal) if goal is not None else None
+                if goal is not None and not need.source_fresh:
+                    allocation_per_pp = per_pp if per_pp is not None else need.band_kwh / cfg.droop_pp
+                    if valid_ac_capacity_ratio(allocation_per_pp, cfg.margin):
+                        # Keep actual goal fields, with only battery energy derived
+                        # from the saved ratio. Target/limit deltas and the planner
+                        # now use the same threshold and ratio as goal observation.
+                        # This is a calculation value, never a new vehicle reading.
+                        calculation = replace(snapshot, battery_kwh=replace(snapshot.battery_kwh,
+                            value=goal.soc * allocation_per_pp / (1 + cfg.margin), unit="kWh", measured_at=None))
+                        need = demand(cfg, calculation, target, now)
+                        row["goal_and_budget_aligned"] = True
+                        row["estimated_ac_kwh_per_soc_point"] = allocation_per_pp
+                estimated = need.needed_kwh
                 if request and not request.terminal:
                     controlled = self.control.owns(vehicle_id)
                     if request.target_km != target or request.departure != departure:

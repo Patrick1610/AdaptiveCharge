@@ -1,7 +1,7 @@
 """Shared contracts. Charger control is explicitly opt-in and defaults off."""
 
 DOMAIN = "adaptive_charge_preview"
-VERSION = "5.2.0b3"
+VERSION = "5.2.0b4"
 CONTROL_ENABLED = False
 STORAGE_VERSION = 1
 DEFAULT_POWER_KW = 11.0
@@ -16,5 +16,6 @@ MAX_EVSE_AGE = 600
 MAX_HORIZON_SECONDS = 48 * 3600
 EPSILON_KWH = 0.000001
 EPSILON_PP = 0.000001
+MAX_REOPEN_PUBLICATION_LAG = 120  # Only arming a new range dwell; saved budgets do not expire.
 MAX_CLOCK_SKEW = 60
 MAX_COHERENCE_SPREAD = 120

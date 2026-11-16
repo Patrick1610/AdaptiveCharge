@@ -54,6 +54,9 @@ met plausibiliteitscontrole en de bestaande opdrachtplafonds. Voor een rollback
 van b3 naar b2 moet eerst expliciet Stop worden uitgevoerd en eigen Manual/pending
 afgerond zijn: b2 kent de nieuwe opgeslagen doelobservatievelden niet. Een downgrade
 van een nog actieve b3-opdracht is daarom geen ondersteunde herstelroute.
+Ook b4 bewaart extra range-/wachttijdreferenties; een downgrade van een actieve
+b4-opdracht naar b3 is niet ondersteund. Ontbrekende b4-velden in een b3-store
+worden met lege referenties ingelezen zonder nieuwe laadbevoegdheid.
 
 Een andere meterentiteit kiezen tijdens een actieve opdracht vergrendelt bewust
 een meterfout; daarvoor zijn expliciet Stop en een nieuwe Start nodig.
@@ -61,14 +64,80 @@ een meterfout; daarvoor zijn expliciet Stop en een nieuwe Start nodig.
 Eigen testrun van b3 op 15 november: 1.339 tests geslaagd, niet door de reviewer
 uitgevoerd. Onafhankelijke kritieke review: GO, met nul open kritieke/hoge/
 middelzware bevindingen. Dit is
-geen fysieke nachtacceptatie. Open lage aandachtspunten zijn onder meer een
-stijgende doelgrens zonder SOC-daling tijdens bewaking, doel-/limietdelta's uit
-een opgeslagen referentie tijdens bronuitval, en de brede plausibiliteitsband
-van de geschatte accucapaciteit. Ongeldige verhoudingen blokkeren nieuwe
+geen fysieke nachtacceptatie. b4 richt zich op de stijgende doelgrens zonder
+SOC-daling tijdens bewaking en doel-/limietdelta's uit een opgeslagen referentie
+tijdens bronuitval. De brede plausibiliteitsband van de geschatte accucapaciteit
+blijft een laag aandachtspunt. Ongeldige verhoudingen blokkeren nieuwe
 energieallocatie maar missen nog een afzonderlijk doelobservatiediagnosticum;
 ID.3-range/SOH blijven referentievelden waarvan de meettijd niet wordt beoordeeld,
 ook als die is meegeleverd. Deze beperkingen zijn geen
 bewijs van een geslaagde fysieke doelstop of natuurlijke terugval.
+
+### Geautoriseerd vervolg op 16 november: 5.2.0b4
+
+Patrick heeft twee gerichte correcties en daaropvolgende Tesla-proeven goedgekeurd.
+Een betrouwbaar gemeld bereiktekort kan de bewaking nu ook bij gelijkblijvende SOC
+heropenen als een nieuwere, getimede Tesla-range daadwerkelijk is verslechterd.
+Dezelfde capture of alleen een nieuwe tijd op dezelfde waarden geeft geen nieuw
+budget. Een ongetimede ID.3-range/SOH-referentiewijziging op zichzelf mag geen
+bevestigde bewaking heropenen. ID.3-herbewaking berust uitsluitend op SOC-daling;
+heropening door ID.3-range/SOH bij gelijke SOC is niet geïmplementeerd. Voor Tesla
+moet de verslechtering zelf minstens de terugvalband bedragen, zodat afronding
+geen nieuw budget geeft. Als Green-energie het tekort tijdens de wachttijd binnen
+de band brengt, eindigt die zonder heropening; dit geldt nu ook bij SOC-daling.
+De metercredit blijft dan behouden voor een volgende wachttijd op dezelfde capture.
+Een nieuwe range-wachttijd begint uitsluitend bij een
+capture van hoogstens 120 seconden oud (`MAX_REOPEN_PUBLICATION_LAG`; bij latere
+publicatie is de reden `range_goal_waiting_recent_capture`). De eenmaal begonnen vijf minuten mogen op dezelfde
+capture doorlopen; alle daarbij geleverde energie blijft credit, ook bij SOC-
+terugval. Dit is geen vervaldatum voor bestaande budgetten of VW-referenties.
+De bestaande terugvalband (standaard één procentpunt equivalente
+accu-energie) en vijf minuten wachttijd blijven gelden. Het nieuwe bereiktekort
+moet strikt groter zijn dan de tolerantieband; energie die tijdens de wachttijd
+al binnenkomt wordt afgetrokken. Daarmee blijft tolerantie stabiel bij dezelfde
+voertuigmeting, ook wanneer de meter ondertussen voortloopt. Herstel van het bereik of
+ontbrekende/teruggedateerde doelgegevens zetten die wachttijd terug. Een door de
+autolimiet begrensd effectief doel geeft geen bevoegdheid boven die limiet.
+
+Bij geldige actuele doelvelden en ontbrekende/ongetimede accu-energie gebruiken
+doel-/limietdelta's en planning dezelfde actuele SOC/range/limiet en dezelfde
+bewaarde kWh-verhouding als de doelwaarneming. Alleen de rekenwaarde van de
+accu-energie wordt uit die verhouding afgeleid; de oorspronkelijke bronwaarden en
+meettijden blijven zichtbaar en `source_fresh` wordt daardoor niet waar. Nieuwe
+diagnostiek vermeldt `goal_and_budget_aligned` (altijd true/false) en
+`estimated_ac_kwh_per_soc_point` (waarde of null): geschatte AC-kWh per procentpunt,
+inclusief de ingestelde verliesmarge. De bestaande SOC-terugval gebruikt
+`return_band_dwell`; terugval door getimede range gebruikt de zichtbare reden
+`range_goal_return_band_dwell`. Beide bewaren dezelfde opdracht.
+Anker, oorspronkelijke meterbasis en al geleverde energie worden door een
+doel-/limietdelta niet gereset. Doelbevestiging blijft onafhankelijk van een
+ongeschatte accu-energiemeting; de energieguard is geen voertuigdoelbewijs.
+
+De ID.3-referentierange en 15% marge worden niet vervangen. Patrick accepteert
+voor zijn gebruik een beperkte afwijking in de orde van één procentpunt; de
+waargenomen 0,57 kWh bij de kleine ID.3-proef is geen zelfstandige releaseblokkade.
+Geen strengere ouderdomsregel voor bewaarde energiebudgetten of accuverhoudingen.
+De overige b3-diagnostiek-/bronreferentiebeperkingen blijven afzonderlijk bekend.
+
+Softwarevalidatie b4: 1.367 tests geslaagd (één bestaande aiohttp-waarschuwing).
+Kritieke implementatiereview, sessie `5cdb6728-a3e3-4d46-be93-62fae3c9a5f4`,
+sequence 4: GO; nul open kritieke/hoge/middelzware bevindingen. Fysieke acceptatie
+staat nog open. Twee lage operationele punten blijven voor de nachtproef:
+opgebouwde Green-credit kan ook tegen een latere capture blijven meetellen en
+zo circa één à twee procentpunten te weinig aanvullend budget geven; de
+120-secondeninstap kan bij meer bronvertraging wachten. Niet zelfstandig die
+instapgrens verruimen: bronvertraging en credit moeten gezamenlijk worden bewezen.
+De bestaande SOC-route behoudt de b3-versheidsgrens; de publicatielag vóór de
+eerste waarneming is daarmee niet exact tegen de laadmeter gesynchroniseerd.
+Deze punten zijn geen bewijs van een geslaagde doelstop of vertrekacceptatie.
+
+De bouw, softwaretests, review en update mogen worden afgerond. De laadopdracht
+voor 17 november wordt pas daarna met Patrick ingesteld; de auto wordt overdag
+nog gebruikt. Geen nieuwe Start, proefplanning of Codextaak tijdens deze bouw.
+Patrick levert het Zonneplan-tariefblad later op 16 november. Onderzoek naar
+WeConnect-forks en portaalvertraging staat naast deze bouw en verandert geen
+VW-installatie of account. De nacht 16–17 is bedoeld voor gerichte acceptatie,
+17–18 voor een gewone vertrekopdracht met vertrekzekerheid als prioriteit.
 
 | Moment | Gerichte acceptatie | Uitkomst moet aantonen |
 | --- | --- | --- |

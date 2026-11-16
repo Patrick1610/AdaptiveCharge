@@ -125,6 +125,17 @@ class GoalObservation:
     full_range_km: float | None = None
     threshold_source: str = "complete_demand"
     energy_reference: str = "complete_demand"
+    range_measured_at: float | None = None
+
+
+def valid_pack_capacity_ratio(per_pp: float | None) -> bool:
+    """Shared plausible pack capacity bound, expressed in kWh per percentage."""
+    return finite(per_pp) is not None and 10 <= per_pp * 100 <= 150
+
+
+def valid_ac_capacity_ratio(per_pp: float | None, margin: float) -> bool:
+    """Apply the shared pack bound after removing the AC loss margin."""
+    return finite(per_pp) is not None and valid_pack_capacity_ratio(per_pp / (1 + margin))
 
 
 def observe_goal(config: VehicleConfig, snapshot: VehicleSnapshot, need: Demand, now: float, *, estimated_per_pp: float | None = None) -> GoalObservation | None:
@@ -163,14 +174,15 @@ def observe_goal(config: VehicleConfig, snapshot: VehicleSnapshot, need: Demand,
     else:
         deficit_pp = max(0.0, effective_soc - soc.value)
         reached = soc.value >= effective_soc
-    ratio_valid = finite(per_pp) is not None and 10 <= per_pp / (1 + config.margin) * 100 <= 150
+    ratio_valid = valid_ac_capacity_ratio(per_pp, config.margin)
     if not reached and not ratio_valid:
         return None
     remaining = 0.0 if reached else deficit_pp * per_pp
     return GoalObservation(soc.value, reached, remaining, min(times), effective_soc,
                            full_range, "live_vehicle_reference",
                            "not_needed_for_reached_goal" if reached else
-                           "saved_capacity_ratio" if estimated_per_pp is not None else "current_energy_estimate")
+                           "saved_capacity_ratio" if estimated_per_pp is not None else "current_energy_estimate",
+                           snapshot.range_km.measured_at if config.kind == "tesla" else None)
 
 
 def demand(config: VehicleConfig, snapshot: VehicleSnapshot, target: float, now: float) -> Demand:
@@ -188,7 +200,7 @@ def demand(config: VehicleConfig, snapshot: VehicleSnapshot, target: float, now:
     fresh = all(m.fresh(now) for m in dynamic) and coherent
     if finite(target) is None or not 0 < target <= 2000 or soc is None or not 0 < soc <= 100 or energy is None or energy <= 0 or range_km is None or range_km <= 0 or limit is None or not 0 < limit <= 100:
         raise ValueError("SOC, battery energy, range, target or limit unavailable/invalid")
-    if fresh and not 10 <= energy / soc * 100 <= 150:
+    if fresh and not valid_pack_capacity_ratio(energy / soc):
         raise ValueError("Implausible battery reference for supported Tesla/ID.3")
     if config.kind == "tesla":
         full_range = range_km * 100 / soc
