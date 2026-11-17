@@ -544,8 +544,16 @@ class ChargerControl:
         if self.green_hold and service == "turn_off" and entity_id == cfg.get("charger_switch_entity"):
             self.green_hold.update(off_dispatched=True,off_context=context.id)
             await self.coordinator._save(immediate=True)
-        async with asyncio.timeout(SERVICE_TIMEOUT):
-            await self.hass.services.async_call(domain, service, {"entity_id": entity_id, **values}, blocking=True, context=context)
+        try:
+            async with asyncio.timeout(SERVICE_TIMEOUT):
+                await self.hass.services.async_call(domain, service, {"entity_id": entity_id, **values}, blocking=True, context=context)
+        except TimeoutError:
+            # A cloud timeout is not proof that the charger rejected the write.
+            # Its already durable intent must await feedback, never be resent.
+            mode_start = domain == "select" and values.get("option") == "Manual" and self.pending and self.pending.get("kind") == "manual"
+            if not (self.owned_manual and mode_start):
+                raise
+            _LOGGER.warning("Charger start service timed out; retaining its intent and awaiting independent feedback without resending (%s.%s)", domain, service)
 
     async def _begin(self, kind: str, now: float, *, recovery: bool = False) -> None:
         self.pending = {"kind": kind, "sent": now, "attempts": 1, "last_attempt": now}
@@ -585,8 +593,28 @@ class ChargerControl:
         if self.grant:
             self.grant["start_watch_since"] = None
         self.owned_manual, self.pending = False, None
+        if self.limit is None:
+            self._cleanup_required = False
         self.status = "green_confirmed"
         await self.coordinator._save(immediate=True)
+
+    async def _reconcile_completed_cleanup(self, now: float) -> None:
+        """Retire a legacy leftover flag only after the same charger is idle."""
+        if not self._cleanup_required or self.owned_manual or self.pending or self.limit or not self.grant:
+            return
+        vehicle_id = self.grant["vehicle_id"]
+        if not self.owns(vehicle_id, terminal=True) or not self._same_attachment() or self.grant["binding"] != self._binding(vehicle_id):
+            return
+        switch = state(self.hass, self.config.get("charger_switch_entity"))
+        power = physical_power(self.hass, self.config, now)
+        report = state(self.hass, self.config.get("control_report_entity"))
+        reported_at = timestamp(report.state) if report else None
+        recent = reported_at is not None and -60 <= now - reported_at <= 600
+        if recent and self._mode_confirmed("Green") and switch and switch.state == "off" and power["fresh"] and power["independent"] and not power["positive"]:
+            self._cleanup_required = False
+            self.grant["start_watch_since"] = None
+            await self.coordinator._save(immediate=True)
+            _LOGGER.info("Retired completed cleanup for generation %s using fresh idle power from %s (fallback=%s); fault and request preserved", self.grant["generation"], power["entity_id"], power["fallback_used"])
 
     async def _retry_negative(self, domain: str, service: str, entity_id: str, now: float, **values: Any) -> None:
         """Only owned stop/Green can retry, at most three times, 30s apart."""
@@ -1179,6 +1207,7 @@ class ChargerControl:
         feedback_window = FEEDBACK_TIMEOUT + (START_SETTLE_SECONDS if self.pending and "mode_ack_at" in self.pending else 0)
         if self.pending and not self._interlock_fault and (finite(feedback_anchor) is None or now - feedback_anchor > feedback_window):
             self.fault = "actuator_feedback_timeout"
+        await self._reconcile_completed_cleanup(now)
         if self.fault:
             self.status = self.fault
             # No positive retry; a pending stop can still gain confirmation.

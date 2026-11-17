@@ -17,6 +17,27 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
 
 ## Aanvulling 5.2: economische planning en automatisch herstel
 
+### 5.2.0b6: trage startterugmelding en afgeronde opruimstatus
+
+Een timeout van een reeds verzonden Manual-moduscommando bewijst niet
+dat de laadpaal dat commando heeft geweigerd. De bestaande, duurzaam vastgelegde
+intentie wacht daarom op de gewone modus-/vermogenterugmelding; er wordt geen
+extra positief commando verstuurd. De bestaande begrensde feedbackwachttijd,
+Stop, ontkoppeling, eigendom en energieplafonds blijven leidend. Timeouts van
+negatieve acties, laadpaal-On, voertuig-On en voertuiglimietacties behouden hun
+foutafhandeling. De extra wachtruimte geldt uitsluitend voor de modusintentie,
+die al een begrensde feedbackwachttijd heeft.
+
+Bevestigde afronding naar Green wist ook de bijbehorende opruimvlag, ook als er
+nog een zichtbare actuatorfout is. Een reeds bewaarde losse vlag uit oudere
+versies kan zonder actuatoractie worden afgerond na bevestigde Green, switch
+uit, een laadpaalrapport van maximaal tien minuten oud en vers onafhankelijk
+nulvermogen, uitsluitend bij dezelfde opdracht,
+aansluiting en configuratie. Een wachtende limietterugzetting blijft Start
+blokkeren. De fout en een expliciete Stop blijven bewaard; alleen een nieuwe
+expliciete Start kan nieuwe laadbevoegdheid geven. Dit verandert geen doel,
+energieallocatie, autolimiet of vermogensinstelling.
+
 ### Afronding vóór het dynamische contract op 18 november 2026
 
 Patrick meldde op 15 november dat het dynamische contract op woensdag 18 november
