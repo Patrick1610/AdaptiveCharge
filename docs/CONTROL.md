@@ -244,11 +244,26 @@ worden pas na vergelijking met echte meetgegevens beoordeeld.
   voren. Het resterende korte stuk van dat lopende blok is geen nieuwe losse start.
   Een niet meer geselecteerd kwartier wordt wel overgeslagen; Stop, ontkoppeling,
   doel-/energiegrens en een buitenlandse opdracht gaan ongewijzigd voor.
-  Een pauze korter dan de ingestelde minimumblokduur naar het aangrenzende
-  geselecteerde kwartier wordt tijdens laden gesloten. Dezelfde energie wordt
-  uit de duurste toekomstige geselecteerde kwartieren gehaald; het totaalbudget
-  stijgt niet. Dat kan iets meer kosten dan een theoretische planning met een
-  pauze van enkele seconden. Valt de prijsfeed tijdens een prijsblok uit, dan
+  De ingestelde minimumduur voor losse laadblokken geldt ook voor interne
+  laadpauzes: een gat korter dan die duur (standaard drie minuten) wordt waar
+  mogelijk vooraf en tijdens laden gesloten, ook binnen een gedeeltelijk gevuld
+  kwartier. Dezelfde energie wordt van achter naar voren uit de laatste
+  geselecteerde laaddelen gehaald; het totaalbudget stijgt niet. De eerste
+  toekomstige start wordt niet vervroegd. Een pauze exact op de minimumduur
+  blijft toegestaan. Zonder voldoende latere energie, boven de vroege inkoopgrens
+  of over een onbekend tariefgat wordt niet overbrugd. Een resterende korte pauze
+  krijgt de waarschuwing `short_pause_retained`, ook bij de overgang naar een
+  ongeprijsd vertrekblok. Het verplaatsen van een kort laadblok wordt opnieuw op
+  korte pauzes gecontroleerd. Een daardoor verkort staartblok blijft onder de
+  bestaande minimumblokregel vallen: eerst aansluiten, anders binnen de ingestelde
+  tolerantie zichtbaar weglaten, anders met uitzonderingswaarschuwing uitvoeren.
+  Zonder weglating blijft de geplande energie gelijk; met weglating telt het
+  weggelaten deel apart mee in `omitted_kwh`.
+  Continuïteit gaat vóór het goedkoopste theoretische prijsplan. Een hogere
+  minimumduur kan dus meer dure laadtijd afdwingen; bij 30 minuten kan bijna een
+  halfuur piektarief het laatste goedkope laaddeel vervangen. De berekende
+  plankosten bevatten die keuze; er is geen afzonderlijke maximale meerprijs.
+  Valt de prijsfeed tijdens een prijsblok uit, dan
   herplant dezelfde opdracht naar één blok dat bij vertrek eindigt, met Green in
   de wachttijd. Een reeds begonnen fallbackblok blijft wel aaneengesloten; ook
   een materiële vertrekwijziging wordt opnieuw ingepland zonder nieuw budget.

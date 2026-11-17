@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from ..const import EPSILON_KWH, MAX_HORIZON_SECONDS
 from .models import Plan, Tariff, Window
-from .planner import _slots, deadline_fallback
+from .planner import _short_gaps, _slots, deadline_fallback
 
 
 def mean_import_price(rows: list[Tariff], now: float, timezone: str) -> float | None:
@@ -125,7 +125,7 @@ def _blocks(pieces: list[_Piece], mode: str, *, export_known: bool = True) -> li
     return result
 
 
-def _practical_pieces(pieces: list[_Piece], power: float, minimum: float, now: float, continuing: bool) -> tuple[list[_Piece], list[str]]:
+def _practical_pieces(pieces: list[_Piece], power: float, minimum: float, now: float, continuing: bool, import_ceiling: float) -> tuple[list[_Piece], list[str]]:
     """Move an isolated short Manual block into adjacent unused capacity.
 
     Destinations can already be Green: only their incremental capacity counts.
@@ -134,6 +134,7 @@ def _practical_pieces(pieces: list[_Piece], power: float, minimum: float, now: f
     """
     warnings = []
     for _ in range(len(pieces)):
+        pieces = _bridge_short_gaps(pieces, power, minimum, now if continuing else None, import_ceiling)
         blocks = _blocks(pieces, "Manual")
         changed = False
         for block in blocks:
@@ -144,7 +145,7 @@ def _practical_pieces(pieces: list[_Piece], power: float, minimum: float, now: f
             released = sum((p.power-p.baseline)*(p.end-p.start)/3600 for p in origins)
             for part in pieces:
                 capacity = power-part.power
-                if part.mode == "Manual" or capacity <= 0:
+                if part.mode == "Manual" or capacity <= 0 or part.buy > import_ceiling+1e-9:
                     continue
                 duration = released/capacity*3600
                 if duration > part.end-part.start+.001:
@@ -175,30 +176,37 @@ def _practical_pieces(pieces: list[_Piece], power: float, minimum: float, now: f
     return pieces, warnings
 
 
-def _bridge_continuing_head(pieces: list[_Piece], power: float, minimum: float, now: float) -> list[_Piece]:
-    """Bridge only a sub-minimum gap, debiting existing future Manual energy."""
-    blocks = _blocks(pieces,"Manual")
-    if len(blocks)<2 or abs(blocks[0].start-now)>.001:
-        return pieces
-    a,b = blocks[0].end,blocks[1].start
-    if not 0 < b-a < minimum:
-        return pieces
-    gaps = [p for p in pieces if a <= p.start < b]
-    debit = sum((power-p.power)*(p.end-p.start)/3600 for p in gaps)
-    donors = [p for p in pieces if p.mode == "Manual" and p.start >= b]
-    capacity = sum((p.power-p.baseline)*(p.end-p.start)/3600 for p in donors)
-    if debit > capacity+EPSILON_KWH:
-        return pieces
-    pieces = _replace_span(pieces,a,b,"Manual",power)
-    for donor in sorted(donors,key=lambda p:(p.buy,p.start),reverse=True):
-        incremental = donor.power-donor.baseline
-        if incremental <= 0:
-            continue
-        duration = min(donor.end-donor.start,debit/incremental*3600)
-        pieces = _replace_span(pieces,donor.end-duration,donor.end,"Green" if donor.baseline else "Pause",donor.baseline)
-        debit = max(0,debit-duration*incremental/3600)
-        if debit <= EPSILON_KWH:
+def _bridge_short_gaps(pieces: list[_Piece], power: float, minimum: float, continuing_at: float | None, import_ceiling: float) -> list[_Piece]:
+    """Replace short Manual gaps with equal energy from the last Manual tail.
+
+    Preserve selected Green energy, the early-import ceiling and price coverage.
+    Nothing bridges the unknown interval before an unpriced departure fallback.
+    """
+    for _ in range(len(pieces)):
+        blocks = _blocks(pieces, "Manual")
+        for a, b in _short_gaps(blocks, minimum, continuing_at):
+            parts = [p for p in pieces if a <= p.start < b]
+            if abs(sum(p.end-p.start for p in parts)-(b-a)) > .001 or any(p.buy > import_ceiling+1e-9 for p in parts):
+                continue
+            debit = sum((power-p.power)*(p.end-p.start)/3600 for p in parts)
+            donors = [p for p in pieces if p.mode == "Manual" and p.start >= b-.001]
+            capacity = sum((p.power-p.baseline)*(p.end-p.start)/3600 for p in donors)
+            if debit > capacity+1e-9:
+                continue
+            for part in parts:
+                pieces = _replace_span(pieces, part.start, part.end, "Manual", power, baseline=part.power)
+            for donor in reversed(donors):
+                incremental = donor.power-donor.baseline
+                if incremental <= 0:
+                    continue
+                duration = min(donor.end-donor.start, debit/incremental*3600)
+                pieces = _replace_span(pieces, donor.end-duration, donor.end, "Green" if donor.baseline else "Pause", donor.baseline)
+                debit = max(0, debit-duration*incremental/3600)
+                if debit <= 1e-12:
+                    break
             break
+        else:
+            return pieces
     return pieces
 
 
@@ -290,9 +298,8 @@ def economic_plan(now: float, departure: float | None, needed: float, band: floa
             if duration > .000001:
                 pieces = _replace_span(pieces, a, a+duration, "Green", s.solar)
                 green -= duration
-    if continue_current:
-        pieces = _bridge_continuing_head(pieces,power,minimum_min*60,now)
-    pieces, warnings = _practical_pieces(pieces, power, minimum_min*60, now, continue_current)
+    import_ceiling = float("inf") if full else ceiling if ceiling is not None else float("-inf")
+    pieces, warnings = _practical_pieces(pieces, power, minimum_min*60, now, continue_current, import_ceiling)
     windows = _blocks(pieces, "Manual", export_known=export_known)
     green_windows = _blocks(pieces, "Green", export_known=export_known)
     actual = sum(p.energy for p in pieces)
@@ -307,6 +314,8 @@ def economic_plan(now: float, departure: float | None, needed: float, band: floa
         warnings.append("partial_prices_remaining_deadline_fallback")
         unpriced = True
         remaining = 0
+    if _short_gaps(windows, minimum_min*60, now if continue_current else None):
+        warnings.append("short_pause_retained")
     known_complete = not unpriced and full or not unpriced and sum(p.energy for p in pieces) >= needed-EPSILON_KWH
     selected_costs = [(min(p.power,p.solar)*p.sell+max(0,p.power-p.solar)*p.buy)/p.power for p in pieces if p.power>0]
     marginal = max(selected_costs, default=float("inf"))

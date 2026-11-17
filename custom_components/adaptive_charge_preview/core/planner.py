@@ -58,37 +58,49 @@ def _windows(slots: list[_Slot], power: float) -> list[Window]:
     return windows
 
 
-def _join_running_head(slots: list[_Slot], minimum: float) -> None:
-    """Bridge a short pause into the next quarter using the same allocation."""
-    if len(slots) < 2:
-        return
-    head = slots[0]
-    future = [(s,s.chosen) for s in slots[1:] if s.chosen]
-    if not future:
-        return
-    following = future[0][0]
-    gap_start = head.start+head.chosen
-    gap_end = following.start if following.chosen_start is None else following.chosen_start
-    if not 0 < gap_end-gap_start < minimum:
-        return
-    parts = [(s,max(s.start,gap_start),min(s.end,gap_end)) for s in slots if s.start < gap_end and s.end > gap_start]
-    extra = sum(s.incremental_power*(end-start)/3600 for s,start,end in parts)
-    available = sum(s.incremental_power*chosen/3600 for s,chosen in future)
-    if extra > available + EPSILON_KWH:
-        return  # A bridge must not exceed the remaining energy allowance.
-    for slot,start,end in parts:
-        slot.chosen += end-start
-        slot.chosen_start = slot.start
-    for slot,original in sorted(future,key=lambda item:(item[0].buy,item[0].start),reverse=True):
-        if slot.incremental_power <= 0:
-            continue
-        debit = min(original,extra*3600/slot.incremental_power)
-        slot.chosen -= debit
-        extra = max(0,extra-debit*slot.incremental_power/3600)
-        if slot.chosen <= 0:
-            slot.chosen_start = None
-        if extra <= 1e-12:
+def _short_gaps(blocks: list[Window], minimum: float, continuing_at: float | None) -> list[tuple[float, float]]:
+    """Internal gaps, plus a continuing head; never advance a future first start."""
+    gaps = [(a.end, b.start) for a, b in zip(blocks, blocks[1:])]
+    if continuing_at is not None and blocks:
+        gaps.insert(0, (continuing_at, blocks[0].start))
+    return [(a, b) for a, b in gaps if .001 < b-a < minimum]
+
+
+def _join_short_gaps(slots: list[_Slot], power: float, minimum: float, continuing_at: float | None) -> None:
+    """Close internal short gaps using energy from the chronological last tail.
+
+    A continuing request may also bridge from now to its first selected span.
+    A future first start stays unchanged. Every successful move removes a gap;
+    the bound avoids repeated work on floating-point boundary noise.
+    """
+    for _ in range(len(slots)):
+        blocks = _windows(slots, power)
+        for gap_start, gap_end in _short_gaps(blocks, minimum, continuing_at):
+            parts = [(s, max(s.start, gap_start), min(s.end, gap_end)) for s in slots if s.start < gap_end and s.end > gap_start]
+            if abs(sum(end-start for _, start, end in parts)-(gap_end-gap_start)) > .01:
+                continue
+            future = [(s, s.chosen) for s in slots if s.chosen and (s.start if s.chosen_start is None else s.chosen_start) >= gap_end-.01]
+            extra = sum(s.incremental_power*(end-start)/3600 for s, start, end in parts)
+            available = sum(s.incremental_power*chosen/3600 for s, chosen in future)
+            if extra > available + 1e-9:
+                continue
+            for slot, start, end in parts:
+                selected_start = slot.start if slot.chosen_start is None else slot.chosen_start
+                slot.chosen_start = min(selected_start, start) if slot.chosen else start
+                slot.chosen += end-start
+            for slot, original in reversed(future):
+                if slot.incremental_power <= 0:
+                    continue
+                debit = min(original, extra*3600/slot.incremental_power)
+                slot.chosen -= debit
+                extra = max(0, extra-debit*slot.incremental_power/3600)
+                if slot.chosen <= 1e-9:
+                    slot.chosen, slot.chosen_start = 0, None
+                if extra <= 1e-12:
+                    break
             break
+        else:
+            return
 
 
 def _practical(slots: list[_Slot], power: float, minimum: float, band: float, *, continuing_at: float | None = None) -> tuple[list[Window], float, list[str]]:
@@ -98,6 +110,8 @@ def _practical(slots: list[_Slot], power: float, minimum: float, band: float, *,
     # Each successful move eliminates one isolated block. The finite budget
     # prevents pathological schedules from looping when a deadline truncates a slot.
     for _ in range(len(slots)):
+        # Relocating a short block can shorten another gap below the minimum.
+        _join_short_gaps(slots, power, minimum, continuing_at)
         blocks = _windows(slots, power)
         moved = False
         for block in blocks:
@@ -240,9 +254,9 @@ def plan(now: float, departure: float | None, needed: float, band: float, rows: 
         # progress must not move its start forward and restart the EVSE handshake.
         if 0 < slot.chosen < slot.end - slot.start and slots[i + 1].chosen and (i == 0 or not slots[i - 1].chosen) and not (i == 0 and continue_current):
             slot.chosen_start = slot.end - slot.chosen
-    if continue_current:
-        _join_running_head(slots,minimum)
     windows, omitted, warnings = _practical(slots, power, minimum, band, continuing_at=now if continue_current else None)
+    if _short_gaps(windows, minimum, now if continue_current else None):
+        warnings.append("short_pause_retained")
     if left > EPSILON_KWH:
         # Defensive accounting for accumulated sub-centisecond coverage noise;
         # continuous non-urgent coverage otherwise guarantees enough capacity.

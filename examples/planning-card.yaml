@@ -1,13 +1,25 @@
 # Native Home Assistant cards. History shows past values, the table shows future quarters.
 # Replace sensor.vehicle_charge_planning with your vehicle's actual planning sensor.
+# Replace sensor.enever_stroomprijs_zonneplan with your configured price entity.
+# Its attributes/row keys below must match AdaptiveCharge's quarter-hour feed.
 type: vertical-stack
 cards:
-  - type: sensor
-    entity: sensor.vehicle_charge_planning
-    name: Resterende geplande laadtijd
-    graph: line
+  - type: markdown
+    title: Resterende geplande laadtijd · uu:mm
+    content: |
+      {% set minutes = states('sensor.vehicle_charge_planning') | float(none) %}
+      {% if minutes is number %}
+      {% set total = minutes | round(0) | int %}
+      ## {{ '%02d:%02d' | format(total // 60, total % 60) }}
+      {% else %}
+      ## Onbekend
+      {% endif %}
+  - type: history-graph
+    title: Geplande laadtijd · historie
+    entities:
+      - entity: sensor.vehicle_charge_planning
+        name: Resterende geplande laadtijd
     hours_to_show: 6
-    detail: 2
   - type: markdown
     title: Geplande laadkwartieren
     content: |
@@ -19,9 +31,27 @@ cards:
       Er staat geen actieve laadplanning.
       {% endif %}
       {% else %}
-      | Tijd | Laden | Energie |
-      |---|---:|---:|
+      {% set price_entity = 'sensor.enever_stroomprijs_zonneplan' %}
+      {% set today = state_attr(price_entity, 'prices_today') %}
+      {% set tomorrow = state_attr(price_entity, 'prices_tomorrow') %}
+      {% set today = (today | list) if today is sequence and today is not string and today is not mapping else [] %}
+      {% set tomorrow = (tomorrow | list) if tomorrow is sequence and tomorrow is not string and tomorrow is not mapping else [] %}
+      {% set prices = today + tomorrow if has_value(price_entity) else [] %}
+      {% set tariffs = namespace(by_start={}) %}
+      {% for price_row in prices if price_row is mapping %}
+      {% set start = as_timestamp(price_row.get('time'), none) %}
+      {% set rate = price_row.get('price') | float(none) %}
+      {% if start is number and rate is number %}
+      {% set key = start | string %}
+      {% set rate = rate if key not in tariffs.by_start or tariffs.by_start[key] == rate else none %}
+      {% set tariffs.by_start = dict(tariffs.by_start, **{key: rate}) %}
+      {% endif %}
+      {% endfor %}
+      | Tijd | ct/kWh | Laden (mm:ss) | Energie |
+      |---|---:|---:|---:|
       {% for q in quarters -%}
-      | {{ as_timestamp(q.start) | timestamp_custom('%H:%M') }}–{{ as_timestamp(q.end) | timestamp_custom('%H:%M') }} | {{ q.minutes | round(1) }} min | {{ q.energy_kwh | round(2) }} kWh |
+      {% set rate = tariffs.by_start.get(as_timestamp(q.start, none) | string) -%}
+      {% set total = (q.minutes * 60) | round(0) | int -%}
+      | {{ as_timestamp(q.start) | timestamp_custom('%H:%M') }}–{{ as_timestamp(q.end) | timestamp_custom('%H:%M') }} | {{ ('%.2f' | format(rate * 100) | replace('.', ',')) if rate is number else 'Onbekend' }} | {{ '%02d:%02d' | format(total // 60, total % 60) }} | {{ q.energy_kwh | round(2) }} kWh |
       {% endfor %}
       {% endif %}

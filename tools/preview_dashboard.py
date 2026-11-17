@@ -84,7 +84,7 @@ def planning(sensor):
 | :-- | :-- | :-- | --: |
 {% for w in p.get('windows', []) %}
 {% if w.get('start') is number and w.get('end') is number and w.get('kwh') is number %}
-| {{ w.start | timestamp_custom('%d-%m %H:%M:%S', true) }} | {{ w.end | timestamp_custom('%d-%m %H:%M:%S', true) }} | Bijladen | {{ w.kwh | round(2) }} kWh |
+| {{ w.start | timestamp_custom('%d-%m %H:%M', true) }} | {{ w.end | timestamp_custom('%d-%m %H:%M', true) }} | Bijladen | {{ w.kwh | round(2) }} kWh |
 {% endif %}
 {% endfor %}
 {% else %}
