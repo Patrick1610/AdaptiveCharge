@@ -1,0 +1,65 @@
+start:
+  name: Start laadopdracht
+  description: Met de hoofdschakelaar uit alleen meerekenen. Met de hoofdschakelaar aan
+    wordt de geselecteerde auto volgens het eigen doel en vertrek aangestuurd.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null
+    target_range_km:
+      selector:
+        number:
+          min: 0.1
+          max: 2000
+          unit_of_measurement: km
+    departure:
+      description: ISO-tijd met tijdzone, of now voor direct bijladen.
+      selector:
+        text: null
+set_target:
+  name: Doel wijzigen
+  description: Wijzig het eigen doel zonder gebruikt energiebudget te resetten.
+    Een inactieve doelwijziging start geen laadopdracht. Bestaande helpers worden niet geschreven.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null
+    target_range_km:
+      selector:
+        number:
+          min: 0.1
+          max: 2000
+    departure:
+      selector:
+        text: null
+stop:
+  name: Laadopdracht beëindigen
+  description: Trek hervattingsrecht in en beëindig uitsluitend eigen aanvullend laden.
+    Green blijft de basis; een buitenlandse opdracht wordt niet overgenomen.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null
+follow_helpers:
+  name: Bestaande helpers volgen
+  description: Wis lokale doel-/vertrekoverrides en volg gekoppelde helpers zonder nieuwe Start.
+  fields:
+    vehicle_id:
+      required: true
+      selector:
+        text: null
+    entry_id:
+      selector:
+        text: null

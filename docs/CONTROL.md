@@ -1,0 +1,479 @@
+# AdaptiveCharge met uitschakelbare besturing
+
+Deze uitbreiding volgt Patricks opdracht van 13 november 2026: bouw en publiceer
+een volledige regelaar, richt hem in HA in, en begin de Tesla-proef pas met een
+werkende prijzenfeed. De bestaande native hoofdschakelaar is in bewezen rust
+uitgezet; sessie en pending waren leeg, generatie 29 bleef behouden. Het receipt
+staat in de eigen HA-map `adaptive_charge_preview_20261113/control_preparation_20261113`.
+Er komt geen geplande Codextaak voor het wachten op een feed.
+
+De eerdere previewrelease blijft historisch read-only. De uitbreiding behoudt het
+domein en de bestaande entiteitsidentiteiten voor een gewone HACS-upgrade. Eén
+hoofdschakelaar per laadpaal geeft uitvoeringsrecht; zonder dat recht blijft het
+pakket meerekenen zonder actuatoracties. Deze nieuwe gebruikersopdracht vervangt
+voor deze uitbreiding het eerdere verbod om besturing te bouwen. De huidige
+controller blijft de enige productwriter, met Jev en onafhankelijke Claude-review;
+er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonnen.
+
+## Aanvulling 5.2: economische planning en automatisch herstel
+
+### 5.2.0b7: berekeningswijze in plaats van automerk
+
+De voertuigformulieren noemen de twee methoden **Actueel resterend bereik** en
+**Volbereik met SOH-correctie**. De selector vertaalt de bestaande opgeslagen
+waarden `tesla` en `id3`; er is geen profielmigratie of automatische bronwissel.
+Beide aanmaak- en wijzigingsformulieren leggen uit welke bereikbron, accu-energie
+en SOH bij de keuze horen. Optionele laadstart en limietbediening behouden hun
+bestaande voorwaarden. Laadplanning, doelstop, budget en actuatorcode veranderen
+in deze versie niet.
+
+Het native-helpervoorbeeld staat in `examples/id3-remaining-range.yaml`.
+Op 19 november is de bestaande `sensor.id3_estimated_range` via de publieke
+options-flow bijgewerkt, met behoud van entiteits-ID, unique ID, device en eenheid.
+De helper toont de gerapporteerde resterende range, behalve bij ontbrekende,
+ongeldige of 312-waarden. Dan geldt `312 × SOH/100 × SOC/100`. De ondersteunende
+SOH-helper bewaart de laatst geldige waarde en gebruikt anders 90%. Deze wijziging
+heeft het bestaande AdaptiveCharge-voertuigprofiel niet omgezet. Een berekende
+fallback is geen verse voertuigmeting. Het HA-receipt staat in
+`adaptive_charge_preview_20261113/id3_range_helper_20261119/receipt.json`.
+
+### 5.2.0b6: trage startterugmelding en afgeronde opruimstatus
+
+Een timeout van een reeds verzonden Manual-moduscommando bewijst niet
+dat de laadpaal dat commando heeft geweigerd. De bestaande, duurzaam vastgelegde
+intentie wacht daarom op de gewone modus-/vermogenterugmelding; er wordt geen
+extra positief commando verstuurd. De bestaande begrensde feedbackwachttijd,
+Stop, ontkoppeling, eigendom en energieplafonds blijven leidend. Timeouts van
+negatieve acties, laadpaal-On, voertuig-On en voertuiglimietacties behouden hun
+foutafhandeling. De extra wachtruimte geldt uitsluitend voor de modusintentie,
+die al een begrensde feedbackwachttijd heeft.
+
+Bevestigde afronding naar Green wist ook de bijbehorende opruimvlag, ook als er
+nog een zichtbare actuatorfout is. Een reeds bewaarde losse vlag uit oudere
+versies kan zonder actuatoractie worden afgerond na bevestigde Green, switch
+uit, een laadpaalrapport van maximaal tien minuten oud en vers onafhankelijk
+nulvermogen, uitsluitend bij dezelfde opdracht,
+aansluiting en configuratie. Een wachtende limietterugzetting blijft Start
+blokkeren. De fout en een expliciete Stop blijven bewaard; alleen een nieuwe
+expliciete Start kan nieuwe laadbevoegdheid geven. Dit verandert geen doel,
+energieallocatie, autolimiet of vermogensinstelling.
+
+### Afronding vóór het dynamische contract op 18 november 2026
+
+Patrick meldde op 15 november dat het dynamische contract op woensdag 18 november
+ingaat en dat nog twee nachten met de Tesla beschikbaar zijn voor gerichte proeven.
+Een betrouwbaar vertrekdoel heeft voorrang op prijswinst. De ochtenddeadlines en
+het benodigde minimum zijn bij Patrick uitgevraagd; de live proef wordt pas aan
+die gegevens en een werkelijk aangesloten Tesla gebonden.
+
+De ID.3-proef op 15 november bereikte gemelde 80%, maar de regeling bleef Manual
+houden met circa 1,98 kWh resterend budget. Dat is geen geslaagde doelstopacceptatie.
+De fysieke laadblokken en de kleine doelwijzigings-/Stop-proeven blijven afzonderlijk
+bewijs. Het vervolg naar 80% verbruikte laadruimte zonder de open proefgevallen
+gericht te sluiten. Voor volgende proeven zijn kleine doelen vlak boven de actuele
+SOC/range verplicht; 80–90% is alleen de geautoriseerde bovengrens en niet vanzelf
+een laatste proefstap. Een eventuele praktische eindlading krijgt een afzonderlijk
+doel, een vertrekdeadline en voldoende gereserveerde tijd.
+
+De gerichte 5.2.0b3-correctie onderscheidt doelbewijs van de energieschatting.
+Voor de ID.3 kan een verse SOC het doel bevestigen zonder een capturetijd op de
+accu-energiesensor. Voor de Tesla zijn daarvoor verse, samenhangende SOC en range
+nodig. Werkelijke terugval wordt op diezelfde relevante voertuigvelden beoordeeld;
+de bestaande vijf minuten en terugvalband blijven gelden. Resterende kWh worden
+bij ontbrekende accu-energie geschat met de bewaarde verhouding, niet gepresenteerd
+als een nieuwe accu-energiemeting. Ontvangsttijd wordt geen voertuigmeettijd.
+Teruggedateerde of ontbrekende doelmetingen geven geen doelbevestiging of nieuwe
+voortgangsallocatie; een bewaard laadbudget blijft uitvoerbaar. Dezelfde capture
+en dezelfde SOC mogen geen herhaalde energieallocatie geven. Stop, ontkoppeling,
+meteridentiteit en bestaande energie-/tijdgrenzen blijven voorgaan.
+
+Een oude energiereferentie krijgt geen nieuwe harde vervaldatum. Doelgrenzen komen
+uit afzonderlijk geldige actuele instellingen/referentievelden; bij ontbrekende
+doelreferentie blijft het bestaande begrensde budget gelden, zonder een doelstop
+te verzinnen. De bewaarde kWh-verhouding blijft een expliciet herkenbare schatting,
+met plausibiliteitscontrole en de bestaande opdrachtplafonds. Voor een rollback
+van b3 naar b2 moet eerst expliciet Stop worden uitgevoerd en eigen Manual/pending
+afgerond zijn: b2 kent de nieuwe opgeslagen doelobservatievelden niet. Een downgrade
+van een nog actieve b3-opdracht is daarom geen ondersteunde herstelroute.
+Ook b4 bewaart extra range-/wachttijdreferenties; een downgrade van een actieve
+b4-opdracht naar b3 is niet ondersteund. Ontbrekende b4-velden in een b3-store
+worden met lege referenties ingelezen zonder nieuwe laadbevoegdheid.
+
+Een andere meterentiteit kiezen tijdens een actieve opdracht vergrendelt bewust
+een meterfout; daarvoor zijn expliciet Stop en een nieuwe Start nodig.
+
+Eigen testrun van b3 op 15 november: 1.339 tests geslaagd, niet door de reviewer
+uitgevoerd. Onafhankelijke kritieke review: GO, met nul open kritieke/hoge/
+middelzware bevindingen. Dit is
+geen fysieke nachtacceptatie. b4 richt zich op de stijgende doelgrens zonder
+SOC-daling tijdens bewaking en doel-/limietdelta's uit een opgeslagen referentie
+tijdens bronuitval. De brede plausibiliteitsband van de geschatte accucapaciteit
+blijft een laag aandachtspunt. Ongeldige verhoudingen blokkeren nieuwe
+energieallocatie maar missen nog een afzonderlijk doelobservatiediagnosticum;
+ID.3-range/SOH blijven referentievelden waarvan de meettijd niet wordt beoordeeld,
+ook als die is meegeleverd. Deze beperkingen zijn geen
+bewijs van een geslaagde fysieke doelstop of natuurlijke terugval.
+
+### Geautoriseerd vervolg op 16 november: 5.2.0b4
+
+Patrick heeft twee gerichte correcties en daaropvolgende Tesla-proeven goedgekeurd.
+Een betrouwbaar gemeld bereiktekort kan de bewaking nu ook bij gelijkblijvende SOC
+heropenen als een nieuwere, getimede Tesla-range daadwerkelijk is verslechterd.
+Dezelfde capture of alleen een nieuwe tijd op dezelfde waarden geeft geen nieuw
+budget. Een ongetimede ID.3-range/SOH-referentiewijziging op zichzelf mag geen
+bevestigde bewaking heropenen. ID.3-herbewaking berust uitsluitend op SOC-daling;
+heropening door ID.3-range/SOH bij gelijke SOC is niet geïmplementeerd. Voor Tesla
+moet de verslechtering zelf minstens de terugvalband bedragen, zodat afronding
+geen nieuw budget geeft. Als Green-energie het tekort tijdens de wachttijd binnen
+de band brengt, eindigt die zonder heropening; dit geldt nu ook bij SOC-daling.
+De metercredit blijft dan behouden voor een volgende wachttijd op dezelfde capture.
+Een nieuwe range-wachttijd begint uitsluitend bij een
+capture van hoogstens 120 seconden oud (`MAX_REOPEN_PUBLICATION_LAG`; bij latere
+publicatie is de reden `range_goal_waiting_recent_capture`). De eenmaal begonnen vijf minuten mogen op dezelfde
+capture doorlopen; alle daarbij geleverde energie blijft credit, ook bij SOC-
+terugval. Dit is geen vervaldatum voor bestaande budgetten of VW-referenties.
+De bestaande terugvalband (standaard één procentpunt equivalente
+accu-energie) en vijf minuten wachttijd blijven gelden. Het nieuwe bereiktekort
+moet strikt groter zijn dan de tolerantieband; energie die tijdens de wachttijd
+al binnenkomt wordt afgetrokken. Daarmee blijft tolerantie stabiel bij dezelfde
+voertuigmeting, ook wanneer de meter ondertussen voortloopt. Herstel van het bereik of
+ontbrekende/teruggedateerde doelgegevens zetten die wachttijd terug. Een door de
+autolimiet begrensd effectief doel geeft geen bevoegdheid boven die limiet.
+
+Bij geldige actuele doelvelden en ontbrekende/ongetimede accu-energie gebruiken
+doel-/limietdelta's en planning dezelfde actuele SOC/range/limiet en dezelfde
+bewaarde kWh-verhouding als de doelwaarneming. Alleen de rekenwaarde van de
+accu-energie wordt uit die verhouding afgeleid; de oorspronkelijke bronwaarden en
+meettijden blijven zichtbaar en `source_fresh` wordt daardoor niet waar. Nieuwe
+diagnostiek vermeldt `goal_and_budget_aligned` (altijd true/false) en
+`estimated_ac_kwh_per_soc_point` (waarde of null): geschatte AC-kWh per procentpunt,
+inclusief de ingestelde verliesmarge. De bestaande SOC-terugval gebruikt
+`return_band_dwell`; terugval door getimede range gebruikt de zichtbare reden
+`range_goal_return_band_dwell`. Beide bewaren dezelfde opdracht.
+Anker, oorspronkelijke meterbasis en al geleverde energie worden door een
+doel-/limietdelta niet gereset. Doelbevestiging blijft onafhankelijk van een
+ongeschatte accu-energiemeting; de energieguard is geen voertuigdoelbewijs.
+
+De ID.3-referentierange en 15% marge worden niet vervangen. Patrick accepteert
+voor zijn gebruik een beperkte afwijking in de orde van één procentpunt; de
+waargenomen 0,57 kWh bij de kleine ID.3-proef is geen zelfstandige releaseblokkade.
+Geen strengere ouderdomsregel voor bewaarde energiebudgetten of accuverhoudingen.
+De overige b3-diagnostiek-/bronreferentiebeperkingen blijven afzonderlijk bekend.
+
+Softwarevalidatie b4: 1.367 tests geslaagd (één bestaande aiohttp-waarschuwing).
+Kritieke implementatiereview, sessie `5cdb6728-a3e3-4d46-be93-62fae3c9a5f4`,
+sequence 4: GO; nul open kritieke/hoge/middelzware bevindingen. Fysieke acceptatie
+staat nog open. Twee lage operationele punten blijven voor de nachtproef:
+opgebouwde Green-credit kan ook tegen een latere capture blijven meetellen en
+zo circa één à twee procentpunten te weinig aanvullend budget geven; de
+120-secondeninstap kan bij meer bronvertraging wachten. Niet zelfstandig die
+instapgrens verruimen: bronvertraging en credit moeten gezamenlijk worden bewezen.
+De bestaande SOC-route behoudt de b3-versheidsgrens; de publicatielag vóór de
+eerste waarneming is daarmee niet exact tegen de laadmeter gesynchroniseerd.
+Deze punten zijn geen bewijs van een geslaagde doelstop of vertrekacceptatie.
+
+De bouw, softwaretests, review en update mogen worden afgerond. De laadopdracht
+voor 17 november wordt pas daarna met Patrick ingesteld; de auto wordt overdag
+nog gebruikt. Geen nieuwe Start, proefplanning of Codextaak tijdens deze bouw.
+Patrick levert het Zonneplan-tariefblad later op 16 november. Onderzoek naar
+WeConnect-forks en portaalvertraging staat naast deze bouw en verandert geen
+VW-installatie of account. De nacht 16–17 is bedoeld voor gerichte acceptatie,
+17–18 voor een gewone vertrekopdracht met vertrekzekerheid als prioriteit.
+
+| Moment | Gerichte acceptatie | Uitkomst moet aantonen |
+| --- | --- | --- |
+| Software vóór nacht 1 | Werkelijk incident replayen; gedeeltelijke bronuitval; oude/nieuwe timestamps; Stop/ontkoppeling | Geen eindeloze Manual na bevestigd doel; geen nieuw budget door ontvangst of dezelfde capture; geen onnodige laadblokkade |
+| Eerste beschikbare Tesla-nacht | Klein bereikdoel; timerstart; verhogen/verlagen binnen dezelfde opdracht; echte doelstop; bewaking; expliciete Stop | Plan én fysieke laadblokken; zelfde energieboekhouding; geen oude timerhervatting; doelstop onderscheiden van energieguard/tolerantie |
+| Overdag na nacht 1 | Werkelijke afwijkingen herstellen en onafhankelijk reviewen | Alleen geteste kandidaat via de bestaande release-/updateprocedure |
+| Tweede beschikbare nacht | Gewone vertrekopdracht zonder tussentijdse operatorcorrecties; resterende kritieke herstelgevallen | Benodigd doel vóór vertrek; normale pauzes en herstel zonder verloren opdracht; Stop/ontkoppeling blijven beëindigend |
+| Voor 18 november | Definitieve versie en inrichting vastzetten; rapport met open beperkingen | Geen volledig functioneel akkoord zolang een vertrek- of doelstopfout openstaat |
+
+Natuurlijke terugval telt alleen mee na echte accudaling; als die niet optreedt,
+blijft die fysieke proef open. Prijsuitval mag het vertrekdoel niet blokkeren:
+het bestaande aaneengesloten blok tot vertrek blijft de terugvalroute. Vóór een
+nachtproef wordt de benodigde eindlading doorgerekend, zodat de kleine proeven
+niet de benodigde vertrektijd of energie opsouperen. Geen tweede controller,
+geen geforceerde fase-/ampèreactie en geen gesimuleerde live voertuigdata.
+
+De actuele kandidaat- en fysieke resultaten worden per stap vastgelegd; bovenstaande
+tabel is een uitvoerplan, geen vooraf verleende testuitslag of voltooiingsclaim.
+
+De optionele B-regeling en de herstelkeuzes staan uitgewerkt in
+[ECONOMISCHE_PLANNING.md](ECONOMISCHE_PLANNING.md#inrichting-en-bewijs-voor-520b1).
+Zonder actieve opdracht is een economische Green-pauze afzonderlijk inschakelbaar.
+Met een opdracht vergelijkt de planner de bekende alternatieven vóór vertrek.
+Bij onvolledige tarieven geldt voor vroege inkoop het gewogen bekende gemiddelde
+minus een configureerbare centaftrek; noodzakelijke deadline-lading gaat voor.
+
+Bij ingeschakeld laadpaalherstel blokkeert oude voertuigdata het afmaken van een
+bewaard energiebudget niet. Een apart ingestelde EVSE-vermogensbron kan ontbrekend
+HomeWizardvermogen vervangen; diagnose vermeldt dat dit geen onafhankelijk bewijs
+is. Bij meteruitval telt geen fictieve levering mee, maar begrenst een afzonderlijke
+maximaal mogelijke Manual-levering het configureerbare veiligheidsplafond.
+Na een werkelijk nieuwe meting wordt dezelfde opdracht automatisch herbeoordeeld,
+met marge zodat hij vlak bij het plafond niet herhaald stopt en start.
+Een sensor-reload met kort `unavailable → off → on` wordt niet direct als kabel
+los opgevat; een echte `on → off` bij bereikbare laadpaal beëindigt wel onmiddellijk.
+
+De eindige nachtproef gebruikt alleen de openbare integratiebediening en één
+toegestane HA-herstart. Zijn receipt legt versie, aangesloten Tesla, begrensde SOC,
+doelen, eindtijd en iedere intentie vóór verzending vast. Hij schrijft geen
+laadpaalmodus, ampères, fasen, voertuigwaarden of eigen herstelacties. Uitkomsten
+worden pas na vergelijking met echte meetgegevens beoordeeld.
+
+## Oorspronkelijk contract en latere aanvullingen
+
+- Green is de basis; Enphase regelt zon, fasen en ampères. Alleen gepland of direct
+  aanvullend laden wordt door AdaptiveCharge aangevraagd.
+- Geen fysieke start uit alleen een previewkopie. Een expliciete Start bindt auto,
+  aansluiting, generatie en meterboekhouding. Eén opdracht per laadpaal.
+- Hoofdschakelaar uit: eigen aanvullend laden gecontroleerd naar Green overdragen;
+  bewaarde opdracht blijft bestaan. Expliciete Stop trekt hervattingsrecht in.
+- Nulvermogen, fasepauze of anonieme schakelaar-OFF annuleren niet en veroorzaken
+  op zichzelf geen Green-commando. Een echte Stop of vastgestelde ontkoppeling wel.
+- Automatisch hervatten na een HA-herstart is de standaard voor een bewaarde
+  opdracht met toekomstig vertrek en dezelfde aansluiting. Een oude kabeltimestamp
+  is geen fout: de stabiele aansluitidentiteit heeft geen leeftijdslimiet.
+  Als dezelfde eigen opdracht al fysiek in Manual doorlaadt, volstaan vers
+  onafhankelijk positief vermogen en overeenstemmende Manual-terugmeldingen
+  zonder openstaand modusverzoek. De regelaar schrijft dan geen nieuwe Manual
+  en eist geen nieuw cloudrapport om dat reeds lopende laden opnieuw te bevestigen.
+  Een vermogenswaarneming na het herstel moet het doorladen nog bevestigen;
+  dezelfde opnieuw ontvangen startwaarde kan die bewaking niet opheffen. Blijft
+  bevestiging uit, dan volgt de bestaande melding `physical_start_unconfirmed`,
+  zonder extra Start of het wissen van de opdracht. Een nog onbevestigde gewone
+  laadstart behoudt ook na een herstart zijn normale modusbevestiging.
+  Dit herstel wordt eenmalig in het HA-log vermeld. Onvolledige terugmelding
+  blijft de gewone herstelhandshake gebruiken; nieuwe laadcommando's houden hun
+  terugmeldingscontrole. Stop, aansluiting, andere bediening en energie-/tijdgrenzen
+  gaan altijd voor. Een bestaande fout wordt hiermee niet automatisch gewist.
+- Ontbrekende/vertraagde voertuiggegevens wissen geen opdracht. De bewaarde
+  energieallocatie mag worden afgemaakt zonder een nieuwe VW-update. Ook een eerste
+  schatting met geldige getallen kan begrensd worden gebruikt; doelbevestiging,
+  nieuwe voortgangsallocatie en terugvalbewijs blijven afzonderlijk herkenbaar.
+- Meterfout of een andere bestuurder blokkeert extra netladen, maar wist de
+  opdracht niet. Voor een tijdelijk ontbrekende meter geldt vanaf 5.2 de hierboven
+  beschreven begrensde herstelkeuze. Geen nieuw energiebudget bij herstart,
+  herhaalde Start of doelwijziging. De verliesmarge blijft 15%, geen autokalibratie.
+- Bestaande native Master moet uit staan en native ACTIVE/SESSION/PENDING leeg;
+  anders weigert de nieuwe uitvoerder overname. Hij schakelt de oude regeling niet
+  zelf uit en overschrijft geen nieuwe externe opdracht.
+- Tesla kan alleen met expliciet ingeschakelde capability tijdelijk zijn limiet
+  verhogen; ID.3 blijft read-only. Herstellen uitsluitend bij eigen, ongewijzigde
+  limiet en dezelfde Tesla-bedieningsidentiteit, ook na ontkoppelen. Voor de eerste proef geldt maximaal 80%.
+- De laadstatussensor is aanvullend: fysieke rust wordt bewezen door schakelaar uit
+  en vers onafhankelijk HomeWizard-vermogen onder 0,2 kW. Een ontbrekende binaire
+  laadstatus blokkeert dat bewijs niet.
+- Het totale opdrachtplafond telt alle gemeten IQ-energie mee, ook Green. Veranderde
+  bedieningsbronnen worden geweigerd zolang de eigen laadactie of limietherstel
+  loopt. Bij onvoorziene bronuitval probeert alleen de vastgelegde oude bediening
+  na maximaal 120 seconden ontbrekende terugmelding begrensd negatief af te ronden; een nieuwe externe opdracht gaat altijd voor.
+- Prijsuitval blokkeert laden niet. Bij ontbrekende, ongeldige of onvolledige
+  prijzen plant de integratie één aaneengesloten blok tot vertrek, zonder de
+  prijsplanreserve: drie uur nodig voor 06:15 betekent starten om 03:15. Tot dat
+  blok blijft Green beschikbaar. Een begonnen fallbackblok blijft aaneengesloten
+  als metercredits de benodigde tijd verkorten. Nieuwe prijzen herplannen dezelfde
+  opdracht automatisch; doel, generatie, gebruikte energie en Stop blijven gelden.
+  Kosten zijn onbekend, ook per venster; er worden geen prijzen verzonnen.
+  Vlak vóór een positieve serviceaanroep wordt bij feeduitval opnieuw getoetst of
+  het fallbackblok al mag starten. Een oude goedkope timer start dus niet te vroeg.
+  De vroegere instelling `require_prices_for_control` wordt genegeerd en wordt
+  niet meer aangeboden; een opgeslagen oude sleutel kan tot herconfiguratie blijven
+  staan. De bestaande energie-, voertuig- en eigendomsgrenzen blijven gelden.
+- Een reeds begonnen prijsblok blijft vanaf nu doorlopen zolang het huidige
+  kwartier nog geselecteerd is. Metercredits schuiven zijn start niet opnieuw naar
+  voren. Het resterende korte stuk van dat lopende blok is geen nieuwe losse start.
+  Een niet meer geselecteerd kwartier wordt wel overgeslagen; Stop, ontkoppeling,
+  doel-/energiegrens en een buitenlandse opdracht gaan ongewijzigd voor.
+  De ingestelde minimumduur voor losse laadblokken geldt ook voor interne
+  laadpauzes: een gat korter dan die duur (standaard drie minuten) wordt waar
+  mogelijk vooraf en tijdens laden gesloten, ook binnen een gedeeltelijk gevuld
+  kwartier. Dezelfde energie wordt van achter naar voren uit de laatste
+  geselecteerde laaddelen gehaald; het totaalbudget stijgt niet. De eerste
+  toekomstige start wordt niet vervroegd. Een pauze exact op de minimumduur
+  blijft toegestaan. Zonder voldoende latere energie, boven de vroege inkoopgrens
+  of over een onbekend tariefgat wordt niet overbrugd. Een resterende korte pauze
+  krijgt de waarschuwing `short_pause_retained`, ook bij de overgang naar een
+  ongeprijsd vertrekblok. Het verplaatsen van een kort laadblok wordt opnieuw op
+  korte pauzes gecontroleerd. Een daardoor verkort staartblok blijft onder de
+  bestaande minimumblokregel vallen: eerst aansluiten, anders binnen de ingestelde
+  tolerantie zichtbaar weglaten, anders met uitzonderingswaarschuwing uitvoeren.
+  Zonder weglating blijft de geplande energie gelijk; met weglating telt het
+  weggelaten deel apart mee in `omitted_kwh`.
+  Continuïteit gaat vóór het goedkoopste theoretische prijsplan. Een hogere
+  minimumduur kan dus meer dure laadtijd afdwingen; bij 30 minuten kan bijna een
+  halfuur piektarief het laatste goedkope laaddeel vervangen. De berekende
+  plankosten bevatten die keuze; er is geen afzonderlijke maximale meerprijs.
+  Valt de prijsfeed tijdens een prijsblok uit, dan
+  herplant dezelfde opdracht naar één blok dat bij vertrek eindigt, met Green in
+  de wachttijd. Een reeds begonnen fallbackblok blijft wel aaneengesloten; ook
+  een materiële vertrekwijziging wordt opnieuw ingepland zonder nieuw budget.
+- Een slapende Tesla houdt zijn voertuiglimiet-herstelopdracht bewaard. Die
+  blokkeert geen Start van de ID.3 en blijft aan de oorspronkelijke Tesla-writer
+  gekoppeld. Een vervangen writer of onbevestigde terugmelding na een herstelwrite
+  wordt gemeld met de oorspronkelijke en geschreven limiet; nooit stil overschreven.
+- De native bronlisteners en timers herbeoordelen feedherstel zelfstandig; een
+  aanvullende Codextaak voor prijsbewaking is niet nodig.
+
+## Tesla-proef, nog niet gestart
+
+T0 wordt pas aan een concrete UTC-tijd gebonden na software-GO, geïnstalleerde
+bestandverificatie, werkende tarieven en dezelfde Tesla-aansluiting. De proef krijgt
+vooraf een absolute eindtijd en een gezamenlijk kWh-plafond in haar receipt.
+Geen wijziging van voertuigdata, klimaat, fasen of ampères om een resultaat te maken.
+
+De eerste commissioning gebruikt maximaal 6 kWh totaal vanaf de nieuwe IQ-basis en
+een absolute eindtijd T0 + 120 minuten. R0 is de bij aanvang gemelde Tesla-range.
+Doelen worden begrensd op de actuele autolimiet van maximaal 80%; een onvoldoende
+bereikbare stap wordt als zodanig vastgelegd. De concrete UTC-tijden, R0 en doelen
+moeten vooraf in het commissioningreceipt staan.
+
+1. Start op R0 + 10 km en vertrek T0 + 90 minuten:
+   vergelijk de gekozen kwartieren met de werkelijke feed en controleer de timer.
+2. Verhoog naar R0 + 20 km en verlaag daarna naar R0 + 15 km zonder nieuwe Start; identiteit en gebruikte energie
+   moeten behouden blijven. Wacht minstens vijf gemeten fysieke laad minuten vóór
+   de verlaging tijdens laden.
+3. Stel R0 + 25 km in met vertrek over 10 minuten om urgentie te toetsen; beoordeel tekort en haalbaarheid,
+   zonder een onhaalbaar doel als succes aan te merken.
+4. Observeer doelstop of energieguard afzonderlijk. Alleen een passende nieuwe
+   voertuigmeting bewijst doelbereik; Green op energiegrens is verificatie.
+5. Stop expliciet, wacht op rust en verifieer dat oude timers niet hervatten. Een
+   nieuwe Start is een afzonderlijke opdracht binnen hetzelfde proefenergieplafond.
+6. Fasepauzes, nulvermogen, hoofdschakelaar uit/aan en herstart worden softwarematig
+   gereplayed. Geen onnodige fysieke HA-herstart of geforceerde fasewissel.
+7. Natuurlijk bijladen alleen beoordelen als een echte terugval optreedt. Geen
+   kunstmatige SOC-daling; anders: niet opgetreden. Werkelijke ontkoppeling sluit af.
+
+Softwaretests, service/readback en fysiek gedrag worden afzonderlijk gerapporteerd.
+
+De laadpaalsensor behoudt zijn entiteits-ID. Zijn toestanden zijn nu `read_only`,
+`control_enabled` en `stopping`; de voertuigtoestanden blijven afzonderlijk zichtbaar.
+
+Als de prijsbron onbeschikbaar is, vervallen ook de voorgestelde adviesvensters en
+kosten. Oude tariefattributen worden dan niet als een live feed behandeld.
+De besturingsstatus en foutcodes in attributen blijven technisch herkenbaar voor
+diagnostiek; dashboard en normale sensortoestanden tonen Nederlandstalige uitleg.
+
+## Oplevering 13–14 november 2026
+
+### Doorladen bij prijsuitval en korte vensters, 5.1.0b6
+
+De eigenaar verving op 14 november het eerdere verbod op Manual zonder Enever
+door het bovenstaande vertrekgerichte fallbackbeleid. Dit wijzigt de actuele
+besturing, niet de historische uitkomsten van eerdere proeven met de oude regel.
+De gewone economische planning blijft de goedkoopste bekende kwartieren kiezen.
+Losse restvensters onder de ingestelde drie minuten worden aan het goedkoopste
+geschikte aangrenzende kwartier gekoppeld, inclusief vrije ruimte binnen een
+gedeeltelijk gebruikt kwartier. Totale energie en de bijbehorende kosten blijven
+behouden. Zonder bestaand blok of voldoende aansluitcapaciteit blijft de bestaande
+tolerantie of zichtbare uitzondering voor een noodzakelijk kort blok gelden.
+
+### Normale bediening en planningssensoren
+
+De zichtbare regeling heet Laadregeling; de oude preview-identiteit blijft intern
+behouden om bestaande entiteiten en opgeslagen opdrachten zonder duplicaten bij
+te werken. Het installatiedomein `adaptive_charge_preview` is daarom een technische
+compatibiliteitsnaam, niet een uitgeschakelde of beperkte appvariant.
+
+Per auto komt één Laadplanning-sensor bij. Zijn numerieke staat is de resterende
+geplande Manual-laadduur in minuten. `quarters` bevat tijdzonebewuste UTC-waarden
+`start`/`end`, `charging`, `minutes` en `energy_kwh`, ook voor nulkwartieren tussen
+blokken. Verstreken stukken worden afgeknipt; de payload is begrensd op de bestaande
+48-uursplanningshorizon. De sommen sluiten aan op `scheduled_energy_kwh` en de
+sensorstaat. De sensor maakt geen opdracht en verzint geen toekomstige Green-energie.
+Zonder actieve opdracht is de staat nul en de kwartierenlijst leeg. Bij ontbrekende
+berekeningsgegevens is de duur onbekend, met de bestaande reden zichtbaar.
+De kwartierprojectie wijzigt de laadbesturing en energieboekhouding niet.
+
+`energy_kwh` en `scheduled_energy_kwh` zijn totale AC-laadenergie tijdens de
+Manual-vensters, inclusief de eventuele zonnebijdrage binnen zo'n venster. Zij zijn
+dus niet hetzelfde als uitsluitend extra netenergie (`additional_kwh`) of accutoename.
+Autonoom Green buiten de vensters is niet in deze projectie opgenomen.
+
+Onbekende vensterkosten blijven `None`. Sensorattributen en diagnostiek geven
+deze waarde ongewijzigd door. Het dashboard formatteert de totale kosten alleen
+als die numeriek zijn; de kwartiergrafiek gebruikt geplande kWh, geen verzonnen
+kwartierkosten. Een [native kaartvoorbeeld](../examples/planning-card.yaml) toont resterende tijd
+en een kwartiertabel. De standaardgrafiek toont historische waarden. Het optionele
+[ApexCharts-voorbeeld](../examples/planning-chart-apex.yaml) tekent toekomstige
+kwartieren rechtstreeks uit de attributen, zonder recorderhistorie.
+
+### Bewerkbaar vermogensveld, 5.1.0b5
+
+Het vermogensveld gebruikt een native numerieke HA-selector. De eerdere
+union-validator werd door HA als vaste nul weergegeven, hoewel de API andere
+geldige waarden accepteerde. De selector behoudt dezelfde validatie: nul of
+1–22 kW, met afwijzing van niet-eindige waarden. Een regressie toetst het echte
+geserialiseerde HA-formulier, naast de bestaande berekenings- en validatietests.
+
+### Planningsvermogen per voertuig, 5.1.0b4
+
+Een auto kan met een lagere bestaande stroomlimiet laden dan de laadpaal aankan.
+Daarom kan ieder voertuig een eigen planningsvermogen krijgen. `0` behoudt het
+gedeelde laadpaalvermogen; een positieve waarde begrenst alleen de berekening
+voor die auto en kan nooit boven het gedeelde vermogen uitkomen. Vensters,
+urgentie, minimale blokduur en de berekening bij vertraagde data gebruiken
+dezelfde waarde, zichtbaar als `planning_power_kw` op de voertuigsensor.
+
+Dit wijzigt geen ampères of fasen en leert geen laadvermogen uit wisselende
+zonneopbrengst. Kies een conservatief haalbaar vermogen bij de gebruikte
+voertuiginstelling en controleer het opnieuw wanneer die instelling verandert.
+Andere voertuigen blijven het gedeelde laadpaalvermogen gebruiken.
+
+### Ontbrekende volgende prijsdag, 5.1.0b3
+
+Na de datumwisseling publiceert Enever geldige kwartieren voor vandaag terwijl
+`prices_tomorrow` nog `None` is. Dat betekent dat die volgende dag nog niet is
+gepubliceerd. 5.1.0b3 slaat zo'n lege publicatie over. De bestaande voorwaarden
+blijven gelden: een beschikbare bron, geldige intervallen en dekking van het
+huidige tijdstip zijn vereist voor aanvullend laden. Verlopen, onbeschikbare of
+ongeldige prijzen geven geen toestemming voor Manual. De regressies toetsen de
+datumwisseling met native datums en ISO-tekst, plus ontbrekende en misvormde data.
+
+### Tariefformaatcorrectie 5.1.0b2
+
+Enever 1.8 publiceert de tijden in `prices_today` en `prices_tomorrow` intern als
+Python-datumobjecten. De HA-API toont dezelfde waarden als ISO-tekst. Versie
+5.1.0b1 accepteerde alleen die tekstvorm en wees de interne tariefregels af.
+5.1.0b2 verwerkt beide vormen met dezelfde tijdzone- en zomertijdcontrole.
+De eis van actuele prijzen vóór Manual blijft behouden. De regressietest gebruikt
+192 native Enever-kwartieren en toetst actuele dekking op beide dagen en afwijzing
+buiten de beschikbare periode. Dit verandert geen stop-, laad- of limietbeleid.
+
+### Eerdere oplevering 5.1.0b1
+
+Versie [5.1.0b1](https://github.com/Patrick1610/AdaptiveCharge/releases/tag/v5.1.0b1)
+is gepubliceerd op commit `c27cee992f0ddb565e11b9ddd58a2392a0ad1a26`.
+Alle 1.043 softwaretests zijn lokaal geslaagd. De
+[GitHub-tests](https://github.com/Patrick1610/AdaptiveCharge/actions/runs/43415681777)
+en [hassfest/HACS-validatie](https://github.com/Patrick1610/AdaptiveCharge/actions/runs/43415681834)
+zijn voor dezelfde releasecommit geslaagd.
+De geconsolideerde onafhankelijke critical-review gaf GO zonder open critical,
+high of medium bevindingen; de herstelbare bestandsupgrade kreeg afzonderlijk GO.
+
+De bestaande HA-instantie is bijgewerkt en na een toegestane HA-herstart geladen.
+De 24 componentbestanden komen overeen met het gepubliceerde releasearchief.
+Beide voertuigsubentries, de tien bestaande entiteiten en de vijf nieuwe
+bedieningsentiteiten zijn geverifieerd. Alle drie configuraties zijn via de gewone
+configuratiestromen opgeslagen en teruggelezen. HACS was op de host afwezig;
+daarom is de bestaande component vanuit de gepubliceerde GitHub-release bijgewerkt
+met een exacte controle van de oude bestanden en een bewaarde herstelkopie.
+
+De oude native Master is uit; diens vier automationconfiguraties zijn ongewijzigd.
+De nieuwe Master is aan, zonder Start, actieve auto of wachtende actuatoractie.
+De eerste proef is ingesteld op maximaal 6 kWh en 80% SOC. De bestaande
+AdaptiveCharge-dashboardroute heeft dezelfde drie tabbladen behouden; alle
+15 entiteitsverwijzingen en 13 Markdown-templates zijn in HA gecontroleerd.
+Het oude EV-dashboard en de dashboardinventaris zijn ongewijzigd.
+
+De afsluitende feedcontrole gaf `unknown`, zonder tarieven voor vandaag of morgen.
+Daarom is de fysieke proef niet gestart en wacht Manual op Enever. Zelfstandig
+Green bleef toegestaan en fysiek laden werd waargenomen. Er is geen Codextaak
+voor feedbewaking gemaakt. Dit is installatiebewijs; fysieke doelstop, herstart
+tijdens eigen laden en natuurlijk bijladen met deze release blijven onbewezen.
+De oorspronkelijke proefuitslagen zijn hierdoor niet gewijzigd.
+
+De eigen HA-bewijzen staan onder
+`adaptive_charge_preview_20261113/control_preparation_20261113/upgrade_5_1_0b1`:
+het oorspronkelijke upgrade-receipt bewaart de bestandsfase, terwijl
+`runtime_outcome.json` de geverifieerde herstart, inrichting en wachttoestand vastlegt.

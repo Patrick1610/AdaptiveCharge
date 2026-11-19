@@ -1,0 +1,15 @@
+# Uitvoeringshandover
+
+Actuele status op 13 november 05:52 CET: COMMISSIONED_READ_ONLY_WITH_SOURCE_WARNINGS via OWNER_DIRECT_EXCEPTION. Het gevraagde naast elkaar draaien is ingericht. Geen formele v4-plus-closure: de eerdere custom-agentpreflight blijft historisch mislukt.
+
+De canonieke bron is Patrick1610/AdaptiveCharge. Pre-release v5.0.0b1 staat op commit 31d521576a89b8140b11b95b940af7953b32db48; PR #56 naar develop staat open als draft. Geen beschermde branch is samengevoegd. HACS heeft de beta geïnstalleerd. Alle 21 bestanden en de volledige bestandenset zijn teruggelezen en komen overeen met de release. De 20 runtime/configbestanden zijn gelijk aan het eerder gereviewde pakket; één bestaand projecticoon is toegevoegd.
+
+Na Patricks expliciete akkoord is alleen de oude uitgeschakelde entry ‘AdaptiveCharge- Model Y’ verwijderd. De eerste DELETE gaf HTTP 500 nadat HA de entry al uit de actieve configuratielijst had verwijderd. Daarom is de aanvraag niet blind herhaald: 26 achtergebleven, uitsluitend aan die oude entry gekoppelde entiteiten zijn via de publieke registry-API verwijderd. De gewone HA-opruiming verwijderde het lege oude apparaat. Entry, entiteiten en apparaat zijn op afwezigheid gecontroleerd. De 31 oude bestanden blijven gearchiveerd; geen .storage-bewerking of runtime-injectie.
+
+De nieuwe instantie ‘Enphase Preview’ is loaded, met twee voertuigsubentries: Stormbreaker en Éowyn ID.3. Alle 10 entiteiten zijn beschikbaar. binary_sensor.enphase_preview_control_active is off; de root meldt read_only=true en control_enabled=false. De bestaande native opdracht, doel- en energiebasis zijn behouden. Vier controller/guardconfiguraties hebben exact dezelfde hash. Geen HA-herstart en geen native laad-, helper-, limiet-, Start/Stop- of herlaadactie aangevraagd.
+
+De huisverbruiksmeting is aan sensor.ev_v2_huisverbruik_gemiddeld gekoppeld. De prijsbinding is dezelfde als in de actuele native planner, maar prices_today en prices_tomorrow zijn beide None. Beide voertuigprofielen melden vehicle_measurement_stale_or_time_unknown en invalid_price_rows. De preview observeert dus live, maar er is geen actueel volledig gekwalificeerd laadplan. Geen ontvangsttijd als voertuigmeettijd behandelen en geen waarden simuleren. Doelstop of natuurlijk bijladen is hiermee niet fysiek bewezen.
+
+De bestaande softwarevalidatie blijft 935 geslaagde tests (134 preview, 801 historisch). Core-, HA-, packaging- en upgrade-documentatiereviews waren GO zonder critical/high/medium. Release-CI is groen; description/topics zijn expliciet uitgesloten voor custom-repositorydistributie. Deze turn wijzigde alleen configuratie en bewijsdocumentatie, geen runtimecode.
+
+Historische uitkomsten blijven in implementation_result.json staan. De huidige uitkomst staat afzonderlijk onder commissioning_20261113. HA-bewijsmap: /config/ev_v2_control_20261106/adaptive_charge_preview_20261113; definitief receipt hacs_commissioning_receipt_20261113.json, log observations.jsonl. Niet opnieuw installeren, entries aanmaken of de oude campagne herarmen. Besturing blijft onmogelijk in dit pakket. Geen nieuwe heartbeat/daemon of fysieke proef.

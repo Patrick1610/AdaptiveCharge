@@ -20,7 +20,7 @@ def _load_const():
     """Load const.py directly via importlib, bypassing HA __init__ dependencies."""
     const_path = os.path.join(
         os.path.dirname(__file__),
-        "..", "custom_components", "adaptive_charge", "const.py"
+        "..", "legacy", "v4", "custom_components", "adaptive_charge", "const.py"
     )
     spec = importlib.util.spec_from_file_location("adaptive_charge_const", const_path)
     mod = importlib.util.module_from_spec(spec)
