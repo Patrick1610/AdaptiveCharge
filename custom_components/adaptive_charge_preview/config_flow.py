@@ -83,7 +83,17 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 def vehicle_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     """Only a configured limit-writer capability can suggest a higher limit."""
     data = defaults or {}
-    fields: dict[Any, Any] = {vol.Required("name", default=data.get("name", "")): str, vol.Required("kind", default=data.get("kind", "tesla")): vol.In(["tesla", "id3"])}
+    # Keep stored values stable: the visible choices describe input semantics.
+    fields: dict[Any, Any] = {
+        vol.Required("name", default=data.get("name", "")): str,
+        vol.Required("kind", default=data.get("kind", "tesla")): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=["tesla", "id3"],
+                mode=selector.SelectSelectorMode.LIST,
+                translation_key="range_calculation",
+            )
+        ),
+    }
     for key, domains in {"soc_entity": ["sensor"], "battery_entity": ["sensor"], "range_entity": ["sensor"], "limit_entity": ["sensor", "number"], "cable_entity": ["binary_sensor"]}.items():
         fields[vol.Required(key, default=data.get(key, vol.UNDEFINED))] = entity(domains)
     for key, domains in {"home_entity": ["binary_sensor", "device_tracker"], "soh_entity": ["sensor"], "measurement_time_entity": ["sensor"], "limit_writer_entity": ["number"], "target_entity": ["input_number", "number"], "departure_entity": ["input_datetime", "datetime"], "native_plan_entity": ["sensor"], "vehicle_charge_switch_entity": ["switch"]}.items():

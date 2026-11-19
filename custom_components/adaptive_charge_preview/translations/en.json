@@ -36,7 +36,7 @@
           "control_feedback_entity": "Enphase preferred/effective mode feedback",
           "control_report_entity": "Enphase actual report timestamp",
           "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
-          "economic_enabled": "Economic planning and Green pause (B)",
+          "economic_enabled": "Economic planning and Green pause",
           "idle_green_price_filter": "Also use the Green price filter without a request",
           "early_offset_cents": "Early import: cents/kWh below the weighted day mean",
           "export_contract": "Export contract (unknown / complete column / Zonneplan)",
@@ -93,7 +93,7 @@
           "control_feedback_entity": "Enphase preferred/effective mode feedback",
           "control_report_entity": "Enphase actual report timestamp",
           "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
-          "economic_enabled": "Economic planning and Green pause (B)",
+          "economic_enabled": "Economic planning and Green pause",
           "idle_green_price_filter": "Also use the Green price filter without a request",
           "early_offset_cents": "Early import: cents/kWh below the weighted day mean",
           "export_contract": "Export contract (unknown / complete column / Zonneplan)",
@@ -138,55 +138,75 @@
       "step": {
         "user": {
           "title": "Configure vehicle",
-          "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written.",
+          "description": "Choose the calculation that matches your range source. Existing requests and energy accounting are preserved when app data is delayed. Optional vehicle controls are available only with current remaining range.",
           "data": {
             "name": "Name",
-            "kind": "Vehicle calculation",
-            "soc_entity": "Battery state of charge (%)",
-            "battery_entity": "Stored battery energy, not capacity (kWh)",
-            "range_entity": "Tesla remaining range / VW full range reference (km)",
-            "limit_entity": "Observed vehicle limit (%)",
-            "cable_entity": "Vehicle-specific cable connected",
+            "kind": "Range calculation",
+            "soc_entity": "Battery charge (%)",
+            "battery_entity": "Energy currently stored in the battery (kWh)",
+            "range_entity": "Range source (km)",
+            "limit_entity": "Vehicle charge limit (%)",
+            "cable_entity": "Cable connected to this vehicle",
             "home_entity": "Vehicle at home",
-            "soh_entity": "VW state of health (%)",
-            "measurement_time_entity": "Actual vehicle capture time, not reception time",
-            "limit_writer_entity": "Optional Tesla limit writer",
-            "target_entity": "Existing range target (read only)",
-            "departure_entity": "Existing departure (read only)",
-            "native_plan_entity": "Existing native plan for comparison",
-            "droop_pp": "SOC return threshold (percentage points)",
-            "margin": "Energy margin fraction (0.15 means 15%)",
-            "allow_limit_raise": "Allow temporary Tesla limit raise",
-            "maximum_soc": "Ceiling for temporary limit raises (%)",
-            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
-            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
+            "soh_entity": "Battery health SOH (%) — full-range method",
+            "measurement_time_entity": "Vehicle data measurement time",
+            "limit_writer_entity": "Charge-limit control (optional)",
+            "target_entity": "External range target (optional, read only)",
+            "departure_entity": "External departure (optional, read only)",
+            "native_plan_entity": "Existing controller plan for comparison",
+            "droop_pp": "Drop before topping up (percentage points)",
+            "margin": "Charging-loss allowance (0.15 = 15%)",
+            "allow_limit_raise": "Allow temporary charge-limit increase",
+            "maximum_soc": "Maximum temporary charge limit (%)",
+            "vehicle_charge_switch_entity": "Vehicle charging on/off (optional)",
+            "planning_power_kw": "Maximum planning power (kW, 0 = charger)"
+          },
+          "data_description": {
+            "kind": "Choose by the meaning of the range source, regardless of vehicle brand. Current remaining range uses kilometres at the present battery charge. Full range uses a reference at 100% charge and applies SOH.",
+            "range_entity": "For current remaining range: remaining kilometres from the vehicle or a helper. For full range: the reference at 100% charge before SOH correction. A helper already calculating remaining range belongs to the first method.",
+            "battery_entity": "Select available energy at the current battery charge. Total battery capacity is a different quantity.",
+            "soh_entity": "Only the full-range method applies this correction. Remaining range is not corrected for SOH a second time. Without an SOH source, the full-range method uses 100%.",
+            "measurement_time_entity": "When the vehicle measured the data. HA reception time is not a substitute. Delayed data does not erase an existing bounded energy allowance.",
+            "limit_writer_entity": "Optional and available only with current remaining range. An owned temporary increase requires both this control and explicit permission.",
+            "vehicle_charge_switch_entity": "Optional and available only with current remaining range. The control must actually start and stop charging through this vehicle.",
+            "planning_power_kw": "Use 0 to follow the normal or safe capacity of the charger. A positive value only caps planning power."
           }
         },
         "reconfigure": {
           "title": "Configure vehicle",
           "data": {
             "name": "Name",
-            "kind": "Vehicle calculation",
-            "soc_entity": "Battery state of charge (%)",
-            "battery_entity": "Stored battery energy, not capacity (kWh)",
-            "range_entity": "Tesla remaining range / VW full range reference (km)",
-            "limit_entity": "Observed vehicle limit (%)",
-            "cable_entity": "Vehicle-specific cable connected",
+            "kind": "Range calculation",
+            "soc_entity": "Battery charge (%)",
+            "battery_entity": "Energy currently stored in the battery (kWh)",
+            "range_entity": "Range source (km)",
+            "limit_entity": "Vehicle charge limit (%)",
+            "cable_entity": "Cable connected to this vehicle",
             "home_entity": "Vehicle at home",
-            "soh_entity": "VW state of health (%)",
-            "measurement_time_entity": "Actual vehicle capture time, not reception time",
-            "limit_writer_entity": "Optional Tesla limit writer",
-            "target_entity": "Existing range target (read only)",
-            "departure_entity": "Existing departure (read only)",
-            "native_plan_entity": "Existing native plan for comparison",
-            "droop_pp": "SOC return threshold (percentage points)",
-            "margin": "Energy margin fraction (0.15 means 15%)",
-            "allow_limit_raise": "Allow temporary Tesla limit raise",
-            "maximum_soc": "Ceiling for temporary limit raises (%)",
-            "vehicle_charge_switch_entity": "Optional Tesla charge-start switch",
-            "planning_power_kw": "Vehicle planning power cap (kW, 0 = charger default)"
+            "soh_entity": "Battery health SOH (%) — full-range method",
+            "measurement_time_entity": "Vehicle data measurement time",
+            "limit_writer_entity": "Charge-limit control (optional)",
+            "target_entity": "External range target (optional, read only)",
+            "departure_entity": "External departure (optional, read only)",
+            "native_plan_entity": "Existing controller plan for comparison",
+            "droop_pp": "Drop before topping up (percentage points)",
+            "margin": "Charging-loss allowance (0.15 = 15%)",
+            "allow_limit_raise": "Allow temporary charge-limit increase",
+            "maximum_soc": "Maximum temporary charge limit (%)",
+            "vehicle_charge_switch_entity": "Vehicle charging on/off (optional)",
+            "planning_power_kw": "Maximum planning power (kW, 0 = charger)"
           },
-          "description": "Delayed app data does not erase a request. Existing attachment and energy accounting remain usable. Actual capture time stays separate. ID.3 limits are never written."
+          "description": "Choose the calculation that matches your range source. Existing requests and energy accounting are preserved when app data is delayed. Optional vehicle controls are available only with current remaining range.",
+          "data_description": {
+            "kind": "Choose by the meaning of the range source, regardless of vehicle brand. Current remaining range uses kilometres at the present battery charge. Full range uses a reference at 100% charge and applies SOH.",
+            "range_entity": "For current remaining range: remaining kilometres from the vehicle or a helper. For full range: the reference at 100% charge before SOH correction. A helper already calculating remaining range belongs to the first method.",
+            "battery_entity": "Select available energy at the current battery charge. Total battery capacity is a different quantity.",
+            "soh_entity": "Only the full-range method applies this correction. Remaining range is not corrected for SOH a second time. Without an SOH source, the full-range method uses 100%.",
+            "measurement_time_entity": "When the vehicle measured the data. HA reception time is not a substitute. Delayed data does not erase an existing bounded energy allowance.",
+            "limit_writer_entity": "Optional and available only with current remaining range. An owned temporary increase requires both this control and explicit permission.",
+            "vehicle_charge_switch_entity": "Optional and available only with current remaining range. The control must actually start and stop charging through this vehicle.",
+            "planning_power_kw": "Use 0 to follow the normal or safe capacity of the charger. A positive value only caps planning power."
+          }
         }
       },
       "abort": {
@@ -274,6 +294,14 @@
     "follow_helpers": {
       "name": "Follow bound helpers",
       "description": "Remove local target/departure overrides and follow bound helpers without starting a new request."
+    }
+  },
+  "selector": {
+    "range_calculation": {
+      "options": {
+        "tesla": "Current remaining range",
+        "id3": "Full range with SOH correction"
+      }
     }
   }
 }

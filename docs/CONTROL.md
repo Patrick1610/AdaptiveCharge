@@ -17,6 +17,26 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
 
 ## Aanvulling 5.2: economische planning en automatisch herstel
 
+### 5.2.0b7: berekeningswijze in plaats van automerk
+
+De voertuigformulieren noemen de twee methoden **Actueel resterend bereik** en
+**Volbereik met SOH-correctie**. De selector vertaalt de bestaande opgeslagen
+waarden `tesla` en `id3`; er is geen profielmigratie of automatische bronwissel.
+Beide aanmaak- en wijzigingsformulieren leggen uit welke bereikbron, accu-energie
+en SOH bij de keuze horen. Optionele laadstart en limietbediening behouden hun
+bestaande voorwaarden. Laadplanning, doelstop, budget en actuatorcode veranderen
+in deze versie niet.
+
+Het native-helpervoorbeeld staat in `examples/id3-remaining-range.yaml`.
+Op 19 november is de bestaande `sensor.id3_estimated_range` via de publieke
+options-flow bijgewerkt, met behoud van entiteits-ID, unique ID, device en eenheid.
+De helper toont de gerapporteerde resterende range, behalve bij ontbrekende,
+ongeldige of 312-waarden. Dan geldt `312 × SOH/100 × SOC/100`. De ondersteunende
+SOH-helper bewaart de laatst geldige waarde en gebruikt anders 90%. Deze wijziging
+heeft het bestaande AdaptiveCharge-voertuigprofiel niet omgezet. Een berekende
+fallback is geen verse voertuigmeting. Het HA-receipt staat in
+`adaptive_charge_preview_20261113/id3_range_helper_20261119/receipt.json`.
+
 ### 5.2.0b6: trage startterugmelding en afgeronde opruimstatus
 
 Een timeout van een reeds verzonden Manual-moduscommando bewijst niet

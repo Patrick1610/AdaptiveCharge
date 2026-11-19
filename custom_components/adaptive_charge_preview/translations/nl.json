@@ -36,7 +36,7 @@
           "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
           "control_report_entity": "Enphase echte rapporttijd",
           "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
-          "economic_enabled": "Economische planning en Green-pauze (B)",
+          "economic_enabled": "Economisch plannen en Green pauzeren",
           "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
           "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
           "export_contract": "Teruglevercontract (unknown / complete kolom / zonneplan)",
@@ -93,7 +93,7 @@
           "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
           "control_report_entity": "Enphase echte rapporttijd",
           "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
-          "economic_enabled": "Economische planning en Green-pauze (B)",
+          "economic_enabled": "Economisch plannen en Green pauzeren",
           "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
           "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
           "export_contract": "Teruglevercontract (unknown / complete kolom / zonneplan)",
@@ -138,55 +138,75 @@
       "step": {
         "user": {
           "title": "Voertuig instellen",
-          "description": "Vertraagde appgegevens wissen geen opdracht. Een bestaande fysieke aansluiting en energieboekhouding blijven bruikbaar. Echte meettijd blijft apart zichtbaar. ID.3-limieten worden nooit geschreven.",
+          "description": "Kies de berekening die past bij je bereikbron. Een bestaande opdracht en energieboekhouding blijven behouden bij vertraagde appgegevens. Optionele voertuigbediening is alleen beschikbaar bij actueel resterend bereik.",
           "data": {
             "name": "Naam",
-            "kind": "Voertuigberekening",
+            "kind": "Bereikberekening",
             "soc_entity": "Acculading (%)",
-            "battery_entity": "Beschikbare accu-energie (kWh)",
-            "range_entity": "Tesla-praktijkrange / VW-volle referentierange (km)",
-            "limit_entity": "Actuele autolimiet (%)",
-            "cable_entity": "Eigen kabelmelding auto",
+            "battery_entity": "Energie nu in de accu (kWh)",
+            "range_entity": "Bereikbron (km)",
+            "limit_entity": "Ingestelde laadlimiet van de auto (%)",
+            "cable_entity": "Kabel verbonden met deze auto",
             "home_entity": "Auto thuis",
-            "soh_entity": "VW accugezondheid SOH (%)",
-            "measurement_time_entity": "Echte voertuigmeettijd (geen ontvangstmoment)",
-            "limit_writer_entity": "Optionele Tesla-limietbediening",
-            "target_entity": "Bestaand bereikdoel (alleen lezen)",
-            "departure_entity": "Bestaand vertrek (alleen lezen)",
-            "native_plan_entity": "Bestaande plansensor ter vergelijking",
-            "droop_pp": "SOC-terugval (procentpunten)",
-            "margin": "Energiemarge als fractie (0,15 = 15%)",
-            "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
-            "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
-            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening",
-            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)"
+            "soh_entity": "Accugezondheid SOH (%) — bij volbereik",
+            "measurement_time_entity": "Bronmeettijd van de voertuiggegevens",
+            "limit_writer_entity": "Bediening laadlimiet (optioneel)",
+            "target_entity": "Extern bereikdoel (optioneel, alleen lezen)",
+            "departure_entity": "Extern vertrekmoment (optioneel, alleen lezen)",
+            "native_plan_entity": "Planning van bestaande regeling ter vergelijking",
+            "droop_pp": "Terugval voor bijladen (procentpunten)",
+            "margin": "Opslag voor laadverlies (0,15 = 15%)",
+            "allow_limit_raise": "Tijdelijke laadlimietverhoging toestaan",
+            "maximum_soc": "Bovengrens tijdelijke laadlimietverhoging (%)",
+            "vehicle_charge_switch_entity": "Laden via de auto aan/uit (optioneel)",
+            "planning_power_kw": "Maximaal laadvermogen voor planning (kW, 0 = laadpaal)"
+          },
+          "data_description": {
+            "kind": "Kies op basis van de betekenis van de bereikbron, ongeacht het automerk. Actueel resterend bereik gebruikt de kilometers bij de huidige acculading. Volbereik gebruikt een referentie bij 100% accu en past SOH toe.",
+            "range_entity": "Bij actueel resterend bereik: de resterende kilometers uit de auto of een helper. Bij volbereik: de referentie bij 100% accu vóór SOH-correctie. Een helper die al resterend bereik berekent hoort bij de eerste keuze.",
+            "battery_entity": "Gebruik de beschikbare energie bij de huidige acculading. De totale accucapaciteit is een andere grootheid.",
+            "soh_entity": "Alleen de volbereikmethode gebruikt deze correctie. Bij resterend bereik wordt SOH niet nogmaals toegepast. Zonder SOH-bron gebruikt de volbereikmethode 100%.",
+            "measurement_time_entity": "Het meetmoment in de auto. Het moment waarop HA de gegevens ontvangt is geen vervanging. Vertraagde gegevens wissen een bestaand begrensd energiebudget niet.",
+            "limit_writer_entity": "Optioneel en uitsluitend bij actueel resterend bereik. Alleen met deze bediening én toestemming kan een eigen tijdelijke limietverhoging worden uitgevoerd.",
+            "vehicle_charge_switch_entity": "Optioneel en uitsluitend bij actueel resterend bereik. De bediening moet daadwerkelijk laden via deze auto starten en stoppen.",
+            "planning_power_kw": "Laat 0 staan om het normale of veilige vermogen van de laadpaal te volgen. Een positieve waarde begrenst alleen het rekenvermogen."
           }
         },
         "reconfigure": {
           "title": "Voertuig instellen",
           "data": {
             "name": "Naam",
-            "kind": "Voertuigberekening",
+            "kind": "Bereikberekening",
             "soc_entity": "Acculading (%)",
-            "battery_entity": "Beschikbare accu-energie (kWh)",
-            "range_entity": "Tesla-praktijkrange / VW-volle referentierange (km)",
-            "limit_entity": "Actuele autolimiet (%)",
-            "cable_entity": "Eigen kabelmelding auto",
+            "battery_entity": "Energie nu in de accu (kWh)",
+            "range_entity": "Bereikbron (km)",
+            "limit_entity": "Ingestelde laadlimiet van de auto (%)",
+            "cable_entity": "Kabel verbonden met deze auto",
             "home_entity": "Auto thuis",
-            "soh_entity": "VW accugezondheid SOH (%)",
-            "measurement_time_entity": "Echte voertuigmeettijd (geen ontvangstmoment)",
-            "limit_writer_entity": "Optionele Tesla-limietbediening",
-            "target_entity": "Bestaand bereikdoel (alleen lezen)",
-            "departure_entity": "Bestaand vertrek (alleen lezen)",
-            "native_plan_entity": "Bestaande plansensor ter vergelijking",
-            "droop_pp": "SOC-terugval (procentpunten)",
-            "margin": "Energiemarge als fractie (0,15 = 15%)",
-            "allow_limit_raise": "Tijdelijke Tesla-limietverhoging toestaan",
-            "maximum_soc": "Bovengrens tijdelijke limietverhoging (%)",
-            "vehicle_charge_switch_entity": "Optionele Tesla-laadstartbediening",
-            "planning_power_kw": "Maximaal planningsvermogen auto (kW, 0 = laadpaal)"
+            "soh_entity": "Accugezondheid SOH (%) — bij volbereik",
+            "measurement_time_entity": "Bronmeettijd van de voertuiggegevens",
+            "limit_writer_entity": "Bediening laadlimiet (optioneel)",
+            "target_entity": "Extern bereikdoel (optioneel, alleen lezen)",
+            "departure_entity": "Extern vertrekmoment (optioneel, alleen lezen)",
+            "native_plan_entity": "Planning van bestaande regeling ter vergelijking",
+            "droop_pp": "Terugval voor bijladen (procentpunten)",
+            "margin": "Opslag voor laadverlies (0,15 = 15%)",
+            "allow_limit_raise": "Tijdelijke laadlimietverhoging toestaan",
+            "maximum_soc": "Bovengrens tijdelijke laadlimietverhoging (%)",
+            "vehicle_charge_switch_entity": "Laden via de auto aan/uit (optioneel)",
+            "planning_power_kw": "Maximaal laadvermogen voor planning (kW, 0 = laadpaal)"
           },
-          "description": "Vertraagde appgegevens wissen geen opdracht. Een bestaande fysieke aansluiting en energieboekhouding blijven bruikbaar. Echte meettijd blijft apart zichtbaar. ID.3-limieten worden nooit geschreven."
+          "description": "Kies de berekening die past bij je bereikbron. Een bestaande opdracht en energieboekhouding blijven behouden bij vertraagde appgegevens. Optionele voertuigbediening is alleen beschikbaar bij actueel resterend bereik.",
+          "data_description": {
+            "kind": "Kies op basis van de betekenis van de bereikbron, ongeacht het automerk. Actueel resterend bereik gebruikt de kilometers bij de huidige acculading. Volbereik gebruikt een referentie bij 100% accu en past SOH toe.",
+            "range_entity": "Bij actueel resterend bereik: de resterende kilometers uit de auto of een helper. Bij volbereik: de referentie bij 100% accu vóór SOH-correctie. Een helper die al resterend bereik berekent hoort bij de eerste keuze.",
+            "battery_entity": "Gebruik de beschikbare energie bij de huidige acculading. De totale accucapaciteit is een andere grootheid.",
+            "soh_entity": "Alleen de volbereikmethode gebruikt deze correctie. Bij resterend bereik wordt SOH niet nogmaals toegepast. Zonder SOH-bron gebruikt de volbereikmethode 100%.",
+            "measurement_time_entity": "Het meetmoment in de auto. Het moment waarop HA de gegevens ontvangt is geen vervanging. Vertraagde gegevens wissen een bestaand begrensd energiebudget niet.",
+            "limit_writer_entity": "Optioneel en uitsluitend bij actueel resterend bereik. Alleen met deze bediening én toestemming kan een eigen tijdelijke limietverhoging worden uitgevoerd.",
+            "vehicle_charge_switch_entity": "Optioneel en uitsluitend bij actueel resterend bereik. De bediening moet daadwerkelijk laden via deze auto starten en stoppen.",
+            "planning_power_kw": "Laat 0 staan om het normale of veilige vermogen van de laadpaal te volgen. Een positieve waarde begrenst alleen het rekenvermogen."
+          }
         }
       },
       "abort": {
@@ -274,6 +294,14 @@
     "follow_helpers": {
       "name": "Bestaande helpers volgen",
       "description": "Verwijder lokale doel-/vertrekoverrides en volg de gekoppelde helpers, zonder een nieuwe opdracht te starten."
+    }
+  },
+  "selector": {
+    "range_calculation": {
+      "options": {
+        "tesla": "Actueel resterend bereik",
+        "id3": "Volbereik met SOH-correctie"
+      }
     }
   }
 }
