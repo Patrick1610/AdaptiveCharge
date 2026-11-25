@@ -6,6 +6,7 @@
         "title": "Laadpaal instellen",
         "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet.",
         "data": {
+          "enphase_profile": "Enphase-systeemprofiel",
           "name": "Naam",
           "meter_entity": "IQ-energiemeter (kWh)",
           "power_entity": "Onafhankelijk laadvermogen (W/kW)",
@@ -54,7 +55,8 @@
           "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
           "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)",
           "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
-          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)"
+          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)",
+          "system_profile_entity": "Actief Enphase-systeemprofiel (optionele controle)"
         },
         "data_description": {
           "minimum_min": "Dezelfde grens voor losse laadblokken en interne pauzes. Hogere waarden kunnen duur laden verlengen en het laatste goedkope laaddeel vervangen; er is geen maximale meerprijs. Prijsdekking en vroege inkoopgrens blijven gelden."
@@ -63,6 +65,7 @@
       "reconfigure": {
         "title": "Laadpaal instellen",
         "data": {
+          "enphase_profile": "Enphase-systeemprofiel",
           "name": "Naam",
           "meter_entity": "IQ-energiemeter (kWh)",
           "power_entity": "Onafhankelijk laadvermogen (W/kW)",
@@ -111,7 +114,8 @@
           "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
           "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)",
           "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
-          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)"
+          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)",
+          "system_profile_entity": "Actief Enphase-systeemprofiel (optionele controle)"
         },
         "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet.",
         "data_description": {
@@ -301,6 +305,12 @@
       "options": {
         "tesla": "Actueel resterend bereik",
         "id3": "Volbereik met SOH-correctie"
+      }
+    },
+    "enphase_profile": {
+      "options": {
+        "self_consumption": "Eigen verbruik",
+        "ai_optimisation": "AI-optimalisatie"
       }
     }
   }

@@ -1,8 +1,10 @@
 # AdaptiveCharge 5.2 — laadplanning en economische Green-keuze
 
 Deze beta bundelt planning rond een gedeelde laadpaal met afzonderlijke
-voertuigprofielen met twee manieren om bereik te berekenen. Enphase Green blijft de basis;
-de integratie plant aanvullend netladen naar een bereikdoel en vertrektijd.
+voertuigprofielen met twee manieren om bereik te berekenen. Kies bij de laadpaal
+**Eigen verbruik** voor Green of **AI-optimalisatie** voor Slim tussen de
+geplande laadblokken. Zie [Enphase AI-optimalisatie](docs/CONTROL.md#520b8-enphase-ai-optimalisatie).
+De integratie plant aanvullend laden naar een bereikdoel en vertrektijd.
 De optionele economische regeling vergelijkt Green met later inkopen. Zonder
 opdracht kan een afzonderlijke filter Green pauzeren wanneer netto terugleveren
 meer oplevert dan het tijdgewogen gemiddelde van de complete bekende dagen.
@@ -33,7 +35,7 @@ Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTR
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.2.0b7`. Met beta's ingeschakeld biedt HA Marketplace ook
+downloaden en kies expliciet `v5.2.0b8`. Met beta's ingeschakeld biedt HA Marketplace ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie

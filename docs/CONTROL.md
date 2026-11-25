@@ -17,6 +17,24 @@ er wordt geen geslaagde custom-agentpreflight of formele workflowclosure verzonn
 
 ## Aanvulling 5.2: economische planning en automatisch herstel
 
+### 5.2.0b8: Enphase AI-optimalisatie
+
+Kies bij **Laadpaal instellen** of **Opnieuw configureren** het systeemprofiel
+dat je in Enphase gebruikt. **Eigen verbruik** is de standaard voor bestaande
+installaties en gebruikt Green. Bij **AI-optimalisatie** gebruikt AdaptiveCharge
+Manual in de geplande uren en Slim in de pauzes. De optionele sensor voor het
+actieve systeemprofiel signaleert een bekende afwijking van deze configuratie.
+Het systeemprofiel zelf stel je in via Enphase.
+
+Slim gebruikt het eigen Enphase-doel en kan tussendoor uit het net laden. De
+kwartierplanning reserveert de hele resterende behoefte en trekt de gemeten
+laadenergie van de ingestelde kWh-meter af, ongeacht de modus. De kostenraming
+onder AI betreft de geplande Manual-blokken tegen het inkooptarief. Bij het
+bereiken van het bereikdoel vervallen de Manual-blokken en mag Slim verder
+optimaliseren binnen de voertuiglimiet en het ingestelde opdrachtplafond.
+Stop en dat plafond onderbreken ook Slim. AdaptiveCharge controleert de stop met
+onafhankelijk laadvermogen op dezelfde aansluiting.
+
 ### 5.2.0b7: berekeningswijze in plaats van automerk
 
 De voertuigformulieren noemen de twee methoden **Actueel resterend bereik** en

@@ -20,8 +20,8 @@ from homeassistant.util import dt as dt_util
 
 from .core.models import finite, timestamp
 from .core.planner import deadline_fallback
-from .const import DOMAIN
-from .sources import connection_identity, physical_power, price_feed_live, state, vehicle_snapshot
+from .const import AI_OPTIMISATION, DOMAIN, MAX_CHARGER_POWER_KW, SELF_CONSUMPTION
+from .sources import connection_identity, meter_kwh, physical_power, price_feed_live, state, vehicle_snapshot
 
 if TYPE_CHECKING:
     from .coordinator import PreviewCoordinator
@@ -35,6 +35,7 @@ START_SETTLE_SECONDS = 120
 BINDING_KEYS = ("control_mode_entity", "charger_switch_entity", "control_feedback_entity", "control_report_entity", "meter_entity", "power_entity", "fallback_power_entity", "plug_entity", "connection_entity", "connection_attribute", "legacy_master_entity", "session_entity", "active_entity", "pending_entity", "generation_entity")
 VEHICLE_BINDING_KEYS = ("kind", "cable_entity", "vehicle_charge_switch_entity", "limit_writer_entity")
 TRANSIENT_INTERLOCKS = {"waiting_legacy_request_state", "waiting_legacy_controller_state", "control_bindings_incomplete", "waiting_actuator_source"}
+OWNERSHIP_LOST = {"external_mode_command_requires_new_start", "foreign_controller_requires_new_start"}
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -85,6 +86,36 @@ class ChargerControl:
         """Read configured entities only; no guessed hardware targets."""
         return dict(self.coordinator.entry.data)
 
+    @property
+    def _ai_grant(self) -> bool:
+        return bool(self.grant and self.grant.get("enphase_profile") == AI_OPTIMISATION)
+
+    @property
+    def ai_stop_latched(self) -> bool:
+        """Whether a deliberate stop still limits Smart for its attachment."""
+        return bool(self._ai_grant and self.grant.get("ai_stop_latched") and self.fault not in OWNERSHIP_LOST)
+
+    def observed_enphase_profile(self) -> str | None:
+        """Read a configured site-profile sensor, independent of charger mode."""
+        profile = state(self.hass, self.config.get("system_profile_entity"))
+        if profile is None:
+            return None
+        name = profile.state.strip().lower().replace("-", " ").replace("_", " ")
+        return {"self consumption": SELF_CONSUMPTION, "eigen verbruik": SELF_CONSUMPTION,
+                "ai optimisation": AI_OPTIMISATION, "ai optimization": AI_OPTIMISATION,
+                "ai optimalisatie": AI_OPTIMISATION}.get(name)
+
+    def _charger_mode_input(self, selected: Any) -> bool:
+        if selected and selected.state not in {"unknown", "unavailable"}:
+            return True
+        if not selected or selected.state != "unknown" or self.config.get("enphase_profile") != AI_OPTIMISATION:
+            return False
+        feedback = state(self.hass, self.config.get("control_feedback_entity"))
+        return bool("Manual" in (selected.attributes.get("options") or ())
+                    and feedback and feedback.state not in {"unknown", "unavailable"}
+                    and feedback.attributes.get("preferred_mode") == "SMART_CHARGING"
+                    and feedback.attributes.get("requested_mode") is None)
+
     def restore(self, data: Any) -> None:
         """Restore explicit authority, never infer it from an old preview."""
         if not isinstance(data, dict) or data.get("version") != 1:
@@ -97,12 +128,21 @@ class ChargerControl:
         if grant is not None and (grant.get("legacy_generation") is not None and not isinstance(grant["legacy_generation"], str) or type(grant.get("limit_overridden", False)) is not bool):
             self.fault = "invalid_stored_control_authority"
             return
+        if grant is not None and (grant.get("enphase_profile", SELF_CONSUMPTION) not in (SELF_CONSUMPTION, AI_OPTIMISATION)
+                                  or any(type(grant.get(k, False)) is not bool for k in ("ai_stop_latched", "ai_stop_confirmed", "ai_detached"))):
+            self.fault = "invalid_stored_control_authority"
+            return
         if grant is not None and grant.get("start_watch_since") is not None and not number(grant["start_watch_since"]):
             self.fault = "invalid_stored_control_authority"
             return
         invalid_exposure = bool(grant is not None and any(k in grant and (not number(grant[k]) or grant[k] < 0) for k in ("unmetered_exposure_kwh", "cap_checked_at", "last_known_used_kwh", "exposure_fault_report_at")))
         pending, limit = data.get("pending"), data.get("limit")
-        if pending is not None and (not isinstance(pending, dict) or pending.get("kind") not in {"manual", "stop", "green"} or not number(pending.get("sent")) or pending["sent"] <= 0 or "mode_ack_at" in pending and not number(pending["mode_ack_at"]) or type(pending.get("attempts", 1)) is not int or not 1 <= pending.get("attempts", 1) <= 3 or not number(pending.get("last_attempt", pending["sent"])) or type(pending.get("recovery", False)) is not bool or pending.get("recovery") and pending["kind"] != "manual"):
+        if isinstance(pending, dict) and pending.get("kind") == "smart" and (
+            grant is None or grant.get("enphase_profile") != AI_OPTIMISATION
+        ):
+            self.fault = "invalid_stored_control_operation"
+            return
+        if pending is not None and (not isinstance(pending, dict) or pending.get("kind") not in {"manual", "stop", "green", "smart"} or not number(pending.get("sent")) or pending["sent"] <= 0 or "mode_ack_at" in pending and not number(pending["mode_ack_at"]) or type(pending.get("attempts", 1)) is not int or not 1 <= pending.get("attempts", 1) <= 3 or not number(pending.get("last_attempt", pending["sent"])) or type(pending.get("recovery", False)) is not bool or pending.get("recovery") and pending["kind"] != "manual"):
             self.fault = "invalid_stored_control_operation"
             return
         dormant = data.get("dormant_limits", [])
@@ -130,7 +170,7 @@ class ChargerControl:
         self.grant = deepcopy(grant)
         if self.grant:
             self.grant["binding"].setdefault("fallback_power_entity",None)
-            if "cap_checked_at" in self.grant:
+            if "cap_checked_at" in self.grant and not self._ai_grant:
                 self.grant["cap_checked_at"] = dt_util.utcnow().timestamp()
         if self.grant and self.grant.get("unpriced_departure") is not None:
             hint = timestamp(self.grant["unpriced_departure"])
@@ -171,12 +211,28 @@ class ChargerControl:
         if self.green_hold:
             self.green_hold["retire_reason"] = "explicit_stop_preserved"
 
-    def physical_unplug_observed(self) -> None:
+    def latch_ai_stop(self) -> None:
+        """Revoke the Slim handoff for the current command and attachment."""
+        if self._ai_grant and not self.grant.get("ai_detached"):
+            self.grant["ai_stop_latched"] = True
+
+    def physical_unplug_observed(self, edge: float | None = None) -> None:
         """End the old command, retain the charger's own Green cleanup debt."""
         if self.green_hold:
             self.green_hold.update(release_required=True,release_reason="physical_unplug")
         self.idle_blocked = False
         self._green_interrupt = False
+        request = self.coordinator.sessions.get(self.grant["vehicle_id"]) if self._ai_grant else None
+        if request and (edge is None or edge >= request.started_at - 1):
+            # The cable stop ended authority. Never carry a pending Smart or
+            # Manual transition onto a later vehicle, even after a reload.
+            if self.grant["manual_since"] is not None:
+                self.grant["manual_seconds"] += max(0, dt_util.utcnow().timestamp() - self.grant["manual_since"])
+                self.grant["manual_since"] = None
+            self.owned_manual, self.pending = False, None
+            self.grant["ai_detached"] = True
+            self.grant.pop("ai_stop_latched", None)
+            self.grant.pop("ai_stop_confirmed", None)
 
     async def _retire_green_pause(self, reason: str, *, notify: bool = False) -> None:
         if self.green_hold:
@@ -205,7 +261,8 @@ class ChargerControl:
 
     @callback
     def _wake(self, _now: datetime) -> None:
-        if not self._closed and (self.enabled or self.owned_manual or self.pending or self.green_hold):
+        if not self._closed and (self.enabled or self.owned_manual or self.pending or self.green_hold
+                                 or self._ai_grant and self.grant.get("ai_stop_latched")):
             self.hass.async_create_task(self.coordinator.async_request_refresh())
 
     def _targets(self, service_data: dict[str, Any], entity_id: str | None) -> bool:
@@ -253,10 +310,17 @@ class ChargerControl:
         binding = self.grant["binding"]
         switches = (binding.get("charger_switch_entity"), binding.get("vehicle", {}).get("vehicle_charge_switch_entity"))
         off = data.get("domain") == "switch" and (data.get("service") == "turn_off" or data.get("service") == "toggle" and any(self._targets(service_data, e) and state(self.hass, e) and state(self.hass, e).state == "on" for e in switches))
+        off |= self._ai_grant and (data.get("domain"), data.get("service")) == ("enphase_ev", "stop_charging")
         kind = None
-        if data.get("domain") == "switch" and off and any(self._targets(service_data, e) for e in switches) and event.context.user_id:
+        if off and any(self._targets(service_data, e) for e in switches) and event.context.user_id:
             self._stop_requested = True  # Immediate interrupt before any await.
             kind = "stop"
+        elif (self._ai_grant and charger_target and event.context.user_id
+              and (data.get("domain"), data.get("service")) in {
+                  ("enphase_ev", "start_charging"), ("switch", "turn_on"), ("switch", "toggle"),
+              }):
+            self._external_mode = True
+            kind = "mode"
         elif data.get("domain") == "select" and data.get("service") == "select_option" and self._targets(service_data, binding.get("control_mode_entity")):
             self._external_mode = True
             kind = "mode"
@@ -289,6 +353,7 @@ class ChargerControl:
             if not self.grant or any(self.grant[k] != event[k] for k in ("vehicle_id", "generation")):
                 continue
             if event["kind"] == "stop":
+                self.latch_ai_stop()
                 request = self.coordinator.sessions.get(event["vehicle_id"])
                 if request:
                     request.stop("explicit_user_charger_stop")
@@ -316,9 +381,16 @@ class ChargerControl:
         return {**{k: cfg.get(k) for k in BINDING_KEYS}, "vehicle": {k: profile.get(k) for k in VEHICLE_BINDING_KEYS}}
 
     def binding_change_blocked(self, data: dict[str, Any], vehicle_id: str | None = None) -> bool:
+        if vehicle_id is None and (self.owned_manual or self.pending or self.green_hold
+                                   or self.grant and self.owns(self.grant["vehicle_id"])
+                                   or self._ai_grant and self.grant.get("ai_stop_latched")):
+            if any(data.get(key, default) != self.config.get(key, default) for key, default in (
+                ("enphase_profile", SELF_CONSUMPTION), ("system_profile_entity", None),
+            )):
+                return True
         if self.green_hold and vehicle_id is None and any(data.get(k) != self.green_hold["binding"].get(k) for k in BINDING_KEYS):
             return True
-        if not self.grant or not (self.owned_manual or self.pending or self.limit):
+        if not self.grant or not (self.owned_manual or self.pending or self.limit or self._ai_grant and self._same_attachment()):
             return False
         old = self.grant["binding"]
         if vehicle_id is not None:
@@ -340,7 +412,12 @@ class ChargerControl:
     def interlock(self, *, check_grant: bool = True) -> str | None:
         """A stable disabled legacy Master has no age limit."""
         cfg = self.config
+        observed = self.observed_enphase_profile()
+        if observed and observed != cfg.get("enphase_profile", SELF_CONSUMPTION):
+            return "enphase_system_profile_mismatch"
         if check_grant and self.grant:
+            if self.grant.get("enphase_profile", SELF_CONSUMPTION) != cfg.get("enphase_profile", SELF_CONSUMPTION):
+                return "control_binding_changed_requires_new_start"
             current, saved = self._binding(self.grant["vehicle_id"]), self.grant.get("binding", {})
             if self.grant["vehicle_id"] not in self.coordinator.profiles:
                 current, saved = {k: v for k,v in current.items() if k != "vehicle"}, {k: v for k,v in saved.items() if k != "vehicle"}
@@ -349,7 +426,8 @@ class ChargerControl:
         for key, prefix in (("control_mode_entity", "select."), ("charger_switch_entity", "switch."), ("control_feedback_entity", "sensor."), ("control_report_entity", "sensor."), ("legacy_master_entity", "input_boolean.")):
             entity_id = cfg.get(key)
             source = state(self.hass, entity_id)
-            if not isinstance(entity_id, str) or not entity_id.startswith(prefix) or source is None or source.state in {"unknown", "unavailable"}:
+            readable = self._charger_mode_input(source) if key == "control_mode_entity" else source and source.state not in {"unknown", "unavailable"}
+            if not isinstance(entity_id, str) or not entity_id.startswith(prefix) or not readable:
                 return "control_bindings_incomplete"
         if state(self.hass, cfg["legacy_master_entity"]).state not in {"off", "on"}:
             return "waiting_legacy_controller_state"
@@ -381,6 +459,14 @@ class ChargerControl:
         snapshot = vehicle_snapshot(self.hass, self.coordinator.profile(vehicle_id), self.config)
         if snapshot.shared_connected is not True or not snapshot.connection_id:
             raise ValueError("selected_vehicle_not_connected")
+        if self.config.get("enphase_profile") == AI_OPTIMISATION:
+            if (self._ai_grant and not self.grant.get("ai_detached") and self.grant["connection_id"] == snapshot.connection_id
+                    and self.grant["vehicle_id"] != vehicle_id):
+                raise ValueError("another_request_owns_attachment")
+            if self.pending and self.grant and self.grant.get("ai_stop_latched"):
+                raise ValueError("finish_previous_cleanup_first")
+            if meter_kwh(self.hass, self.config.get("meter_entity"), dt_util.utcnow().timestamp()) is None:
+                raise ValueError("energy_meter_invalid")
         if self.owned_manual and self.grant and self.grant["vehicle_id"] != vehicle_id:
             raise ValueError("finish_previous_owned_manual_first")
         if self._cleanup_required or any(item.get("vehicle_id") == vehicle_id and item.get("restore_pending") for item in [*self.dormant_limits, *([self.limit] if self.limit else [])]):
@@ -401,6 +487,16 @@ class ChargerControl:
             self.dormant_limits.remove(returning)
             self.limit = returning
         self.grant = {"vehicle_id": vehicle_id, "generation": request.generation, "connection_id": snapshot.connection_id, "manual_seconds": old.get("manual_seconds", 0.0), "manual_since": old.get("manual_since"), "max_kwh": float(self.config.get("maximum_command_kwh", DEFAULT_COMMAND_KWH))}
+        if self.config.get("enphase_profile") == AI_OPTIMISATION:
+            self.grant["enphase_profile"] = AI_OPTIMISATION
+            self.grant["cap_checked_at"] = request.started_at
+            if request.origin_meter is None:
+                request.origin_meter = meter_kwh(self.hass, self.config.get("meter_entity"), request.started_at)
+                request.last_meter = request.origin_meter
+            else:
+                for key in ("cap_checked_at", "last_known_used_kwh", "unmetered_exposure_kwh"):
+                    if key in old:
+                        self.grant[key] = old[key]
         self.grant["binding"] = self._binding(vehicle_id)
         self.grant["start_watch_since"] = old.get("start_watch_since")
         native_generation = state(self.hass, self.config.get("generation_entity"))
@@ -426,7 +522,12 @@ class ChargerControl:
         return bool(self.grant and request and self.grant["vehicle_id"] == vehicle_id and self.grant["generation"] == request.generation and self.grant["connection_id"] == request.connection_id and (terminal or not request.terminal))
 
     def _same_attachment(self) -> bool:
-        return bool(self.grant and self._connection_id() == self.grant["connection_id"])
+        if not self.grant or self._connection_id() != self.grant["connection_id"]:
+            return False
+        if self._ai_grant:
+            plug = state(self.hass, self.grant["binding"].get("plug_entity"))
+            return bool(not self.grant.get("ai_detached") and plug and plug.state == "on")
+        return True
 
     def _connection_id(self) -> str | None:
         return connection_identity(self.hass, self.config)
@@ -436,7 +537,7 @@ class ChargerControl:
         selected, feedback = state(self.hass, cfg.get("control_mode_entity")), state(self.hass, cfg.get("control_feedback_entity"))
         reported = state(self.hass, cfg.get("control_report_entity"))
         report_time = timestamp(reported.state) if reported else None
-        expected = "MANUAL_CHARGING" if option == "Manual" else "GREEN_CHARGING"
+        expected = {"Manual": "MANUAL_CHARGING", "Green": "GREEN_CHARGING", "Smart": "SMART_CHARGING"}[option]
         switch = state(self.hass, cfg.get("charger_switch_entity"))
         power = physical_power(self.hass, cfg, dt_util.utcnow().timestamp())
         stopped = switch and switch.state == "off" and power["fresh"] and not power["positive"]
@@ -450,7 +551,8 @@ class ChargerControl:
         acknowledged = sent is None or report_time is not None and report_time >= sent-2 or stopped
         if self.config.get("charger_fault_recovery") and sent is not None:
             acknowledged = acknowledged or bool(feedback and feedback.last_updated.timestamp() >= sent-2 and feedback.attributes.get("effective_mode") == expected) or bool(power["fresh"] and power["received_at"] >= sent-2 and power["positive"])
-        return bool(selected and selected.state == option and feedback and feedback.state not in {"unknown","unavailable"} and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (feedback.attributes.get("effective_mode") == expected or stopped) and recent and acknowledged)
+        matches_selection = bool(selected and (selected.state == option or option == "Smart" and self._ai_grant and self._charger_mode_input(selected) and selected.state == "unknown"))
+        return bool(matches_selection and feedback and feedback.state not in {"unknown","unavailable"} and feedback.attributes.get("requested_mode") is None and feedback.attributes.get("preferred_mode") == expected and (option == "Smart" or feedback.attributes.get("effective_mode") == expected or stopped) and recent and acknowledged)
 
     def _running_manual_readback(self, now: float) -> bool:
         """Observe continuing Manual; this is not acknowledgment of a new write."""
@@ -501,9 +603,10 @@ class ChargerControl:
 
     async def _call(self, domain: str, service: str, entity_id: str, **values: Any) -> None:
         negative = (domain, service) == ("switch", "turn_off") or domain == "select" and values.get("option") == "Green"
+        smart = domain == "select" and values.get("option") == "Smart"
         obligation = next((item for item in [*self.dormant_limits, *([self.limit] if self.limit else [])] if domain == "number" and entity_id == item["entity_id"] and values.get("value") == item["original"] and item.get("restore_pending")), None)
         restoring_limit = obligation is not None
-        cfg = self.grant["binding"] if negative and self.owned_manual and self.grant else self.config
+        cfg = self.grant["binding"] if negative and self.grant and (self.owned_manual or self._ai_grant) else self.config
         holding = bool(self.green_hold and (self.green_hold["connection_id"] == self._connection_id() or self.green_hold.get("release_required")) and self.green_hold["binding"] == {k:self.config.get(k) for k in BINDING_KEYS})
         if self.green_hold and not self.owned_manual and self.green_hold["binding"] != {k:self.config.get(k) for k in BINDING_KEYS}:
             raise DispatchRefused("economic_pause_binding_changed")
@@ -511,26 +614,34 @@ class ChargerControl:
                               self._mode_confirmed("Green") and domain == "switch" and service == "turn_on" and entity_id == cfg.get("charger_switch_entity"))
         profile = obligation["vehicle_binding"] if restoring_limit else self.coordinator.profiles.get(self.grant["vehicle_id"], {}) if self.grant else {}
         allowed = domain == "select" and service == "select_option" and entity_id == cfg.get("control_mode_entity") and values.get("option") in {"Green", "Manual"}
+        allowed |= smart and service == "select_option" and self._ai_grant and entity_id == self.grant["binding"].get("control_mode_entity")
         allowed |= domain == "switch" and service in {"turn_on", "turn_off"} and entity_id == cfg.get("charger_switch_entity")
         allowed |= domain == "switch" and service == "turn_on" and profile.get("kind") == "tesla" and entity_id == profile.get("vehicle_charge_switch_entity")
         allowed |= domain == "number" and service == "set_value" and profile.get("kind") == "tesla" and entity_id == profile.get("limit_writer_entity") and finite(values.get("value")) is not None and 1 <= values["value"] <= 100
         if not allowed:
             raise DispatchRefused("actuator_target_outside_configured_allowlist")
+        if smart and (not self.enabled or self._stop_requested or self.grant.get("ai_stop_latched") or
+                      not self.owns(self.grant["vehicle_id"]) or not self.pending or self.pending["kind"] != "smart"):
+            raise DispatchRefused("smart_handoff_requires_active_request")
         reason = self.foreign_reason() or ("external_mode_command" if self._external_mode and not restoring_limit else None)
         if reason:
             raise DispatchRefused(reason)
         if not negative and not restoring_limit and (reason := self.interlock(check_grant=not green_resuming)):
             raise DispatchRefused(reason)
-        cleanup = negative and self.owned_manual and self.grant
+        cleanup = negative and self.owned_manual and self.grant and not self._ai_grant
         if not self._same_attachment() and not cleanup and not restoring_limit and not (holding and (negative or green_resuming)):
             raise DispatchRefused("attachment_changed_before_actuator_call")
         source = state(self.hass, entity_id)
+        if smart and (not source or "Smart" not in (source.attributes.get("options") or ())):
+            raise DispatchRefused("smart_mode_unavailable")
         if negative and (source is None or source.state in {"unknown", "unavailable"} or not self.hass.services.has_service(domain, service)):
             raise DispatchRefused("waiting_actuator_source")
         positive = (domain, service) == ("switch", "turn_on") or domain == "select" and values.get("option") == "Manual" or domain == "number" and (source is None or finite(source.state) is None or values.get("value", 0) > finite(source.state))
         if positive and not restoring_limit and not green_resuming and not (self.grant and self.owns(self.grant["vehicle_id"])):
             raise DispatchRefused("positive_call_requires_active_request")
         if positive and self._stop_requested and not green_resuming:
+            raise DispatchRefused("stop_precedes_positive_actuator_call")
+        if positive and self._ai_grant and self.grant.get("ai_stop_latched") and not restoring_limit:
             raise DispatchRefused("stop_precedes_positive_actuator_call")
         if positive and not restoring_limit and not green_resuming and not price_feed_live(self.hass, self.config, dt_util.utcnow().timestamp()):
             if not self._unpriced_dispatch_due(dt_util.utcnow().timestamp()):
@@ -550,10 +661,13 @@ class ChargerControl:
         except TimeoutError:
             # A cloud timeout is not proof that the charger rejected the write.
             # Its already durable intent must await feedback, never be resent.
-            mode_start = domain == "select" and values.get("option") == "Manual" and self.pending and self.pending.get("kind") == "manual"
-            if not (self.owned_manual and mode_start):
+            mode_intent = domain == "select" and self.pending and (
+                self.owned_manual and values.get("option") == "Manual" and self.pending["kind"] == "manual"
+                or smart and self.pending["kind"] == "smart"
+            )
+            if not mode_intent:
                 raise
-            _LOGGER.warning("Charger start service timed out; retaining its intent and awaiting independent feedback without resending (%s.%s)", domain, service)
+            _LOGGER.warning("Charger mode service timed out; retaining its intent and awaiting feedback without resending (%s.%s)", domain, service)
 
     async def _begin(self, kind: str, now: float, *, recovery: bool = False) -> None:
         self.pending = {"kind": kind, "sent": now, "attempts": 1, "last_attempt": now}
@@ -561,8 +675,11 @@ class ChargerControl:
             self.pending["recovery"] = True
         await self.coordinator._save(immediate=True)
 
-    async def _green(self, now: float) -> None:
-        """Stop only our Manual, confirm physical idle, then yield to Green."""
+    async def _green(self, now: float, *, smart: bool = False) -> None:
+        """Finish the owned charger operation before yielding to its idle mode."""
+        if self._ai_grant:
+            await self._yield_ai(now, smart=smart)
+            return
         if not self.owned_manual:
             return
         cfg = self.grant["binding"]
@@ -587,6 +704,9 @@ class ChargerControl:
             self.status = "waiting_green_feedback"
             await self._retry_negative("select", "select_option", cfg["control_mode_entity"], now, option="Green")
             return
+        await self._finish_manual(now, "green_confirmed")
+
+    async def _finish_manual(self, now: float, status: str) -> None:
         if self.grant and self.grant.get("manual_since") is not None:
             self.grant["manual_seconds"] += max(0, now - self.grant["manual_since"])
             self.grant["manual_since"] = None
@@ -595,8 +715,62 @@ class ChargerControl:
         self.owned_manual, self.pending = False, None
         if self.limit is None:
             self._cleanup_required = False
-        self.status = "green_confirmed"
+        self.status = status
         await self.coordinator._save(immediate=True)
+
+    async def _yield_ai(self, now: float, *, smart: bool) -> None:
+        """Pause an owned block, or enforce an attachment-bound Stop in Slim."""
+        if not self._same_attachment():
+            current = self._connection_id()
+            if current and current != self.grant["connection_id"] and (self.owned_manual or self.pending):
+                await self._finish_manual(now, "attachment_or_command_replaced")
+            return
+        cfg = self.grant["binding"]
+        latched = self.grant.get("ai_stop_latched") is True
+        smart = smart and not latched and not self._stop_requested
+        power = physical_power(self.hass, cfg, now)
+        switch = state(self.hass, cfg.get("charger_switch_entity"))
+        idle = bool(switch and switch.state == "off" and power["fresh"] and power["independent"] and not power["positive"])
+        selected = state(self.hass, cfg.get("control_mode_entity"))
+        smart_available = bool(selected and selected.state != "unavailable" and "Smart" in (selected.attributes.get("options") or ()))
+        kind = self.pending.get("kind") if self.pending else None
+        if kind == "smart" and smart:
+            if self._mode_confirmed("Smart", self.pending["sent"]):
+                await self._finish_manual(now, "smart_confirmed")
+            else:
+                self.status = "waiting_smart_feedback"
+            return
+        if not (self.owned_manual or latched or kind in {"stop", "smart"}):
+            if not smart or not self._mode_confirmed("Manual"):
+                return
+            if not smart_available and idle:
+                self.status = "smart_mode_unavailable"
+                return
+        if kind != "stop":
+            if latched and self.grant.get("ai_stop_confirmed") and not self.owned_manual:
+                if idle:
+                    self.status = "ai_stop_confirmed"
+                    return
+                if not power["positive"] and (not switch or switch.state != "on"):
+                    self.status = "owned_stop_unconfirmed"
+                    await self._notify_fault(self.status)
+                    return
+            await self._begin("stop", now)
+            await self._call("switch", "turn_off", cfg["charger_switch_entity"])
+            self.status = "waiting_physical_stop"
+            return
+        if not (idle and power["received_at"] >= self.pending["sent"] - 2):
+            self.status = "waiting_physical_stop"
+            await self._retry_negative("switch", "turn_off", cfg["charger_switch_entity"], now)
+            return
+        if smart and smart_available:
+            await self._begin("smart", now)
+            await self._call("select", "select_option", cfg["control_mode_entity"], option="Smart")
+            self.status = "waiting_smart_feedback"
+            return
+        if latched:
+            self.grant["ai_stop_confirmed"] = True
+        await self._finish_manual(now, "ai_stop_confirmed" if latched else "smart_mode_unavailable" if smart else "ai_manual_stopped")
 
     async def _reconcile_completed_cleanup(self, now: float) -> None:
         """Retire a legacy leftover flag only after the same charger is idle."""
@@ -662,7 +836,7 @@ class ChargerControl:
             self.status = "manual_requested"  # Zero/anonymous OFF is not a retry.
             return
         if not self.owned_manual:
-            if not (self._mode_confirmed("Green") or self._mode_confirmed("Manual")):
+            if not (self._mode_confirmed("Smart" if self._ai_grant else "Green") or self._mode_confirmed("Manual")):
                 self.status = "waiting_existing_mode_feedback"
                 return
             self.owned_manual = True
@@ -854,7 +1028,7 @@ class ChargerControl:
         active = result.get("active_vehicle")
         row = result.get("vehicles",{}).get(active,{}) if active else {}
         owned = bool(active and self.owns(active) and row.get("eligible_for_boost"))
-        desired = bool(not releasing and not self.fault and self.enabled and self.config.get("economic_enabled") and not self.idle_blocked and
+        desired = bool(self.config.get("enphase_profile") != AI_OPTIMISATION and not releasing and not self.fault and self.enabled and self.config.get("economic_enabled") and not self.idle_blocked and
                        (owned and row.get("would_control_mode") == "Pause" or not active and result.get("economic_policy",{}).get("pause")))
         hold = self.green_hold
         if hold and (self.foreign_reason() or self._external_mode or self.idle_blocked or self._green_interrupt):
@@ -978,29 +1152,37 @@ class ChargerControl:
             return
         if self.fault == "invalid_stored_exposure_bound":
             return  # Retain valid limit/negative cleanup obligations, never repair authority silently.
+        if self._ai_grant and (self.grant.get("ai_detached") or self._external_mode or self.fault in OWNERSHIP_LOST or self.foreign_reason()):
+            return
         grant = self.grant
         request = self.coordinator.sessions.get(grant["vehicle_id"])
         if request is None:
             return
+        ai_accounting = self._ai_grant and self._same_attachment() and (self.enabled or self.owned_manual or bool(self.pending))
         if not self.owned_manual and request.terminal and self.fault != "unmetered_energy_exposure_cap":
             return  # Idle terminal grants must not churn the persistent store.
         origin = request.origin_meter if request.origin_meter is not None else request.anchor_meter
-        used = max(0,request.last_meter-origin) if request.last_meter is not None and origin is not None else 0.0
-        rate = finite(self.config.get("power_kw",22))
-        rate = rate if rate is not None and 1 <= rate <= 22 else 22
+        meter = finite(result.get("meter_kwh"))
+        last_meter = meter if ai_accounting and meter is not None else request.last_meter
+        used = max(0,last_meter-origin) if last_meter is not None and origin is not None else 0.0
+        configured_rate = finite(self.config.get("power_kw"))
+        # The planning rate may be lower than what autonomous Smart can draw.
+        rate = (configured_rate if not ai_accounting and configured_rate is not None
+                and 1 <= configured_rate <= MAX_CHARGER_POWER_KW else MAX_CHARGER_POWER_KW)
         previous = finite(grant.get("cap_checked_at"))
         exposure = finite(grant.get("unmetered_exposure_kwh")) or 0.0
-        if result.get("meter_kwh") is not None:
+        potentially_charging = self.owned_manual or ai_accounting and not grant.get("ai_stop_confirmed")
+        if meter is not None:
             reported = finite(result.get("meter_observed_at")) or now
-            since = max(reported,finite(grant.get("manual_since")) or now)
-            exposure = rate*max(0,now-since)/3600 if self.owned_manual else 0.0
+            since = max(reported, request.started_at if ai_accounting else finite(grant.get("manual_since")) or now)
+            exposure = rate*max(0,now-since)/3600 if potentially_charging else 0.0
             grant["last_known_used_kwh"] = used
             if (self.fault == "unmetered_energy_exposure_cap" and reported > grant.get("exposure_fault_report_at",0)
                     and used + rate*600/3600 < grant["max_kwh"]):
                 self.fault = None  # Recovered real accounting automatically reassesses the same request.
-        elif self.owned_manual:
+        elif potentially_charging:
             exposure += rate*max(0,now-(previous if previous is not None else now))/3600
-        if self.owned_manual or exposure or grant.get("unmetered_exposure_kwh"):
+        if potentially_charging or exposure or grant.get("unmetered_exposure_kwh"):
             grant["unmetered_exposure_kwh"],grant["cap_checked_at"] = exposure,now
         bounded_used = max(used,(finite(grant.get("last_known_used_kwh")) or used)+exposure)
         seconds = grant.get("manual_seconds",0)+max(0,now-grant["manual_since"]) if grant.get("manual_since") is not None else grant.get("manual_seconds",0)
@@ -1013,6 +1195,46 @@ class ChargerControl:
                 if self.fault != "unmetered_energy_exposure_cap":
                     grant["exposure_fault_report_at"] = finite(result.get("meter_observed_at")) or now
                 self.fault = "unmetered_energy_exposure_cap"
+
+    async def _enforce_ai_stop(self, request: Any, now: float) -> bool:
+        """Keep a deliberate Stop or hard limit effective during Slim as well."""
+        if not (self._ai_grant and not self.grant.get("ai_detached") and request and self.owns(request.vehicle_id, terminal=True)):
+            return False
+        if self.fault in OWNERSHIP_LOST:
+            return False  # Physical authority was relinquished before a possible HA restart.
+        cap_fault = self.fault in {"command_energy_or_manual_time_cap", "unmetered_energy_exposure_cap"}
+        unsafe_meter_or_identity = self.enabled and (request.meter_fault or request.identity_gap)
+        if (cap_fault or unsafe_meter_or_identity or self.enabled and request.terminal) and not self.grant.get("ai_stop_latched"):
+            self.latch_ai_stop()
+            if not request.terminal:
+                request.stop(self.fault if cap_fault else request.reason)
+            await self.coordinator._save(immediate=True)
+        if not self.grant.get("ai_stop_latched"):
+            return False
+        if not self._same_attachment():
+            current = self._connection_id()
+            if current is not None and current != self.grant["connection_id"]:
+                return False
+            self.status = "waiting_connection_to_confirm_ai_stop"
+            if self._connection_unknown_since is None:
+                self._connection_unknown_since = now
+                await self.coordinator._save(immediate=True)
+            elif now - self._connection_unknown_since >= FEEDBACK_TIMEOUT:
+                await self._notify_fault(self.status)
+            return True
+        self._connection_unknown_since = None
+        try:
+            await self._yield_ai(now, smart=False)
+            if self.limit and self.grant.get("ai_stop_confirmed") and self.pending is None:
+                await self.restore_limit()
+        except (ValueError, TimeoutError, HomeAssistantError):
+            self.status = "owned_stop_unconfirmed"
+        if self.pending and now - self.pending["sent"] > FEEDBACK_TIMEOUT:
+            self.status = "owned_stop_unconfirmed"
+            await self._notify_fault(self.status)
+        elif cap_fault:
+            await self._notify_fault()
+        return True
 
     async def step(self, result: dict[str, Any], now: float) -> None:
         """Execute the current request, never a captured old timer payload."""
@@ -1033,8 +1255,9 @@ class ChargerControl:
         if self.config.get("charger_fault_recovery") and self.grant and self.owns(self.grant["vehicle_id"]):
             gateway = state(self.hass,self.config.get("charger_connectivity_entity"))
             missing = bool(self.config.get("charger_connectivity_entity") and (not gateway or gateway.state != "on"))
-            missing |= any((s := state(self.hass,self.config.get(key))) is None or s.state in {"unknown","unavailable"} for key in ("control_mode_entity","control_feedback_entity","control_report_entity"))
-            if missing and not self._stop_requested and not self.fault:
+            missing |= not self._charger_mode_input(state(self.hass,self.config.get("control_mode_entity")))
+            missing |= any((s := state(self.hass,self.config.get(key))) is None or s.state in {"unknown","unavailable"} for key in ("control_feedback_entity","control_report_entity"))
+            if missing and not self._stop_requested and not self.fault and not self.grant.get("ai_stop_latched"):
                 if not self._charger_outage:
                     self._charger_outage = True
                     await self.coordinator._save(immediate=True)
@@ -1046,7 +1269,9 @@ class ChargerControl:
                 if self.pending and self.pending.get("kind") == "manual":
                     self.pending = None
                 await self.coordinator._save(immediate=True)
-        if not self.enabled and not self.owned_manual and not self.limit:
+        if not self.enabled and not self.owned_manual and not self.limit and not (
+            self._ai_grant and (self.pending or self.grant.get("ai_stop_latched"))
+        ):
             self.status = "disabled"
             return
         if self.grant and (self._external_mode or self.foreign_reason()):
@@ -1068,12 +1293,15 @@ class ChargerControl:
                 await self.coordinator._save(immediate=True)
             await self._notify_fault()
             return
-        if not self.enabled and not self.owned_manual and not self.limit:
+        if await self._enforce_ai_stop(request, now):
+            self.schedule(result, now)
+            return
+        if not self.enabled and not self.owned_manual and not self.limit and not (self._ai_grant and self.pending):
             self.status = "disabled"
             return
         if reason := self.interlock():
             self.status = reason
-            if self.owned_manual:
+            if self.owned_manual or self._ai_grant and self.pending:
                 request = self.coordinator.sessions.get(self.grant["vehicle_id"])
                 if reason in TRANSIENT_INTERLOCKS and self.fault is None and not self._stop_requested and not self._cleanup_required and request and not request.terminal:
                     if self._interlock_since is None:
@@ -1144,6 +1372,8 @@ class ChargerControl:
             return
         if not self._same_attachment():
             current = self._connection_id()
+            if self._ai_grant and current == self.grant["connection_id"]:
+                current = None  # Token is cached but plug state is uncertain.
             if not current:
                 self.status = "waiting_connection_identity"
                 if request.terminal and not self.owned_manual and not self.pending and not self.limit:
@@ -1211,7 +1441,7 @@ class ChargerControl:
         if self.fault:
             self.status = self.fault
             # No positive retry; a pending stop can still gain confirmation.
-            if self.owned_manual:
+            if self.owned_manual or self._ai_grant and self.pending:
                 try:
                     await self._green(now)
                 except (ValueError, TimeoutError, HomeAssistantError):
@@ -1254,8 +1484,11 @@ class ChargerControl:
             elif boost and (self.pending is None or self.pending.get("kind") == "manual"):
                 await self._manual(now)
             else:
-                await self._green(now)
-                if not self.owned_manual and (not self.enabled or request is None or request.terminal):
+                smart = bool(self._ai_grant and self.enabled and request and not request.terminal
+                             and not restored_elapsed and not self._stop_requested and self._same_attachment())
+                await self._green(now, smart=smart)
+                if not self.owned_manual and (not self.enabled or request is None or request.terminal
+                                              or self._ai_grant and request.confirmed_soc is not None):
                     await self.restore_limit()
                     if self._cleanup_connection and not self.limit:
                         self.grant, self._cleanup_connection = None, None
@@ -1266,7 +1499,7 @@ class ChargerControl:
                 await self.coordinator._save(immediate=True)
                 return
             if str(exc) == "fallback_window_not_due":
-                if self._mode_confirmed("Green"):
+                if self._mode_confirmed("Smart" if self._ai_grant else "Green"):
                     self.owned_manual, self.pending = False, None
                     if self.grant:
                         if self.grant.get("manual_since") is not None:
@@ -1302,7 +1535,7 @@ class ChargerControl:
         if self.hass.is_stopping:
             return
         self._stop_requested = True
-        self._cleanup_required = self.owned_manual
+        self._cleanup_required = self.owned_manual or bool(self._ai_grant and self.pending)
         deadline = asyncio.get_running_loop().time() + FEEDBACK_TIMEOUT + 5
         while True:
             async with self.coordinator._lock:
@@ -1327,7 +1560,7 @@ class ChargerControl:
                     except (ValueError, TimeoutError, HomeAssistantError):
                         self.status = "owned_stop_unconfirmed"
                 await self.coordinator._save(immediate=True)
-            if not self.owned_manual and not self.green_hold and (not self.limit or not self.limit.get("restore_pending")):
+            if not self.owned_manual and not self.green_hold and not (self._ai_grant and self.pending) and (not self.limit or not self.limit.get("restore_pending")):
                 break
             if asyncio.get_running_loop().time() >= deadline:
                 async with self.coordinator._lock:

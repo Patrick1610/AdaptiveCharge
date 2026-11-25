@@ -10,7 +10,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers import entity_registry as er
 import voluptuous as vol
 
-from .const import DOMAIN
+from .const import AI_OPTIMISATION, DOMAIN, SELF_CONSUMPTION
 from .sources import SourceBindingError, validate_source_bindings
 
 
@@ -55,6 +55,13 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     """Shared input bindings and calculation defaults; no credentials/writers."""
     data = defaults or {}
     fields: dict[Any, Any] = {
+        vol.Required("enphase_profile", default=data.get("enphase_profile", SELF_CONSUMPTION)): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[SELF_CONSUMPTION, AI_OPTIMISATION],
+                mode=selector.SelectSelectorMode.LIST,
+                translation_key="enphase_profile",
+            )
+        ),
         vol.Required("name", default=data.get("name", "Enphase")): str,
         vol.Required("meter_entity", default=data.get("meter_entity", vol.UNDEFINED)): entity(["sensor"]),
         vol.Required("power_entity", default=data.get("power_entity", vol.UNDEFINED)): entity(["sensor"]),
@@ -69,6 +76,7 @@ def charger_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     fields[vol.Required("maximum_command_kwh", default=data.get("maximum_command_kwh", 30))] = vol.All(vol.Coerce(float), vol.Range(min=0.1, max=100))
     fields[vol.Optional("fallback_power_entity")] = entity(["sensor"])
     fields[vol.Optional("charger_connectivity_entity")] = entity(["binary_sensor"])
+    fields[vol.Optional("system_profile_entity")] = entity(["sensor", "select"])
     for key in ("economic_enabled", "idle_green_price_filter", "zonneplan_bonus_eligible", "charger_fault_recovery"):
         fields[vol.Required(key, default=data.get(key,False))] = bool
     fields[vol.Required("early_offset_cents", default=data.get("early_offset_cents",0))] = selector.NumberSelector(selector.NumberSelectorConfig(min=0,max=100,step=.1,mode=selector.NumberSelectorMode.BOX,unit_of_measurement="ct/kWh"))

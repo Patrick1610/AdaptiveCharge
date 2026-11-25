@@ -17,8 +17,8 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, STORAGE_VERSION, VERSION
-from .core.models import VehicleConfig, demand, finite, observe_goal, valid_ac_capacity_ratio
+from .const import AI_OPTIMISATION, DOMAIN, SELF_CONSUMPTION, STORAGE_VERSION, VERSION
+from .core.models import VehicleConfig, VehicleSnapshot, demand, finite, observe_goal, valid_ac_capacity_ratio
 from .core.planner import plan
 from .core.economics import economic_plan, idle_green_policy
 from .core.session import Session
@@ -165,12 +165,24 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _plan(self, now: float, departure: float | None, needed: float, band: float, rows: list, power: float, request: Any, export_known: bool) -> Any:
         shared = self.entry.data
+        ai = shared.get("enphase_profile") == AI_OPTIMISATION
+        if ai:
+            # Slim is an independent scheduler. Only delivered kWh may reduce
+            # the energy we promise to cover before this request's departure.
+            rows = [replace(slot, solar_kw=0.0) for slot in rows]
+            band = 0.0  # The minimum remains a goal until reached; watch hysteresis is separate.
         args = dict(power=power,reserve_min=float(shared.get("reserve_min",15)),minimum_min=float(shared.get("minimum_min",3)),
                     fallback_started=self.control.unpriced_started(request),continue_current=self.control.continuing_manual(request))
         if shared.get("economic_enabled"):
-            return economic_plan(now,departure,needed,band,rows,**args,timezone=self.hass.config.time_zone,
-                                 early_offset_cents=float(shared.get("early_offset_cents",0)),export_known=export_known)
-        return plan(now,departure,needed,band,rows,**args)
+            prediction = economic_plan(now,departure,needed,band,rows,**args,timezone=self.hass.config.time_zone,
+                                       early_offset_cents=float(shared.get("early_offset_cents",0)),export_known=export_known)
+        else:
+            prediction = plan(now,departure,needed,band,rows,**args)
+        if not ai:
+            return prediction
+        return replace(prediction, mode="Smart" if prediction.mode == "Green" else prediction.mode,
+                       reason="smart_between_boost_windows" if prediction.reason == "green_between_boost_windows" else prediction.reason,
+                       cost_scope="selected_manual_at_import_price")
 
     def _native(self) -> tuple[dict[str, Any] | None, str | None]:
         """Unknown JSON is not an explicit cancellation; empty JSON is."""
@@ -221,11 +233,16 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.control.drain_events()
             result = await self._observe()
             await self.control.step(result, dt_util.utcnow().timestamp())
-            result.update(control_enabled=self.control.enabled, read_only=not self.control.enabled and not self.control.owned_manual and not self.control.has_limits and not self.control.green_hold, control_status=self.control.status, control_fault=self.control.fault, control_pending=deepcopy(self.control.pending), limit_audit=deepcopy(self.control.limit_audit),economic_pause=deepcopy(self.control.green_hold),economic_pause_audit=deepcopy(self.control.pause_audit),idle_green_blocked=self.control.idle_blocked,command_generation=self.generation,integration_version=VERSION,
+            result.update(control_enabled=self.control.enabled, read_only=not self.control.enabled and not self.control.owned_manual and not self.control.has_limits and not self.control.green_hold and not self.control.pending and not self.control.ai_stop_latched, control_status=self.control.status, control_fault=self.control.fault, control_pending=deepcopy(self.control.pending), limit_audit=deepcopy(self.control.limit_audit),economic_pause=deepcopy(self.control.green_hold),economic_pause_audit=deepcopy(self.control.pause_audit),idle_green_blocked=self.control.idle_blocked,command_generation=self.generation,integration_version=VERSION,
                           unmetered_exposure_upper_kwh=(self.control.grant or {}).get("unmetered_exposure_kwh",0),
-                          owned_manual=self.control.owned_manual,limit_cleanup_pending=self.control.has_limits)
+                          owned_manual=self.control.owned_manual,limit_cleanup_pending=self.control.has_limits,
+                          ai_stop_latched=self.control.ai_stop_latched)
             for row in result["vehicles"].values():
                 row["control_enabled"] = self.control.enabled
+                if self.control.ai_stop_latched and self.control.owns(row["vehicle_id"], terminal=True):
+                    row["would_control_mode"] = "Stop"
+                    row["eligible_for_boost"] = False
+                    row["executor_status"] = self.control.status
                 if self.control.owns(row["vehicle_id"]):
                     row["executor_status"] = self.control.status
                     if row.get("phase") == "would_boost" and self.control.enabled:
@@ -279,10 +296,15 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_control_stop(self, vehicle_id: str, reason: str = "explicit_stop") -> None:
         """Revoke resume rights before requesting any negative hardware action."""
-        if self.control.owns(vehicle_id, terminal=True):
+        owned_grant = self.control.grant if self.control.owns(vehicle_id, terminal=True) else None
+        if owned_grant is not None:
             self.control._stop_requested = True
         async with self._lock:
+            if owned_grant is not None and self.control.grant is not owned_grant:
+                return  # A later Start superseded the captured command.
             self.control.block_idle_for_connection()
+            if owned_grant is not None:
+                self.control.latch_ai_stop()
             request = self.sessions.get(vehicle_id)
             if request:
                 request.stop(reason)
@@ -302,6 +324,8 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sessions = {k: s for k, s in self.sessions.items() if k in profiles or self.control.grant and k == self.control.grant["vehicle_id"]}
         self.values = {k: v for k, v in self.values.items() if k in profiles}
         shared = dict(self.entry.data)
+        enphase_profile = shared.get("enphase_profile", SELF_CONSUMPTION)
+        idle_mode = "Smart" if enphase_profile == AI_OPTIMISATION else "Green"
         rows, price_warnings = price_rows(self.hass, shared, now)
         export_known = export_is_known(price_warnings)
         if self._uncertain_unplug_at is not None and now-self._uncertain_unplug_at >= 5:
@@ -319,7 +343,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for request in self.sessions.values():
                 if not request.terminal and edge >= request.started_at-1:
                     request.stop("physical_charger_unplug_edge")
-            self.control.physical_unplug_observed()
+            self.control.physical_unplug_observed(edge)
         self._unplug_edges.clear()
         meter = meter_kwh(self.hass, shared.get("meter_entity"), now)
         meter_observation = measurement(self.hass,shared.get("meter_entity"))
@@ -333,8 +357,10 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         result: dict[str, Any] = {"control_enabled": False, "read_only": True, "updated_at": dt_util.utcnow().isoformat(), "vehicles": {}, "physical": physical_power(self.hass, shared, now), "meter_kwh": meter, "native_session": native, "native_token": native_token}
         result["price_feed_valid"] = price_feed_live(self.hass, shared, now, rows, price_warnings)
         result["meter_observed_at"] = meter_observation.received_at
+        result["enphase_profile"] = enphase_profile
+        result["observed_enphase_profile"] = self.control.observed_enphase_profile()
         result["economic_policy"] = idle_green_policy(rows,now,self.hass.config.time_zone,
-            enabled=bool(shared.get("economic_enabled") and shared.get("idle_green_price_filter")),export_known=export_known)
+            enabled=bool(idle_mode == "Green" and shared.get("economic_enabled") and shared.get("idle_green_price_filter")),export_known=export_known)
         result["economic_policy"]["warnings"] = list(price_warnings)
         for vehicle_id in self.profiles:
             profile = self.profile(vehicle_id)
@@ -343,7 +369,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "vehicle_id": vehicle_id, "name": profile["name"],
                 "maximum_soc":profile.get("maximum_soc",100),
                 "observations": asdict(snapshot), "control_enabled": False,
-                "eligible_for_boost": False, "would_control_mode": "Green",
+                "eligible_for_boost": False, "would_control_mode": idle_mode,
                 "plan_provisional": True, "plan": None,
                 "target_km": None, "departure": None,
                 "goal_and_budget_aligned": False, "estimated_ac_kwh_per_soc_point": None,
@@ -448,7 +474,9 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     accounting_meter = meter if meter is not None else request.last_meter if controlled and shared.get("charger_fault_recovery") else None
                     if meter is None and accounting_meter is not None:
                         row["meter_credit_delayed"] = True
-                    estimated_value = request.update(now, calculation, need, accounting_meter, cfg.droop_pp, meter_id=shared.get("meter_entity"), allow_estimated=controlled, goal=goal)
+                    estimated_value = request.update(now, calculation, need, accounting_meter, cfg.droop_pp,
+                                                     meter_id=shared.get("meter_entity"), allow_estimated=controlled, goal=goal,
+                                                     metered_through=meter_observation.received_at if idle_mode == "Smart" else None)
                     if estimated_value is not None:
                         estimated = estimated_value
                     if request.terminal and request.source_token:
@@ -467,7 +495,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 elif request and not request.terminal and phase == "scheduled" and prediction.mode == "Manual":
                     phase, reason = "would_boost", prediction.reason
                 eligible = bool(request and not request.terminal and (need.source_fresh or self.control.owns(vehicle_id)) and estimated_value is not None and phase in {"scheduled", "would_boost"}) if request else False
-                row.update({"target_km": target, "departure": departure, "demand": asdict(need), "plan": prediction_data, "plan_provisional": not need.source_fresh or prediction.early_threshold_active, "eligible_for_boost": eligible, "would_control_mode": prediction.mode if eligible else "Green", "phase": phase, "reason": reason, "session": request.as_dict() if request else None, "warnings": list(dict.fromkeys([*need.warnings, *price_warnings, *prediction.warnings]))})
+                row.update({"target_km": target, "departure": departure, "demand": asdict(need), "plan": prediction_data, "plan_provisional": not need.source_fresh or prediction.early_threshold_active, "eligible_for_boost": eligible, "would_control_mode": prediction.mode if eligible else idle_mode, "phase": phase, "reason": reason, "session": request.as_dict() if request else None, "warnings": list(dict.fromkeys([*need.warnings, *price_warnings, *prediction.warnings]))})
                 if len(native_candidates) > 1 and vehicle_id in native_candidates:
                     row["warnings"].append("native_vehicle_identity_ambiguous")
                 native_plan = state(self.hass, profile.get("native_plan_entity"))
@@ -482,7 +510,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     remaining = request.consume_meter(meter)
                     if remaining is not None:
                         prediction = self._plan(now,request.departure,remaining,0,rows,planning_power,request,export_known)
-                        row.update(phase=request.phase, reason=request.reason, target_km=request.target_km, departure=request.departure, plan=prediction.as_dict(), eligible_for_boost=request.phase == "scheduled", would_control_mode=prediction.mode if request.phase == "scheduled" else "Green", session=request.as_dict())
+                        row.update(phase=request.phase, reason=request.reason, target_km=request.target_km, departure=request.departure, plan=prediction.as_dict(), eligible_for_boost=request.phase == "scheduled", would_control_mode=prediction.mode if request.phase == "scheduled" else idle_mode, session=request.as_dict())
             result["vehicles"][vehicle_id] = row
         result["active_vehicle"] = next((s.vehicle_id for s in self.sessions.values() if not s.terminal), None)
         await self._save()
@@ -559,5 +587,22 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.values[vehicle_id] = overrides
             if action == "start":
                 self.control.assign_authority(vehicle_id, authority_snapshot)
+                if authority_snapshot is not None and self.entry.data.get("enphase_profile") == AI_OPTIMISATION:
+                    self._seed_ai_budget(vehicle_id, authority_snapshot)
             await self._save(immediate=True)
         await self.async_request_refresh()
+
+    def _seed_ai_budget(self, vehicle_id: str, snapshot: VehicleSnapshot) -> None:
+        """Link the starting car estimate to the meter before Slim can advance it."""
+        request = self.sessions[vehicle_id]
+        if request.anchor_meter is not None or request.origin_meter is None:
+            return
+        profile = self.profile(vehicle_id)
+        cfg = self._config(vehicle_id, profile)
+        now = dt_util.utcnow().timestamp()
+        try:
+            need = demand(cfg, snapshot, self.target(profile), now)
+        except ValueError:
+            return  # The normal observation path may still use a saved reference.
+        request.update(now, snapshot, need, request.origin_meter, cfg.droop_pp,
+                       meter_id=self.entry.data.get("meter_entity"), allow_estimated=True)

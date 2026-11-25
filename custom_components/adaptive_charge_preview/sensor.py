@@ -40,7 +40,7 @@ class PreviewSensor(PreviewEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if self.vehicle_id:
             return self.row
-        return {key: self.row.get(key) for key in ("control_enabled", "read_only", "control_status", "control_fault", "control_pending", "active_vehicle", "physical", "meter_kwh", "native_token", "limit_audit", "economic_policy", "economic_pause", "economic_pause_audit", "idle_green_blocked", "command_generation", "integration_version", "unmetered_exposure_upper_kwh", "owned_manual", "limit_cleanup_pending")}
+        return {key: self.row.get(key) for key in ("control_enabled", "read_only", "control_status", "control_fault", "control_pending", "active_vehicle", "physical", "meter_kwh", "native_token", "limit_audit", "economic_policy", "economic_pause", "economic_pause_audit", "idle_green_blocked", "command_generation", "integration_version", "unmetered_exposure_upper_kwh", "owned_manual", "limit_cleanup_pending", "enphase_profile", "observed_enphase_profile", "ai_stop_latched")}
 
 
 class PlanningSensor(PreviewEntity, SensorEntity):

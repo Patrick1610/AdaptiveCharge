@@ -102,7 +102,7 @@ class Session:
             return False
         return True
 
-    def update(self, now: float, snapshot: VehicleSnapshot, demand: Demand, meter: float | None, droop_pp: float, *, meter_id: str | None = None, allow_estimated: bool = False, goal: GoalObservation | None = None) -> float | None:
+    def update(self, now: float, snapshot: VehicleSnapshot, demand: Demand, meter: float | None, droop_pp: float, *, meter_id: str | None = None, allow_estimated: bool = False, goal: GoalObservation | None = None, metered_through: float | None = None) -> float | None:
         """Evaluate connection, budget and goal without issuing a command."""
         if not self.observe_connection(now, snapshot, trust_attachment=allow_estimated):
             return None
@@ -143,6 +143,12 @@ class Session:
             self.phase, self.reason = "blocked", "energy_meter_regressed"
             return None
         self.last_meter = meter
+        initial_meter = self.origin_meter if self.origin_meter is not None and (
+            self.anchor_meter is None and (
+                demand.measured_at is None or demand.measured_at <= self.started_at
+                or metered_through is not None and demand.measured_at < metered_through
+            )
+        ) else meter
         if self.origin_meter is None:
             self.origin_meter = self.anchor_meter if self.anchor_meter is not None else meter
         if goal is not None and goal.reached:
@@ -196,7 +202,8 @@ class Session:
         if (allow_estimated and not demand.source_fresh and goal is not None and self.anchor_meter is not None
                 and goal.measured_at >= self.started_at
                 and (self.goal_applied_at is None or goal.measured_at > self.goal_applied_at)
-                and (self.anchor_provisional or self.anchor_soc is not None and goal.soc > self.anchor_soc)):
+                and (self.anchor_provisional or self.anchor_soc is not None and goal.soc > self.anchor_soc)
+                and self._can_reanchor(goal.estimated_need_kwh, meter, goal.measured_at, metered_through)):
             # One first qualified SOC can correct the initial estimate. Later
             # allocations require actual SOC progress; repeating a capture or
             # receiving the same SOC cannot replenish the allowance.
@@ -222,7 +229,7 @@ class Session:
                 if not valid_pack_capacity_ratio(snapshot.battery_kwh.value / snapshot.soc.value):
                     self.phase, self.reason = "waiting_data", "initial_battery_estimate_incoherent"
                     return None
-                self.anchor_meter = meter
+                self.anchor_meter = initial_meter
                 self.anchor_need = goal.estimated_need_kwh if goal is not None else demand.needed_kwh
                 self.anchor_soc = goal.soc if goal is not None else snapshot.soc.value
                 self.goal_applied_at = goal.measured_at if goal is not None else self.goal_applied_at
@@ -233,7 +240,8 @@ class Session:
                 self.reference_measured_at = demand.measured_at
             return self.consume_meter(meter)
         soc = snapshot.soc.value
-        if self.anchor_provisional and demand.measured_at is not None and demand.measured_at >= self.started_at:
+        can_reanchor = self._can_reanchor(demand.needed_kwh, meter, demand.measured_at, metered_through)
+        if self.anchor_provisional and demand.measured_at is not None and demand.measured_at >= self.started_at and can_reanchor:
             # The first actual post-Start capture can correct an initial estimate
             # downward too. Repeating the same capture cannot replenish it again.
             self.anchor_meter, self.anchor_need, self.anchor_soc = meter,demand.needed_kwh,soc
@@ -241,9 +249,9 @@ class Session:
             self.anchor_provisional = False
         signature = (snapshot.soc.value, snapshot.battery_kwh.value, snapshot.range_km.value, snapshot.limit_soc.value)
         if self.anchor_meter is None:
-            self.anchor_meter, self.anchor_need = meter, demand.needed_kwh
+            self.anchor_meter, self.anchor_need = initial_meter, demand.needed_kwh
             self.anchor_soc, self.anchor_signature = soc, signature
-        elif signature != self.anchor_signature and soc is not None and self.anchor_soc is not None and soc > self.anchor_soc:
+        elif signature != self.anchor_signature and soc is not None and self.anchor_soc is not None and soc > self.anchor_soc and can_reanchor:
             # A fresh higher SOC is independent progress. Same/lower old SOC
             # cannot refill an exhausted energy allowance.
             self.anchor_meter, self.anchor_need = meter, demand.needed_kwh
@@ -256,6 +264,15 @@ class Session:
             self.goal_applied_at = goal.measured_at
             self.goal_full_range_km = goal.full_range_km
         return max(0.0, remaining)
+
+    def _can_reanchor(self, needed: float, meter: float, captured: float | None, metered_through: float | None) -> bool:
+        """A delayed SOC capture may not refund energy already in the AI ledger."""
+        if metered_through is None or self.anchor_meter is None or meter <= self.anchor_meter:
+            return True
+        if captured is not None and captured >= metered_through:
+            return True
+        remaining = max(0.0, (self.anchor_need or 0.0) - (meter - self.anchor_meter))
+        return needed <= remaining + EPSILON_KWH
 
     def _confirm_goal(self, goal: GoalObservation) -> float:
         """Retain the first qualified goal SOC for subsequent return-band checks."""

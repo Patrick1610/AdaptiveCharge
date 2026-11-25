@@ -9,6 +9,7 @@ import pytest
 
 from homeassistant.core import Context, Event, State
 
+from custom_components.adaptive_charge_preview.const import AI_OPTIMISATION
 from custom_components.adaptive_charge_preview.control import FEEDBACK_TIMEOUT
 from custom_components.adaptive_charge_preview.coordinator import PreviewCoordinator
 from custom_components.adaptive_charge_preview.core.models import demand
@@ -22,7 +23,7 @@ def fast_feedback(monkeypatch):
     monkeypatch.setattr("custom_components.adaptive_charge_preview.control.START_SETTLE_SECONDS", 0)
 
 
-async def controlled(tmp_path, *, stale=False, require_prices=False):
+async def controlled(tmp_path, *, stale=False, require_prices=False, ai=False, unknown_selector=False):
     """A disabled native controller, explicit new request and actual HA bus."""
     hass, c, vehicle = await setup(tmp_path)
     from homeassistant.helpers import entity_registry as er, device_registry as dr, area_registry as ar
@@ -38,20 +39,27 @@ async def controlled(tmp_path, *, stale=False, require_prices=False):
     await dr.async_load(hass)
     await er.async_load(hass)
     cfg = {**c.entry.data, "control_mode_entity": "select.ev_mode", "charger_switch_entity": "switch.ev_charger", "control_feedback_entity": "sensor.ev_feedback", "control_report_entity": "sensor.ev_report", "legacy_master_entity": "input_boolean.legacy_master", "pending_entity": "input_text.live_pending", "charging_entity": "binary_sensor.ev_charging", "require_prices_for_control": require_prices}
+    if ai:
+        cfg.update(enphase_profile=AI_OPTIMISATION, system_profile_entity="sensor.site_profile")
     object.__setattr__(c.entry, "data", MappingProxyType(cfg))
     c.async_request_refresh = AsyncMock()
+    idle = "Smart" if ai else "Green"
+    code = "SMART_CHARGING" if ai else "GREEN_CHARGING"
+    options = [idle, "Manual"]
     for e, value, attrs in [
         ("input_boolean.legacy_master", "off", {}),
         ("input_boolean.live_active", "off", {}),
         ("input_text.live_session", "{}", {}),
         ("input_text.live_pending", "{}", {}),
-        ("select.ev_mode", "Green", {"options": ["Green", "Manual"]}),
+        ("select.ev_mode", "unknown" if unknown_selector else idle, {"options": options}),
         ("switch.ev_charger", "off", {}),
         ("binary_sensor.ev_charging", "off", {}),
-        ("sensor.ev_feedback", "Green", {"requested_mode": None, "preferred_mode": "GREEN_CHARGING", "effective_mode": "GREEN_CHARGING"}),
+        ("sensor.ev_feedback", idle, {"requested_mode": None, "preferred_mode": code, "effective_mode": "GREEN_CHARGING"}),
         ("sensor.ev_report", datetime.now(timezone.utc).isoformat(), {}),
     ]:
         hass.states.async_set(e, value, attrs)
+    if ai:
+        hass.states.async_set("sensor.site_profile", "AI Optimisation")
     if stale:
         hass.states.async_set("sensor.car_capture", "2020-01-01T00:00:00Z")
     calls = []
@@ -59,9 +67,9 @@ async def controlled(tmp_path, *, stale=False, require_prices=False):
     async def mode(call):
         calls.append(("mode", call.data["option"]))
         option = call.data["option"]
-        code = "MANUAL_CHARGING" if option == "Manual" else "GREEN_CHARGING"
-        hass.states.async_set("select.ev_mode", option, {"options": ["Green", "Manual"]}, context=call.context)
-        hass.states.async_set("sensor.ev_feedback", option, {"requested_mode": None, "preferred_mode": code, "effective_mode": code})
+        selected = "MANUAL_CHARGING" if option == "Manual" else code
+        hass.states.async_set("select.ev_mode", option, {"options": options}, context=call.context)
+        hass.states.async_set("sensor.ev_feedback", option, {"requested_mode": None, "preferred_mode": selected, "effective_mode": selected})
         hass.states.async_set("sensor.ev_report", datetime.now(timezone.utc).isoformat())
 
     async def on(call):

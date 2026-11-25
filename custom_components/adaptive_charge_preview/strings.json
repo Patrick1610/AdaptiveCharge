@@ -6,6 +6,7 @@
         "title": "Configure charger",
         "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor.",
         "data": {
+          "enphase_profile": "Enphase system profile",
           "name": "Name",
           "meter_entity": "IQ lifetime energy (kWh)",
           "power_entity": "Independent charger power (W/kW)",
@@ -54,7 +55,8 @@
           "charger_fault_recovery": "Preserve request across charger/Gateway faults and token refresh",
           "maximum_manual_hours": "Maximum total Manual time per request (hours)",
           "fallback_power_entity": "Fallback charger power when the independent source is unavailable (W/kW)",
-          "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)"
+          "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)",
+          "system_profile_entity": "Active Enphase system profile (optional readback)"
         },
         "data_description": {
           "minimum_min": "The same threshold applies to isolated blocks and internal pauses. Higher values can extend expensive charging and replace the last cheap tail; there is no maximum surcharge. Price coverage and early-import ceilings still apply."
@@ -63,6 +65,7 @@
       "reconfigure": {
         "title": "Configure charger",
         "data": {
+          "enphase_profile": "Enphase system profile",
           "name": "Name",
           "meter_entity": "IQ lifetime energy (kWh)",
           "power_entity": "Independent charger power (W/kW)",
@@ -111,7 +114,8 @@
           "charger_fault_recovery": "Preserve request across charger/Gateway faults and token refresh",
           "maximum_manual_hours": "Maximum total Manual time per request (hours)",
           "fallback_power_entity": "Fallback charger power when the independent source is unavailable (W/kW)",
-          "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)"
+          "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)",
+          "system_profile_entity": "Active Enphase system profile (optional readback)"
         },
         "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor.",
         "data_description": {
@@ -301,6 +305,12 @@
       "options": {
         "tesla": "Current remaining range",
         "id3": "Full range with SOH correction"
+      }
+    },
+    "enphase_profile": {
+      "options": {
+        "self_consumption": "Self-Consumption",
+        "ai_optimisation": "AI Optimisation"
       }
     }
   }
