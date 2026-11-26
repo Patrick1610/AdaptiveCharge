@@ -1,0 +1,39 @@
+# Existing ApexCharts Card resource required; no source or actuator is modified.
+# Replace sensor.vehicle_charge_planning with your vehicle's actual planning sensor.
+type: vertical-stack
+cards:
+  - type: entities
+    entities:
+      - entity: sensor.vehicle_charge_planning
+        name: Resterende geplande laadtijd
+  - type: conditional
+    conditions:
+      - condition: numeric_state
+        entity: sensor.vehicle_charge_planning
+        above: 0
+    card:
+      type: custom:apexcharts-card
+      header:
+        show: true
+        title: Gepland bijladen per kwartier
+        show_states: false
+      graph_span: 24h
+      span:
+        start: hour
+      now:
+        show: true
+        label: Nu
+      yaxis:
+        - min: 0
+          decimals: 2
+      series:
+        - entity: sensor.vehicle_charge_planning
+          name: Gepland bijladen
+          type: column
+          unit: kWh
+          float_precision: 2
+          show:
+            legend_value: false
+          data_generator: |
+            return (entity.attributes.quarters || []).map(q =>
+              [Date.parse(q.start), Number(q.energy_kwh)]);

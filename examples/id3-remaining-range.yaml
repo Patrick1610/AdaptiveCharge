@@ -1,0 +1,39 @@
+# Native HA template-helper form values. Keep the existing range entity ID.
+# The supporting SOH helper restores its last numeric state after an HA restart.
+# Replace these three source IDs when using another vehicle/integration.
+# During startup the range may briefly use 90 until the SOH helper restores.
+# Keep range validity in state and availability in sync; is_number rejects infinity.
+# Preserve reported precision; only the calculated fallback is rounded.
+soh_reference:
+  entity_id: sensor.id3_soh_reference
+  name: ID3 SOH Reference
+  unit_of_measurement: "%"
+  state_class: measurement
+  state: >-
+    {% set live = states('sensor.volkswagen_id_3_pro_performance_battery_health_state_of_health') | float(none) %}
+    {% set saved = this.state | float(none) if this is defined else none %}
+    {{ live if live is not none and 0 < live <= 100 else
+       saved if saved is not none and 0 < saved <= 100 else 90 }}
+
+remaining_range:
+  entity_id: sensor.id3_estimated_range
+  state: >-
+    {% set reported = states('sensor.volkswagen_id_3_pro_performance_electric_range') | float(none) %}
+    {% set soc = states('sensor.volkswagen_id_3_pro_performance_battery_level') | float(none) %}
+    {% set live = states('sensor.volkswagen_id_3_pro_performance_battery_health_state_of_health') | float(none) %}
+    {% set saved = states('sensor.id3_soh_reference') | float(none) %}
+    {% set soh = live if live is not none and 0 < live <= 100 else
+       saved if saved is not none and 0 < saved <= 100 else 90 %}
+    {% if reported is not none and reported >= 0 and reported != 312 and is_number(reported) %}
+      {{ reported }}
+    {% elif soc is not none and 0 <= soc <= 100 %}
+      {{ (312 * soh / 100 * soc / 100) | round(1) }}
+    {% else %}
+      {{ none }}
+    {% endif %}
+  additional_options:
+    availability: >-
+      {% set reported = states('sensor.volkswagen_id_3_pro_performance_electric_range') | float(none) %}
+      {% set soc = states('sensor.volkswagen_id_3_pro_performance_battery_level') | float(none) %}
+      {{ (reported is not none and reported >= 0 and reported != 312 and is_number(reported))
+         or (soc is not none and 0 <= soc <= 100) }}

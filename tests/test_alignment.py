@@ -18,7 +18,7 @@ import types
 _const_path = os.path.join(
     os.path.dirname(__file__),
     "..",
-    "custom_components",
+    "legacy", "v4", "custom_components",
     "adaptive_charge",
     "const.py",
 )
@@ -32,7 +32,7 @@ pkg.__path__ = [
     os.path.join(
         os.path.dirname(__file__),
         "..",
-        "custom_components",
+        "legacy", "v4", "custom_components",
         "adaptive_charge",
     )
 ]
@@ -42,7 +42,7 @@ _const_spec.loader.exec_module(_const_mod)
 _align_path = os.path.join(
     os.path.dirname(__file__),
     "..",
-    "custom_components",
+    "legacy", "v4", "custom_components",
     "adaptive_charge",
     "alignment.py",
 )

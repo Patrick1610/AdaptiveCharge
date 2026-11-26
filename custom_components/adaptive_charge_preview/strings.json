@@ -1,0 +1,377 @@
+{
+  "title": "AdaptiveCharge",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure charger",
+        "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor.",
+        "data": {
+          "enphase_profile": "Enphase system profile",
+          "name": "Name",
+          "power_entity": "Independent charger power (W/kW)"
+        },
+        "sections": {
+          "price_source": {
+            "name": "Electricity prices",
+            "data": {
+              "price_entity": "Tariff source"
+            }
+          },
+          "charger_connections": {
+            "name": "Charger connections",
+            "data": {
+              "meter_entity": "IQ lifetime energy (kWh)",
+              "plug_entity": "Charger cable connected",
+              "control_mode_entity": "Enphase charge-mode selector",
+              "charger_switch_entity": "Enphase start/stop switch",
+              "control_feedback_entity": "Enphase preferred/effective mode feedback",
+              "control_report_entity": "Enphase actual report timestamp",
+              "system_profile_entity": "Active Enphase system profile (optional readback)",
+              "fallback_power_entity": "Fallback charger power when the independent source is unavailable (W/kW)",
+              "capacity_entity": "Charger status including safe-mode indication (read only)",
+              "gateway_connectivity_entity": "Gateway connectivity (read only)",
+              "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)"
+            }
+          },
+          "planning_settings": {
+            "name": "Planning and safeguards",
+            "data": {
+              "power_kw": "Planning power (kW)",
+              "safe_power_kw": "Planning power during safe mode or Gateway outage (kW)",
+              "reserve_min": "Departure reserve (minutes)",
+              "minimum_min": "Minimum charging block and pause (minutes)",
+              "forecast_entity": "Existing solar forecast",
+              "house_entity": "House power excluding car (W/kW)",
+              "house_kw": "Fallback house power (kW)",
+              "economic_enabled": "Economic planning and Green pause",
+              "idle_green_price_filter": "Also use the Green price filter without a request",
+              "early_offset_cents": "Early import: cents/kWh below the weighted day mean",
+              "charger_fault_recovery": "Preserve request across charger/Gateway faults and token refresh",
+              "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
+              "maximum_manual_hours": "Maximum total Manual time per request (hours)"
+            },
+            "data_description": {
+              "minimum_min": "The same threshold applies to isolated blocks and internal pauses. Higher values can extend expensive charging and replace the last cheap tail; there is no maximum surcharge. Price coverage and early-import ceilings still apply."
+            }
+          },
+          "tariff_settings": {
+            "name": "Tariff and export settings",
+            "data": {
+              "price_interval_min": "Interval without explicit end (15 or 60 minutes)",
+              "price_attribute": "Attribute containing price rows",
+              "price_time_key": "Price start-time column",
+              "import_price_key": "All-in import price column (EUR/kWh)",
+              "export_contract": "Export contract",
+              "export_price_key": "Net export price column (optional)",
+              "zonneplan_tax_eur_kwh": "Energy tax already included in import, incl. VAT (EUR/kWh)",
+              "zonneplan_tax_valid_until": "Included energy tax valid through (YYYY-MM-DD)",
+              "zonneplan_import_fee_eur_kwh": "Import fee already included, incl. VAT (EUR/kWh)",
+              "zonneplan_export_fee_eur_kwh": "Export fee received, incl. VAT (EUR/kWh)",
+              "zonneplan_bonus_eligible": "Contract eligible for daylight Zonnebonus (requires annual counter)",
+              "bonus_export_ytd_entity": "Actual bonus-relevant exported energy this calendar year (kWh)",
+              "bonus_export_year": "Confirmed calendar year of the export counter (0 = entity year attribute)",
+              "maximum_export_kw": "Physical maximum export for conservative bonus headroom (kW)"
+            }
+          },
+          "legacy_controller": {
+            "name": "Legacy controller",
+            "data": {
+              "legacy_master_entity": "Legacy controller master (must be off)",
+              "session_entity": "Existing session helper (read only)",
+              "active_entity": "Existing active-command helper (read only)",
+              "pending_entity": "Native pending request (read only)",
+              "generation_entity": "Existing command generation (read only)"
+            }
+          }
+        }
+      },
+      "reconfigure": {
+        "title": "Configure charger",
+        "data": {
+          "enphase_profile": "Enphase system profile",
+          "name": "Name",
+          "power_entity": "Independent charger power (W/kW)"
+        },
+        "description": "Control defaults off. One charger master grants authority. Disable the legacy controller before enabling this executor.",
+        "sections": {
+          "price_source": {
+            "name": "Electricity prices",
+            "data": {
+              "price_entity": "Tariff source"
+            }
+          },
+          "charger_connections": {
+            "name": "Charger connections",
+            "data": {
+              "meter_entity": "IQ lifetime energy (kWh)",
+              "plug_entity": "Charger cable connected",
+              "control_mode_entity": "Enphase charge-mode selector",
+              "charger_switch_entity": "Enphase start/stop switch",
+              "control_feedback_entity": "Enphase preferred/effective mode feedback",
+              "control_report_entity": "Enphase actual report timestamp",
+              "system_profile_entity": "Active Enphase system profile (optional readback)",
+              "fallback_power_entity": "Fallback charger power when the independent source is unavailable (W/kW)",
+              "capacity_entity": "Charger status including safe-mode indication (read only)",
+              "gateway_connectivity_entity": "Gateway connectivity (read only)",
+              "charger_connectivity_entity": "Charger connectivity (separate from Gateway, read only)"
+            }
+          },
+          "planning_settings": {
+            "name": "Planning and safeguards",
+            "data": {
+              "power_kw": "Planning power (kW)",
+              "safe_power_kw": "Planning power during safe mode or Gateway outage (kW)",
+              "reserve_min": "Departure reserve (minutes)",
+              "minimum_min": "Minimum charging block and pause (minutes)",
+              "forecast_entity": "Existing solar forecast",
+              "house_entity": "House power excluding car (W/kW)",
+              "house_kw": "Fallback house power (kW)",
+              "economic_enabled": "Economic planning and Green pause",
+              "idle_green_price_filter": "Also use the Green price filter without a request",
+              "early_offset_cents": "Early import: cents/kWh below the weighted day mean",
+              "charger_fault_recovery": "Preserve request across charger/Gateway faults and token refresh",
+              "maximum_command_kwh": "Maximum total energy per request, including Green (kWh)",
+              "maximum_manual_hours": "Maximum total Manual time per request (hours)"
+            },
+            "data_description": {
+              "minimum_min": "The same threshold applies to isolated blocks and internal pauses. Higher values can extend expensive charging and replace the last cheap tail; there is no maximum surcharge. Price coverage and early-import ceilings still apply."
+            }
+          },
+          "tariff_settings": {
+            "name": "Tariff and export settings",
+            "data": {
+              "price_interval_min": "Interval without explicit end (15 or 60 minutes)",
+              "price_attribute": "Attribute containing price rows",
+              "price_time_key": "Price start-time column",
+              "import_price_key": "All-in import price column (EUR/kWh)",
+              "export_contract": "Export contract",
+              "export_price_key": "Net export price column (optional)",
+              "zonneplan_tax_eur_kwh": "Energy tax already included in import, incl. VAT (EUR/kWh)",
+              "zonneplan_tax_valid_until": "Included energy tax valid through (YYYY-MM-DD)",
+              "zonneplan_import_fee_eur_kwh": "Import fee already included, incl. VAT (EUR/kWh)",
+              "zonneplan_export_fee_eur_kwh": "Export fee received, incl. VAT (EUR/kWh)",
+              "zonneplan_bonus_eligible": "Contract eligible for daylight Zonnebonus (requires annual counter)",
+              "bonus_export_ytd_entity": "Actual bonus-relevant exported energy this calendar year (kWh)",
+              "bonus_export_year": "Confirmed calendar year of the export counter (0 = entity year attribute)",
+              "maximum_export_kw": "Physical maximum export for conservative bonus headroom (kW)"
+            }
+          },
+          "legacy_controller": {
+            "name": "Legacy controller",
+            "data": {
+              "legacy_master_entity": "Legacy controller master (must be off)",
+              "session_entity": "Existing session helper (read only)",
+              "active_entity": "Existing active-command helper (read only)",
+              "pending_entity": "Native pending request (read only)",
+              "generation_entity": "Existing command generation (read only)"
+            }
+          },
+          "live_connection_identity": {
+            "name": "Existing live attachment identity source",
+            "data": {
+              "connection_entity": "Connection identity / plugged-in timestamp",
+              "connection_attribute": "Connection identity attribute (empty = state)"
+            }
+          }
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This charger is already configured.",
+      "charger_identity_changed": "Configure another charger as a new instance.",
+      "finish_control_cleanup_first": "Finish the owned charge action and limit restoration before changing these bindings."
+    },
+    "error": {
+      "preview_source": "Select an existing source entity; AdaptiveCharge output cannot be its own input."
+    }
+  },
+  "config_subentries": {
+    "vehicle": {
+      "entry_type": "Vehicle",
+      "initiate_flow": {
+        "user": "Add vehicle",
+        "reconfigure": "Reconfigure vehicle"
+      },
+      "step": {
+        "user": {
+          "title": "Configure vehicle",
+          "description": "Choose the calculation that matches your range source. Existing requests and energy accounting are preserved when app data is delayed. Optional vehicle controls are available only with current remaining range.",
+          "data": {
+            "name": "Name",
+            "kind": "Range calculation",
+            "soc_entity": "Battery charge (%)",
+            "battery_entity": "Energy currently stored in the battery (kWh)",
+            "range_entity": "Range source (km)",
+            "limit_entity": "Vehicle charge limit (%)",
+            "cable_entity": "Cable connected to this vehicle",
+            "home_entity": "Vehicle at home",
+            "soh_entity": "Battery health SOH (%) — full-range method",
+            "measurement_time_entity": "Vehicle data measurement time",
+            "limit_writer_entity": "Charge-limit control (optional)",
+            "target_entity": "External range target (optional, read only)",
+            "departure_entity": "External departure (optional, read only)",
+            "native_plan_entity": "Existing controller plan for comparison",
+            "droop_pp": "Drop before topping up (percentage points)",
+            "margin": "Charging-loss allowance (0.15 = 15%)",
+            "allow_limit_raise": "Allow temporary charge-limit increase",
+            "maximum_soc": "Maximum temporary charge limit (%)",
+            "vehicle_charge_switch_entity": "Vehicle charging on/off (optional)",
+            "planning_power_kw": "Maximum planning power (kW, 0 = charger)"
+          },
+          "data_description": {
+            "kind": "Choose by the meaning of the range source, regardless of vehicle brand. Current remaining range uses kilometres at the present battery charge. Full range uses a reference at 100% charge and applies SOH.",
+            "range_entity": "For current remaining range: remaining kilometres from the vehicle or a helper. For full range: the reference at 100% charge before SOH correction. A helper already calculating remaining range belongs to the first method.",
+            "battery_entity": "Select available energy at the current battery charge. Total battery capacity is a different quantity.",
+            "soh_entity": "Only the full-range method applies this correction. Remaining range is not corrected for SOH a second time. Without an SOH source, the full-range method uses 100%.",
+            "measurement_time_entity": "When the vehicle measured the data. HA reception time is not a substitute. Delayed data does not erase an existing bounded energy allowance.",
+            "limit_writer_entity": "Optional and available only with current remaining range. An owned temporary increase requires both this control and explicit permission.",
+            "vehicle_charge_switch_entity": "Optional and available only with current remaining range. The control must actually start and stop charging through this vehicle.",
+            "planning_power_kw": "Use 0 to follow the normal or safe capacity of the charger. A positive value only caps planning power."
+          }
+        },
+        "reconfigure": {
+          "title": "Configure vehicle",
+          "data": {
+            "name": "Name",
+            "kind": "Range calculation",
+            "soc_entity": "Battery charge (%)",
+            "battery_entity": "Energy currently stored in the battery (kWh)",
+            "range_entity": "Range source (km)",
+            "limit_entity": "Vehicle charge limit (%)",
+            "cable_entity": "Cable connected to this vehicle",
+            "home_entity": "Vehicle at home",
+            "soh_entity": "Battery health SOH (%) — full-range method",
+            "measurement_time_entity": "Vehicle data measurement time",
+            "limit_writer_entity": "Charge-limit control (optional)",
+            "target_entity": "External range target (optional, read only)",
+            "departure_entity": "External departure (optional, read only)",
+            "native_plan_entity": "Existing controller plan for comparison",
+            "droop_pp": "Drop before topping up (percentage points)",
+            "margin": "Charging-loss allowance (0.15 = 15%)",
+            "allow_limit_raise": "Allow temporary charge-limit increase",
+            "maximum_soc": "Maximum temporary charge limit (%)",
+            "vehicle_charge_switch_entity": "Vehicle charging on/off (optional)",
+            "planning_power_kw": "Maximum planning power (kW, 0 = charger)"
+          },
+          "description": "Choose the calculation that matches your range source. Existing requests and energy accounting are preserved when app data is delayed. Optional vehicle controls are available only with current remaining range.",
+          "data_description": {
+            "kind": "Choose by the meaning of the range source, regardless of vehicle brand. Current remaining range uses kilometres at the present battery charge. Full range uses a reference at 100% charge and applies SOH.",
+            "range_entity": "For current remaining range: remaining kilometres from the vehicle or a helper. For full range: the reference at 100% charge before SOH correction. A helper already calculating remaining range belongs to the first method.",
+            "battery_entity": "Select available energy at the current battery charge. Total battery capacity is a different quantity.",
+            "soh_entity": "Only the full-range method applies this correction. Remaining range is not corrected for SOH a second time. Without an SOH source, the full-range method uses 100%.",
+            "measurement_time_entity": "When the vehicle measured the data. HA reception time is not a substitute. Delayed data does not erase an existing bounded energy allowance.",
+            "limit_writer_entity": "Optional and available only with current remaining range. An owned temporary increase requires both this control and explicit permission.",
+            "vehicle_charge_switch_entity": "Optional and available only with current remaining range. The control must actually start and stop charging through this vehicle.",
+            "planning_power_kw": "Use 0 to follow the normal or safe capacity of the charger. A positive value only caps planning power."
+          }
+        }
+      },
+      "abort": {
+        "vehicle_already_configured": "This vehicle is already configured.",
+        "vehicle_identity_changed": "Add another vehicle as a new vehicle.",
+        "finish_control_cleanup_first": "Finish the owned charge action and limit restoration before changing these bindings."
+      },
+      "error": {
+        "preview_source": "Select an existing source entity; AdaptiveCharge output cannot be its own input."
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "preview": {
+        "name": "Charge control",
+        "state": {
+          "idle": "No active request",
+          "waiting_data": "Waiting for data",
+          "watching": "Target monitoring",
+          "charging": "Charging observed",
+          "paused": "Request preserved",
+          "scheduled": "Scheduled",
+          "would_boost": "Grid charging planned",
+          "verifying": "Waiting for vehicle confirmation",
+          "within_tolerance": "Within tolerance",
+          "blocked": "Control needs attention",
+          "fault": "Source data needs attention",
+          "cancelled": "Request ended",
+          "disconnected": "Disconnect observed",
+          "read_only": "Calculation only",
+          "control_enabled": "Control enabled",
+          "stopping": "Finishing owned actions"
+        }
+      },
+      "planning": {
+        "name": "Charge planning"
+      }
+    },
+    "binary_sensor": {
+      "control_enabled": {
+        "name": "Control active"
+      }
+    },
+    "number": {
+      "target_range_km": {
+        "name": "Range target"
+      },
+      "droop_pp": {
+        "name": "SOC return threshold"
+      }
+    },
+    "datetime": {
+      "departure": {
+        "name": "Departure"
+      }
+    },
+    "switch": {
+      "control_master": {
+        "name": "Control master"
+      }
+    },
+    "button": {
+      "start": {
+        "name": "Start"
+      },
+      "stop": {
+        "name": "Stop"
+      }
+    }
+  },
+  "services": {
+    "start": {
+      "name": "Start charging request",
+      "description": "With the master off this only simulates. With the master on, control the selected vehicle toward its target and departure."
+    },
+    "set_target": {
+      "name": "Set target",
+      "description": "Change own target/departure without resetting delivered energy. An inactive change does not start charging."
+    },
+    "stop": {
+      "name": "Stop charging request",
+      "description": "Revoke resume rights and end only owned grid charging. Green remains the baseline."
+    },
+    "follow_helpers": {
+      "name": "Follow bound helpers",
+      "description": "Remove local target/departure overrides and follow bound helpers without starting a new request."
+    }
+  },
+  "selector": {
+    "range_calculation": {
+      "options": {
+        "tesla": "Current remaining range",
+        "id3": "Full range with SOH correction"
+      }
+    },
+    "enphase_profile": {
+      "options": {
+        "self_consumption": "Self-Consumption",
+        "ai_optimisation": "AI Optimisation"
+      }
+    },
+    "export_contract": {
+      "options": {
+        "unknown": "Unknown",
+        "column": "Export price from tariff source",
+        "zonneplan": "Zonneplan"
+      }
+    }
+  }
+}
