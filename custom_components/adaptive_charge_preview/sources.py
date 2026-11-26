@@ -103,8 +103,42 @@ def boolean(source: State | None) -> bool | None:
     return {"on": True, "off": False, "home": True, "not_home": False}.get(source.state) if source else None
 
 
+def charger_settings(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    """Retire historical Enphase session input and unused charger fields."""
+    settings = dict(data)
+    settings.pop("mode_entity", None)
+    settings.pop("charging_entity", None)
+    source = settings.get("connection_entity")
+    if source:
+        registry = hass.data.get(er.DATA_REGISTRY)
+        registered = registry.async_get(source) if hasattr(registry, "entities") else None
+        enphase_history = registered and registered.platform == "enphase_ev" and (
+            registered.translation_key == "last_session" or registered.unique_id.endswith("_last_session")
+            or settings.get("connection_attribute") == "plugged_in_at"
+        )
+        if source == "sensor.iq_ev_charger_last_session" or enphase_history:
+            settings.pop("connection_entity", None)
+            settings.pop("connection_attribute", None)
+    if not settings.get("connection_attribute"):
+        settings.pop("connection_attribute", None)
+    return settings
+
+
+def uses_plug_identity(charger: dict[str, Any]) -> bool:
+    """Use the physical cable unless a dedicated live identity is configured."""
+    return not (charger.get("connection_entity") or charger.get("connection_attribute"))
+
+
 def connection_identity(hass: HomeAssistant, charger: dict[str, Any]) -> str | None:
     """One attachment-token adapter for observation and every executor check."""
+    if uses_plug_identity(charger):
+        plug = state(hass, charger.get("plug_entity"))
+        if plug is None or plug.state != "on":
+            return None
+        connectivity = state(hass, charger.get("charger_connectivity_entity"))
+        if charger.get("charger_connectivity_entity") and boolean(connectivity) is not True:
+            return None
+        return f"{plug.entity_id}:{plug.last_changed.isoformat()}"
     token = state(hass, charger.get("connection_entity"))
     source = token or state(hass, charger.get("plug_entity"))
     attribute = charger.get("connection_attribute", "")

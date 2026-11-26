@@ -1,7 +1,7 @@
 """Shared contracts. Charger control is explicitly opt-in and defaults off."""
 
 DOMAIN = "adaptive_charge_preview"
-VERSION = "5.2.0b8"
+VERSION = "5.2.0b11"
 SELF_CONSUMPTION = "self_consumption"
 AI_OPTIMISATION = "ai_optimisation"
 CONTROL_ENABLED = False

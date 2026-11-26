@@ -31,11 +31,18 @@ geselecteerde auto via de bestaande Enphase-/voertuigintegraties. De oude
 controller moet uit staan; actieve native opdrachten worden niet overgenomen.
 Fasen en ampères blijven bij Enphase. Zie [bediening en testgrenzen](docs/CONTROL.md).
 
+AdaptiveCharge gebruikt de actuele kabelstatus voor een geplande laadpauze.
+De Enphase-entiteit `Last Session` wordt bij een update als invoer verwijderd.
+Een bestaande eigen koppeling voor een actuele aansluitidentiteit blijft beschikbaar.
+Een nieuwe Start voor een andere auto vervangt de vorige opdracht zodra de
+autowissel en de overdracht veilig zijn. Stop en een waargenomen ontkoppeling
+sluiten de opdracht af. De maximale Manual-laadtijd geldt per opdracht.
+
 ## Installeren via HA Marketplace
 
 Voeg `Patrick1610/AdaptiveCharge` zo nodig toe als custom repository van het type
 **Integration**. Zet bij die repository **Show beta versions** aan, open opnieuw
-downloaden en kies expliciet `v5.2.0b8`. Met beta's ingeschakeld biedt HA Marketplace ook
+downloaden en kies expliciet `v5.2.0b11`. Met beta's ingeschakeld biedt HA Marketplace ook
 latere beta's aan; gebruik geen onbedoelde automatische upgrade.
 Home Assistant 2026.11.1 of nieuwer is vereist. Voeg vervolgens
 **AdaptiveCharge** toe onder Apparaten & diensten, met één hoofdinstantie
@@ -61,11 +68,10 @@ niet betrouwbaar op. Controleer daarom vóór een eventuele herstart:
 3. Controleer na HA Marketplace-download alle integratiebestandhashes met het bij de release
    gevoegde JSON-bewijs, zoals uitgelegd in [PREVIEW.md](docs/PREVIEW.md#installeren-naast-de-bestaande-regeling).
 
-HA Marketplace kan na vervanging om een HA-herstart vragen. Een eigen bewaarde opdracht met
-toekomstig vertrek en dezelfde aansluiting hervat automatisch, met behoud van
-energieboekhouding. Reeds fysiek doorlopend Manual-laden vereist geen extra
-moduswrite of nieuw cloudrapport. Dit geldt voor deze integratie; de oude native
-regeling heeft haar eigen herstartgedrag en moet bij overname uit blijven.
+HA Marketplace kan na vervanging om een HA-herstart vragen. AdaptiveCharge
+bewaart de opdracht en het energiebudget. Bij twijfel over de aansluiting wacht
+het op actuele bevestiging van dezelfde auto. Je kunt de actuele aansluiting ook
+zelf bevestigen door Start te drukken op dezelfde auto.
 
 Zie [de volledige besturing](docs/CONTROL.md) en de
 [historische 5.0-previewberekeningen](docs/PREVIEW.md). Softwaretests zijn geen fysiek functioneel akkoord

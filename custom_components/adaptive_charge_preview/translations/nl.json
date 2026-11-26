@@ -8,58 +8,81 @@
         "data": {
           "enphase_profile": "Enphase-systeemprofiel",
           "name": "Naam",
-          "meter_entity": "IQ-energiemeter (kWh)",
-          "power_entity": "Onafhankelijk laadvermogen (W/kW)",
-          "plug_entity": "Laadpaal aangesloten",
-          "connection_entity": "Tijdstip/identiteit van aansluiting",
-          "mode_entity": "Huidige laadmodus (alleen lezen)",
-          "charging_entity": "Laadstatus (optionele aanvullende terugmelding)",
-          "price_entity": "Tariefbron",
-          "forecast_entity": "Bestaande zonneprognose",
-          "house_entity": "Huisvermogen zonder auto (W/kW)",
-          "session_entity": "Bestaande sessiehelper (alleen lezen)",
-          "active_entity": "Bestaande opdracht actief (alleen lezen)",
-          "generation_entity": "Bestaande opdrachtgeneratie (alleen lezen)",
-          "power_kw": "Rekenvermogen (kW)",
-          "reserve_min": "Vertrekreserve (minuten)",
-          "minimum_min": "Minimumduur laadblok en laadpauze (minuten)",
-          "house_kw": "Terugval huisvermogen (kW)",
-          "price_interval_min": "Tariefinterval zonder eindtijd (15 of 60 minuten)",
-          "price_attribute": "Attribuut met tariefregels",
-          "price_time_key": "Veld met begintijd",
-          "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
-          "export_price_key": "Veld met netto terugleverprijs (optioneel)",
-          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)",
-          "pending_entity": "Native pending-aanvraag (alleen lezen)",
-          "legacy_master_entity": "Hoofdschakelaar oude regeling (moet uit staan)",
-          "control_mode_entity": "Enphase laadmodusbediening",
-          "charger_switch_entity": "Enphase start-/stopschakelaar",
-          "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
-          "control_report_entity": "Enphase echte rapporttijd",
-          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
-          "economic_enabled": "Economisch plannen en Green pauzeren",
-          "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
-          "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
-          "export_contract": "Teruglevercontract (unknown / complete kolom / zonneplan)",
-          "capacity_entity": "Laadpaalstatus met safe-mode-indicatie (alleen lezen)",
-          "gateway_connectivity_entity": "Gatewayverbinding (alleen lezen)",
-          "safe_power_kw": "Rekenvermogen bij safe mode of Gatewayuitval (kW)",
-          "zonneplan_tax_eur_kwh": "In de inkoop inbegrepen energiebelasting incl. btw (EUR/kWh)",
-          "zonneplan_tax_valid_until": "Inbegrepen energiebelasting geldig t/m (JJJJ-MM-DD)",
-          "zonneplan_import_fee_eur_kwh": "Al inbegrepen inkoopvergoeding incl. btw (EUR/kWh)",
-          "zonneplan_export_fee_eur_kwh": "Ontvangen terugleveropslag incl. btw (EUR/kWh)",
-          "zonneplan_bonus_eligible": "Contract heeft Zonnebonus bij daglicht (jaarteller nodig)",
-          "bonus_export_ytd_entity": "Werkelijke bonusrelevante teruglevering dit kalenderjaar (kWh)",
-          "bonus_export_year": "Bevestigd kalenderjaar van terugleverteller (0 = jaarattribuut entiteit)",
-          "maximum_export_kw": "Fysieke maximale teruglevering voor conservatieve bonusruimte (kW)",
-          "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
-          "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)",
-          "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
-          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)",
-          "system_profile_entity": "Actief Enphase-systeemprofiel (optionele controle)"
+          "power_entity": "Onafhankelijk laadvermogen (W/kW)"
         },
-        "data_description": {
-          "minimum_min": "Dezelfde grens voor losse laadblokken en interne pauzes. Hogere waarden kunnen duur laden verlengen en het laatste goedkope laaddeel vervangen; er is geen maximale meerprijs. Prijsdekking en vroege inkoopgrens blijven gelden."
+        "sections": {
+          "price_source": {
+            "name": "Elektriciteitsprijs",
+            "data": {
+              "price_entity": "Tariefbron"
+            }
+          },
+          "charger_connections": {
+            "name": "Laadpaal en koppelingen",
+            "data": {
+              "meter_entity": "IQ-energiemeter (kWh)",
+              "plug_entity": "Laadpaal aangesloten",
+              "control_mode_entity": "Enphase laadmodusbediening",
+              "charger_switch_entity": "Enphase start-/stopschakelaar",
+              "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
+              "control_report_entity": "Enphase echte rapporttijd",
+              "system_profile_entity": "Actief Enphase-systeemprofiel (optionele controle)",
+              "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
+              "capacity_entity": "Laadpaalstatus met safe-mode-indicatie (alleen lezen)",
+              "gateway_connectivity_entity": "Gatewayverbinding (alleen lezen)",
+              "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)"
+            }
+          },
+          "planning_settings": {
+            "name": "Planning en beveiligingen",
+            "data": {
+              "power_kw": "Rekenvermogen (kW)",
+              "safe_power_kw": "Rekenvermogen bij safe mode of Gatewayuitval (kW)",
+              "reserve_min": "Vertrekreserve (minuten)",
+              "minimum_min": "Minimumduur laadblok en laadpauze (minuten)",
+              "forecast_entity": "Bestaande zonneprognose",
+              "house_entity": "Huisvermogen zonder auto (W/kW)",
+              "house_kw": "Terugval huisvermogen (kW)",
+              "economic_enabled": "Economisch plannen en Green pauzeren",
+              "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
+              "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
+              "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
+              "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
+              "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)"
+            },
+            "data_description": {
+              "minimum_min": "Dezelfde grens voor losse laadblokken en interne pauzes. Hogere waarden kunnen duur laden verlengen en het laatste goedkope laaddeel vervangen; er is geen maximale meerprijs. Prijsdekking en vroege inkoopgrens blijven gelden."
+            }
+          },
+          "tariff_settings": {
+            "name": "Tarieven en teruglevering",
+            "data": {
+              "price_interval_min": "Tariefinterval zonder eindtijd (15 of 60 minuten)",
+              "price_attribute": "Attribuut met tariefregels",
+              "price_time_key": "Veld met begintijd",
+              "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
+              "export_contract": "Teruglevercontract",
+              "export_price_key": "Veld met netto terugleverprijs (optioneel)",
+              "zonneplan_tax_eur_kwh": "In de inkoop inbegrepen energiebelasting incl. btw (EUR/kWh)",
+              "zonneplan_tax_valid_until": "Inbegrepen energiebelasting geldig t/m (JJJJ-MM-DD)",
+              "zonneplan_import_fee_eur_kwh": "Al inbegrepen inkoopvergoeding incl. btw (EUR/kWh)",
+              "zonneplan_export_fee_eur_kwh": "Ontvangen terugleveropslag incl. btw (EUR/kWh)",
+              "zonneplan_bonus_eligible": "Contract heeft Zonnebonus bij daglicht (jaarteller nodig)",
+              "bonus_export_ytd_entity": "Werkelijke bonusrelevante teruglevering dit kalenderjaar (kWh)",
+              "bonus_export_year": "Bevestigd kalenderjaar van terugleverteller (0 = jaarattribuut entiteit)",
+              "maximum_export_kw": "Fysieke maximale teruglevering voor conservatieve bonusruimte (kW)"
+            }
+          },
+          "legacy_controller": {
+            "name": "Oude laadregelaar",
+            "data": {
+              "legacy_master_entity": "Hoofdschakelaar oude regeling (moet uit staan)",
+              "session_entity": "Bestaande sessiehelper (alleen lezen)",
+              "active_entity": "Bestaande opdracht actief (alleen lezen)",
+              "pending_entity": "Native pending-aanvraag (alleen lezen)",
+              "generation_entity": "Bestaande opdrachtgeneratie (alleen lezen)"
+            }
+          }
         }
       },
       "reconfigure": {
@@ -67,59 +90,89 @@
         "data": {
           "enphase_profile": "Enphase-systeemprofiel",
           "name": "Naam",
-          "meter_entity": "IQ-energiemeter (kWh)",
-          "power_entity": "Onafhankelijk laadvermogen (W/kW)",
-          "plug_entity": "Laadpaal aangesloten",
-          "connection_entity": "Tijdstip/identiteit van aansluiting",
-          "mode_entity": "Huidige laadmodus (alleen lezen)",
-          "charging_entity": "Laadstatus (optionele aanvullende terugmelding)",
-          "price_entity": "Tariefbron",
-          "forecast_entity": "Bestaande zonneprognose",
-          "house_entity": "Huisvermogen zonder auto (W/kW)",
-          "session_entity": "Bestaande sessiehelper (alleen lezen)",
-          "active_entity": "Bestaande opdracht actief (alleen lezen)",
-          "generation_entity": "Bestaande opdrachtgeneratie (alleen lezen)",
-          "power_kw": "Rekenvermogen (kW)",
-          "reserve_min": "Vertrekreserve (minuten)",
-          "minimum_min": "Minimumduur laadblok en laadpauze (minuten)",
-          "house_kw": "Terugval huisvermogen (kW)",
-          "price_interval_min": "Tariefinterval zonder eindtijd (15 of 60 minuten)",
-          "price_attribute": "Attribuut met tariefregels",
-          "price_time_key": "Veld met begintijd",
-          "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
-          "export_price_key": "Veld met netto terugleverprijs (optioneel)",
-          "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)",
-          "pending_entity": "Native pending-aanvraag (alleen lezen)",
-          "legacy_master_entity": "Hoofdschakelaar oude regeling (moet uit staan)",
-          "control_mode_entity": "Enphase laadmodusbediening",
-          "charger_switch_entity": "Enphase start-/stopschakelaar",
-          "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
-          "control_report_entity": "Enphase echte rapporttijd",
-          "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
-          "economic_enabled": "Economisch plannen en Green pauzeren",
-          "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
-          "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
-          "export_contract": "Teruglevercontract (unknown / complete kolom / zonneplan)",
-          "capacity_entity": "Laadpaalstatus met safe-mode-indicatie (alleen lezen)",
-          "gateway_connectivity_entity": "Gatewayverbinding (alleen lezen)",
-          "safe_power_kw": "Rekenvermogen bij safe mode of Gatewayuitval (kW)",
-          "zonneplan_tax_eur_kwh": "In de inkoop inbegrepen energiebelasting incl. btw (EUR/kWh)",
-          "zonneplan_tax_valid_until": "Inbegrepen energiebelasting geldig t/m (JJJJ-MM-DD)",
-          "zonneplan_import_fee_eur_kwh": "Al inbegrepen inkoopvergoeding incl. btw (EUR/kWh)",
-          "zonneplan_export_fee_eur_kwh": "Ontvangen terugleveropslag incl. btw (EUR/kWh)",
-          "zonneplan_bonus_eligible": "Contract heeft Zonnebonus bij daglicht (jaarteller nodig)",
-          "bonus_export_ytd_entity": "Werkelijke bonusrelevante teruglevering dit kalenderjaar (kWh)",
-          "bonus_export_year": "Bevestigd kalenderjaar van terugleverteller (0 = jaarattribuut entiteit)",
-          "maximum_export_kw": "Fysieke maximale teruglevering voor conservatieve bonusruimte (kW)",
-          "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
-          "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)",
-          "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
-          "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)",
-          "system_profile_entity": "Actief Enphase-systeemprofiel (optionele controle)"
+          "power_entity": "Onafhankelijk laadvermogen (W/kW)"
         },
         "description": "Besturing staat standaard uit. Eén hoofdschakelaar per laadpaal geeft toestemming. De oude regeling moet uit staan voordat je de nieuwe besturing aanzet.",
-        "data_description": {
-          "minimum_min": "Dezelfde grens voor losse laadblokken en interne pauzes. Hogere waarden kunnen duur laden verlengen en het laatste goedkope laaddeel vervangen; er is geen maximale meerprijs. Prijsdekking en vroege inkoopgrens blijven gelden."
+        "sections": {
+          "price_source": {
+            "name": "Elektriciteitsprijs",
+            "data": {
+              "price_entity": "Tariefbron"
+            }
+          },
+          "charger_connections": {
+            "name": "Laadpaal en koppelingen",
+            "data": {
+              "meter_entity": "IQ-energiemeter (kWh)",
+              "plug_entity": "Laadpaal aangesloten",
+              "control_mode_entity": "Enphase laadmodusbediening",
+              "charger_switch_entity": "Enphase start-/stopschakelaar",
+              "control_feedback_entity": "Enphase terugmelding voorkeur/werkelijke modus",
+              "control_report_entity": "Enphase echte rapporttijd",
+              "system_profile_entity": "Actief Enphase-systeemprofiel (optionele controle)",
+              "fallback_power_entity": "Alternatief laadpaalvermogen bij ontbrekende onafhankelijke meting (W/kW)",
+              "capacity_entity": "Laadpaalstatus met safe-mode-indicatie (alleen lezen)",
+              "gateway_connectivity_entity": "Gatewayverbinding (alleen lezen)",
+              "charger_connectivity_entity": "Laadpaalverbinding (apart van Gateway, alleen lezen)"
+            }
+          },
+          "planning_settings": {
+            "name": "Planning en beveiligingen",
+            "data": {
+              "power_kw": "Rekenvermogen (kW)",
+              "safe_power_kw": "Rekenvermogen bij safe mode of Gatewayuitval (kW)",
+              "reserve_min": "Vertrekreserve (minuten)",
+              "minimum_min": "Minimumduur laadblok en laadpauze (minuten)",
+              "forecast_entity": "Bestaande zonneprognose",
+              "house_entity": "Huisvermogen zonder auto (W/kW)",
+              "house_kw": "Terugval huisvermogen (kW)",
+              "economic_enabled": "Economisch plannen en Green pauzeren",
+              "idle_green_price_filter": "Green-prijsfilter ook zonder laadopdracht toepassen",
+              "early_offset_cents": "Vroeg inkopen: cent/kWh onder het gewogen daggemiddelde",
+              "charger_fault_recovery": "Opdracht bewaren bij laadpaal-/Gatewaystoring en nieuw apparaattijdstip",
+              "maximum_command_kwh": "Maximale totale laadenergie per opdracht, inclusief Green (kWh)",
+              "maximum_manual_hours": "Maximale totale Manual-tijd per opdracht (uren)"
+            },
+            "data_description": {
+              "minimum_min": "Dezelfde grens voor losse laadblokken en interne pauzes. Hogere waarden kunnen duur laden verlengen en het laatste goedkope laaddeel vervangen; er is geen maximale meerprijs. Prijsdekking en vroege inkoopgrens blijven gelden."
+            }
+          },
+          "tariff_settings": {
+            "name": "Tarieven en teruglevering",
+            "data": {
+              "price_interval_min": "Tariefinterval zonder eindtijd (15 of 60 minuten)",
+              "price_attribute": "Attribuut met tariefregels",
+              "price_time_key": "Veld met begintijd",
+              "import_price_key": "Veld met all-in inkoopprijs (EUR/kWh)",
+              "export_contract": "Teruglevercontract",
+              "export_price_key": "Veld met netto terugleverprijs (optioneel)",
+              "zonneplan_tax_eur_kwh": "In de inkoop inbegrepen energiebelasting incl. btw (EUR/kWh)",
+              "zonneplan_tax_valid_until": "Inbegrepen energiebelasting geldig t/m (JJJJ-MM-DD)",
+              "zonneplan_import_fee_eur_kwh": "Al inbegrepen inkoopvergoeding incl. btw (EUR/kWh)",
+              "zonneplan_export_fee_eur_kwh": "Ontvangen terugleveropslag incl. btw (EUR/kWh)",
+              "zonneplan_bonus_eligible": "Contract heeft Zonnebonus bij daglicht (jaarteller nodig)",
+              "bonus_export_ytd_entity": "Werkelijke bonusrelevante teruglevering dit kalenderjaar (kWh)",
+              "bonus_export_year": "Bevestigd kalenderjaar van terugleverteller (0 = jaarattribuut entiteit)",
+              "maximum_export_kw": "Fysieke maximale teruglevering voor conservatieve bonusruimte (kW)"
+            }
+          },
+          "legacy_controller": {
+            "name": "Oude laadregelaar",
+            "data": {
+              "legacy_master_entity": "Hoofdschakelaar oude regeling (moet uit staan)",
+              "session_entity": "Bestaande sessiehelper (alleen lezen)",
+              "active_entity": "Bestaande opdracht actief (alleen lezen)",
+              "pending_entity": "Native pending-aanvraag (alleen lezen)",
+              "generation_entity": "Bestaande opdrachtgeneratie (alleen lezen)"
+            }
+          },
+          "live_connection_identity": {
+            "name": "Bestaande bron voor actuele aansluitidentiteit",
+            "data": {
+              "connection_entity": "Tijdstip/identiteit van aansluiting",
+              "connection_attribute": "Attribuut met aansluitidentiteit (leeg = state)"
+            }
+          }
         }
       }
     },
@@ -311,6 +364,13 @@
       "options": {
         "self_consumption": "Eigen verbruik",
         "ai_optimisation": "AI-optimalisatie"
+      }
+    },
+    "export_contract": {
+      "options": {
+        "unknown": "Onbekend",
+        "column": "Terugleverprijs uit prijsbron",
+        "zonneplan": "Zonneplan"
       }
     }
   }

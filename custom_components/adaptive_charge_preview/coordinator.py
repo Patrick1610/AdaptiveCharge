@@ -17,13 +17,13 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .const import AI_OPTIMISATION, DOMAIN, SELF_CONSUMPTION, STORAGE_VERSION, VERSION
+from .const import AI_OPTIMISATION, DOMAIN, MAX_CLOCK_SKEW, MAX_EVSE_AGE, SELF_CONSUMPTION, STORAGE_VERSION, VERSION
 from .core.models import VehicleConfig, VehicleSnapshot, demand, finite, observe_goal, valid_ac_capacity_ratio
 from .core.planner import plan
 from .core.economics import economic_plan, idle_green_policy
 from .core.session import Session
 from .control import ChargerControl
-from .sources import local_time, measurement, meter_kwh, physical_power, price_feed_live, state, validate_source_bindings, vehicle_snapshot, planning_capacity
+from .sources import capture_at, local_time, measurement, meter_kwh, observed_at, physical_power, price_feed_live, state, uses_plug_identity, validate_source_bindings, vehicle_snapshot, planning_capacity
 from .tariffs import export_is_known
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_saved: str | None = None
         self._delay_pending = False
         self.control = ChargerControl(self)
-        self._unplug_edges: list[float] = []
+        self._unplug_edges: list[tuple[float, str | None]] = []
         self.references: dict[str,tuple] = {}
         self._gateway_online: bool | None = None
         self._connection_gaps: list[float] = []
@@ -107,16 +107,23 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         gateway = state(self.hass,self.entry.data.get("charger_connectivity_entity"))
         if _event.data.get("entity_id") == self.entry.data.get("charger_connectivity_entity"):
             self._gateway_online = new.state == "on" if new else False
+            if old and old.state == "on" and not self._gateway_online and uses_plug_identity(self.entry.data):
+                self._connection_gaps.append((new or old).last_updated.timestamp())
         online = not self.entry.data.get("charger_connectivity_entity") or self._gateway_online is not False and gateway and gateway.state == "on"
-        if _event.data.get("entity_id") == self.entry.data.get("plug_entity") and old and new:
+        source = _event.data.get("entity_id")
+        if source == self.entry.data.get("plug_entity") and old and new:
             if new.state == "on":
                 self._uncertain_unplug_at = None
             elif new.state == "off" and old.state == "on" and online:
-                self._unplug_edges.append(new.last_updated.timestamp())
+                self._unplug_edges.append((new.last_updated.timestamp(), None))
             elif new.state in {"off","unknown","unavailable"}:
                 self._connection_gaps.append(new.last_updated.timestamp())
                 if new.state == "off" and online:
                     self._uncertain_unplug_at = new.last_updated.timestamp()
+        elif old and new and old.state == "on" and new.state == "off" and uses_plug_identity(self.entry.data):
+            for vehicle_id, profile in self.profiles.items():
+                if source == profile.get("cable_entity"):
+                    self._unplug_edges.append((capture_at(new) or new.last_changed.timestamp(), vehicle_id))
         self.hass.async_create_task(self.async_request_refresh(), name="adaptive_charge_preview refresh")
 
     async def async_shutdown(self) -> None:
@@ -311,6 +318,63 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._save(immediate=True)
         await self.async_request_refresh()
 
+    def _process_cable_events(self, now: float, shared: dict[str, Any]) -> None:
+        """Apply observed disconnects before accounting or a new Start."""
+        if self._uncertain_unplug_at is not None and now-self._uncertain_unplug_at >= 5:
+            plug_now = state(self.hass,shared.get("plug_entity"))
+            charger_now = state(self.hass,shared.get("charger_connectivity_entity"))
+            if plug_now and plug_now.state == "off" and (not shared.get("charger_connectivity_entity") or charger_now and charger_now.state == "on"):
+                self._unplug_edges.append((self._uncertain_unplug_at, None))
+                self._uncertain_unplug_at = None
+        for gap in self._connection_gaps:
+            for request in self.sessions.values():
+                if not request.terminal and gap >= request.started_at-1:
+                    request.connection_gap_since = request.connection_gap_since or gap
+        self._connection_gaps.clear()
+        for edge, vehicle_id in self._unplug_edges:
+            if edge > now + MAX_CLOCK_SKEW:
+                continue
+            edge = min(edge, now)
+            for request in self.sessions.values():
+                if (vehicle_id is None or request.vehicle_id == vehicle_id) and not request.terminal and edge >= request.started_at:
+                    request.stop("physical_charger_unplug_edge" if vehicle_id is None else "vehicle_disconnected")
+                    if request.source_token:
+                        self.suppressed_token = request.source_token
+            owner = self.control.grant and self.sessions.get(self.control.grant["vehicle_id"])
+            if vehicle_id is None or owner and owner.vehicle_id == vehicle_id and edge >= owner.started_at:
+                self.control.physical_unplug_observed(edge)
+        self._unplug_edges.clear()
+
+    def other_vehicle_connected(self, selected: str) -> bool:
+        """Check for conflicting positive vehicle-cable evidence."""
+        cables = (state(self.hass, profile.get("cable_entity"))
+                  for vehicle_id, profile in self.profiles.items() if vehicle_id != selected)
+        return any(cable and cable.state == "on" for cable in cables)
+
+    def _recover_plug_identity(self, request: Session, snapshot: VehicleSnapshot, now: float) -> None:
+        """Keep the budget across a cable reporting gap; confirm before rebinding."""
+        if not request.connection_id or not snapshot.connection_id:
+            return
+        if snapshot.connection_id == request.connection_id:
+            request.connection_gap_since = None
+            return
+        if request.connection_gap_since is None:
+            request.connection_gap_since = now
+        cable = state(self.hass, self.profile(request.vehicle_id).get("cable_entity"))
+        cable_at = capture_at(cable) or observed_at(cable)
+        fresh_since = max(request.connection_gap_since, now - MAX_EVSE_AGE)
+        if snapshot.connected is not True or snapshot.home is False or not all(
+            seen_at is not None and fresh_since <= seen_at <= now for seen_at in (cable_at, snapshot.soc.measured_at)
+        ):
+            return
+        if self.other_vehicle_connected(request.vehicle_id):
+            return
+        owned = self.control.owns(request.vehicle_id)
+        request.refresh_charger_token(snapshot.connection_id)
+        if owned:
+            self.control.refresh_attachment_token(snapshot.connection_id)
+        request.connection_gap_since = None
+
     async def _observe(self) -> dict[str, Any]:
         """Only reads HA sources and saves preview-owned state."""
         from .sources import price_rows
@@ -324,27 +388,12 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sessions = {k: s for k, s in self.sessions.items() if k in profiles or self.control.grant and k == self.control.grant["vehicle_id"]}
         self.values = {k: v for k, v in self.values.items() if k in profiles}
         shared = dict(self.entry.data)
+        cable_identity = uses_plug_identity(shared)
         enphase_profile = shared.get("enphase_profile", SELF_CONSUMPTION)
         idle_mode = "Smart" if enphase_profile == AI_OPTIMISATION else "Green"
         rows, price_warnings = price_rows(self.hass, shared, now)
         export_known = export_is_known(price_warnings)
-        if self._uncertain_unplug_at is not None and now-self._uncertain_unplug_at >= 5:
-            plug_now = state(self.hass,shared.get("plug_entity"))
-            charger_now = state(self.hass,shared.get("charger_connectivity_entity"))
-            if plug_now and plug_now.state == "off" and (not shared.get("charger_connectivity_entity") or charger_now and charger_now.state == "on"):
-                self._unplug_edges.append(self._uncertain_unplug_at)
-                self._uncertain_unplug_at = None
-        for gap in self._connection_gaps:
-            for request in self.sessions.values():
-                if not request.terminal and gap >= request.started_at-1:
-                    request.connection_gap_since = request.connection_gap_since or gap
-        self._connection_gaps.clear()
-        for edge in self._unplug_edges:
-            for request in self.sessions.values():
-                if not request.terminal and edge >= request.started_at-1:
-                    request.stop("physical_charger_unplug_edge")
-            self.control.physical_unplug_observed(edge)
-        self._unplug_edges.clear()
+        self._process_cable_events(now, shared)
         meter = meter_kwh(self.hass, shared.get("meter_entity"), now)
         meter_observation = measurement(self.hass,shared.get("meter_entity"))
         native, native_token = self._native()
@@ -378,18 +427,26 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             request = self.sessions.get(vehicle_id)
             if request and not request.terminal:
                 gateway = state(self.hass,shared.get("charger_connectivity_entity"))
-                if shared.get("charger_fault_recovery") and shared.get("charger_connectivity_entity") and (not gateway or gateway.state != "on") and self.control.owns(vehicle_id):
+                if (cable_identity or shared.get("charger_fault_recovery") and self.control.owns(vehicle_id)) and shared.get("charger_connectivity_entity") and (not gateway or gateway.state != "on"):
                     # An offline EVSE's cached false/token change is not an
                     # observed cable removal. Preserve the allowance and wait.
                     snapshot = replace(snapshot,connected=None,shared_connected=None,connection_id=None,connection_measured_at=None)
                     row["connection_recovery"] = "gateway_unavailable_request_preserved"
+                if cable_identity:
+                    self._recover_plug_identity(request, snapshot, now)
+                    if snapshot.shared_connected is None:
+                        snapshot = replace(snapshot, connected=None, connection_id=None, connection_measured_at=None)
+                    elif (snapshot.shared_connected is True and request.connection_gap_since is None
+                            and snapshot.connection_id == request.connection_id):
+                        # A cached car-level OFF cannot replace observed continuity at the charger.
+                        snapshot = replace(snapshot, connected=True)
                 if request.connection_gap_since is not None and snapshot.shared_connected is True:
-                    if snapshot.connection_id == request.connection_id or snapshot.connected is True and snapshot.home is not False and snapshot.soc.measured_at is not None and snapshot.soc.measured_at >= request.connection_gap_since:
+                    if not cable_identity and (snapshot.connection_id == request.connection_id or snapshot.connected is True and snapshot.home is not False and snapshot.soc.measured_at is not None and snapshot.soc.measured_at >= request.connection_gap_since):
                         request.connection_gap_since = None
                     else:
                         snapshot = replace(snapshot,connected=None,shared_connected=None,connection_id=None,connection_measured_at=None)
                         row["connection_recovery"] = "attachment_gap_waiting_vehicle_evidence_request_preserved"
-                if (shared.get("charger_fault_recovery") and self.control.owns(vehicle_id) and snapshot.shared_connected is True
+                if (not cable_identity and shared.get("charger_fault_recovery") and self.control.owns(vehicle_id) and snapshot.shared_connected is True
                         and snapshot.connected is True and snapshot.home is not False and snapshot.connection_id
                         and request.connection_id != snapshot.connection_id
                         and not any(vehicle_snapshot(self.hass,self.profile(other),shared).connected is True for other in profiles if other != vehicle_id)):
@@ -553,16 +610,26 @@ class PreviewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     raise ValueError("Invalid droop percentage points")
                 overrides["droop_pp"] = value
             if action == "start":
+                now = dt_util.utcnow().timestamp()
+                shared = dict(self.entry.data)
+                cable_identity = uses_plug_identity(shared)
+                if cable_identity:
+                    self._process_cable_events(now, shared)
                 authority_snapshot = self.control.validate_start(vehicle_id)
                 profile = {**self.profile(vehicle_id), **overrides}
-                snapshot = vehicle_snapshot(self.hass, profile, dict(self.entry.data))
+                snapshot = vehicle_snapshot(self.hass, profile, shared)
                 if snapshot.connected is not True and not (self.control.enabled and snapshot.shared_connected is True and snapshot.connection_id):
                     raise ValueError("Preview start requires selected vehicle connection")
                 target, departure = self.target(profile), self.departure(profile)
                 self.generation += 1
                 existing = self.sessions.get(vehicle_id)
-                if existing and not existing.terminal and (snapshot.connection_id is None or existing.connection_id == snapshot.connection_id):
+                if existing and not existing.terminal and (snapshot.connection_id is None or existing.connection_id == snapshot.connection_id or cable_identity):
                     # Repeated Start on this connection isn't a fresh energy allowance.
+                    if snapshot.connection_id and existing.connection_id != snapshot.connection_id:
+                        if self.control.owns(vehicle_id):
+                            self.control.refresh_attachment_token(snapshot.connection_id)
+                        existing.refresh_charger_token(snapshot.connection_id)
+                    existing.connection_gap_since = None
                     existing.generation = self.generation
                     existing.source_token = None
                 else:

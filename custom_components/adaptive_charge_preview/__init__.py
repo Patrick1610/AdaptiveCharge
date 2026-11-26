@@ -11,8 +11,20 @@ import voluptuous as vol
 
 from .const import DOMAIN
 from .coordinator import PreviewCoordinator
+from .sources import charger_settings
 
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.DATETIME, Platform.SWITCH, Platform.BUTTON]
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Remove historical Enphase and unused bindings without replacing entities."""
+    if entry.version != 1:
+        return False
+    if entry.minor_version < 2:
+        hass.config_entries.async_update_entry(
+            entry, data=charger_settings(hass, dict(entry.data)), minor_version=2
+        )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

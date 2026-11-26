@@ -23,7 +23,7 @@ def fast_feedback(monkeypatch):
     monkeypatch.setattr("custom_components.adaptive_charge_preview.control.START_SETTLE_SECONDS", 0)
 
 
-async def controlled(tmp_path, *, stale=False, require_prices=False, ai=False, unknown_selector=False):
+async def controlled(tmp_path, *, stale=False, require_prices=False, ai=False, unknown_selector=False, cable_identity=False):
     """A disabled native controller, explicit new request and actual HA bus."""
     hass, c, vehicle = await setup(tmp_path)
     from homeassistant.helpers import entity_registry as er, device_registry as dr, area_registry as ar
@@ -41,6 +41,8 @@ async def controlled(tmp_path, *, stale=False, require_prices=False, ai=False, u
     cfg = {**c.entry.data, "control_mode_entity": "select.ev_mode", "charger_switch_entity": "switch.ev_charger", "control_feedback_entity": "sensor.ev_feedback", "control_report_entity": "sensor.ev_report", "legacy_master_entity": "input_boolean.legacy_master", "pending_entity": "input_text.live_pending", "charging_entity": "binary_sensor.ev_charging", "require_prices_for_control": require_prices}
     if ai:
         cfg.update(enphase_profile=AI_OPTIMISATION, system_profile_entity="sensor.site_profile")
+    if cable_identity:
+        cfg.pop("connection_entity")
     object.__setattr__(c.entry, "data", MappingProxyType(cfg))
     c.async_request_refresh = AsyncMock()
     idle = "Smart" if ai else "Green"

@@ -21,7 +21,7 @@ from homeassistant.util import dt as dt_util
 from .core.models import finite, timestamp
 from .core.planner import deadline_fallback
 from .const import AI_OPTIMISATION, DOMAIN, MAX_CHARGER_POWER_KW, SELF_CONSUMPTION
-from .sources import connection_identity, meter_kwh, physical_power, price_feed_live, state, vehicle_snapshot
+from .sources import charger_settings, connection_identity, meter_kwh, physical_power, price_feed_live, state, uses_plug_identity, vehicle_snapshot
 
 if TYPE_CHECKING:
     from .coordinator import PreviewCoordinator
@@ -172,6 +172,9 @@ class ChargerControl:
             self.grant["binding"].setdefault("fallback_power_entity",None)
             if "cap_checked_at" in self.grant and not self._ai_grant:
                 self.grant["cap_checked_at"] = dt_util.utcnow().timestamp()
+        for saved in (self.grant, self.green_hold):
+            if saved and uses_plug_identity(self.config) and uses_plug_identity(charger_settings(self.hass, saved["binding"])):
+                saved["binding"].update(connection_entity=None, connection_attribute=None)
         if self.grant and self.grant.get("unpriced_departure") is not None:
             hint = timestamp(self.grant["unpriced_departure"])
             if hint is None:
@@ -459,15 +462,30 @@ class ChargerControl:
         snapshot = vehicle_snapshot(self.hass, self.coordinator.profile(vehicle_id), self.config)
         if snapshot.shared_connected is not True or not snapshot.connection_id:
             raise ValueError("selected_vehicle_not_connected")
+        changing_vehicle = bool(self.grant and self.grant["vehicle_id"] != vehicle_id)
+        cable_handover = changing_vehicle and uses_plug_identity(self.config)
+        if cable_handover:
+            previous = self.coordinator.sessions.get(self.grant["vehicle_id"])
+            detached = self.grant.get("ai_detached") or previous and previous.terminal and previous.reason in {
+                "physical_charger_unplug_edge", "vehicle_disconnected",
+            }
+            if not detached and (self.ai_stop_latched or snapshot.connected is not True
+                    or snapshot.home is False or self.coordinator.other_vehicle_connected(vehicle_id)):
+                raise ValueError("confirm_vehicle_change_at_charger")
+        if uses_plug_identity(self.config) and self.pending and self.grant and (
+            changing_vehicle or self.grant["connection_id"] != snapshot.connection_id
+        ):
+            raise ValueError("finish_previous_cleanup_first")
         if self.config.get("enphase_profile") == AI_OPTIMISATION:
             if (self._ai_grant and not self.grant.get("ai_detached") and self.grant["connection_id"] == snapshot.connection_id
-                    and self.grant["vehicle_id"] != vehicle_id):
+                    and changing_vehicle and not cable_handover):
                 raise ValueError("another_request_owns_attachment")
             if self.pending and self.grant and self.grant.get("ai_stop_latched"):
                 raise ValueError("finish_previous_cleanup_first")
             if meter_kwh(self.hass, self.config.get("meter_entity"), dt_util.utcnow().timestamp()) is None:
                 raise ValueError("energy_meter_invalid")
-        if self.owned_manual and self.grant and self.grant["vehicle_id"] != vehicle_id:
+        if self.owned_manual and changing_vehicle and not (cable_handover and self._same_attachment()
+                and self.owns(self.grant["vehicle_id"]) and self._running_manual_readback(dt_util.utcnow().timestamp())):
             raise ValueError("finish_previous_owned_manual_first")
         if self._cleanup_required or any(item.get("vehicle_id") == vehicle_id and item.get("restore_pending") for item in [*self.dormant_limits, *([self.limit] if self.limit else [])]):
             raise ValueError("finish_previous_cleanup_first")
@@ -478,6 +496,7 @@ class ChargerControl:
         if snapshot is None:
             return
         request = self.coordinator.sessions[vehicle_id]
+        continuing_manual = self.owned_manual and self.grant and self.grant["vehicle_id"] != vehicle_id
         old = self.grant if self.grant and self.grant["vehicle_id"] == vehicle_id and self.grant["connection_id"] == snapshot.connection_id else {}
         if self.limit and self.limit["vehicle_id"] != vehicle_id:
             self.dormant_limits.append(self.limit)
@@ -487,6 +506,8 @@ class ChargerControl:
             self.dormant_limits.remove(returning)
             self.limit = returning
         self.grant = {"vehicle_id": vehicle_id, "generation": request.generation, "connection_id": snapshot.connection_id, "manual_seconds": old.get("manual_seconds", 0.0), "manual_since": old.get("manual_since"), "max_kwh": float(self.config.get("maximum_command_kwh", DEFAULT_COMMAND_KWH))}
+        if continuing_manual:
+            self.grant["manual_since"] = request.started_at
         if self.config.get("enphase_profile") == AI_OPTIMISATION:
             self.grant["enphase_profile"] = AI_OPTIMISATION
             self.grant["cap_checked_at"] = request.started_at
@@ -505,6 +526,7 @@ class ChargerControl:
         self._notified_fault = None
         self._notified_status = None
         self._stop_requested = False
+        self._cleanup_connection = None
         self._restored = False
         self._external_mode = False
         self.idle_blocked = False
@@ -1362,7 +1384,7 @@ class ChargerControl:
             # Keep the logical request, but do not carry its Manual intent onto
             # an attachment that became unobservable. Return owned Manual to
             # baseline while same-vehicle evidence recovers automatically.
-            if self.owned_manual:
+            if self.owned_manual or self._ai_grant and self.pending:
                 try:
                     await self._green(now)
                 except (ValueError,TimeoutError,HomeAssistantError):
